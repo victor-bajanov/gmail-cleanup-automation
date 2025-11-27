@@ -6,7 +6,7 @@ use crate::models::MessageMetadata;
 use async_stream::stream;
 use chrono::{DateTime, Duration, Utc};
 use futures::stream::{Stream, StreamExt};
-use google_gmail1::api::{Message, MessagePartHeader};
+use google_gmail1::api::Message;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -162,11 +162,13 @@ impl ScanConfig {
 /// Email scanner for fetching messages from Gmail
 pub struct EmailScanner {
     client: Box<dyn GmailClient>,
+    #[allow(dead_code)]
     hub: Option<
         google_gmail1::Gmail<
             hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
         >,
     >,
+    #[allow(dead_code)]
     user_id: String,
 }
 
@@ -266,7 +268,7 @@ impl EmailScanner {
     async fn list_message_ids_page(
         &self,
         config: &ScanConfig,
-        page_token: Option<String>,
+        _page_token: Option<String>,
     ) -> Result<(Vec<String>, Option<String>)> {
         // Build query string
         let mut query_parts = vec![];

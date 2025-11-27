@@ -403,7 +403,7 @@ impl EmailClassifier {
     }
 
     /// Determine if message should be auto-archived
-    fn should_auto_archive(&self, message: &MessageMetadata, category: &EmailCategory, priority: i32) -> bool {
+    fn should_auto_archive(&self, _message: &MessageMetadata, category: &EmailCategory, priority: i32) -> bool {
         // Never archive high-priority messages
         if priority >= 70 {
             return false;
@@ -433,7 +433,7 @@ impl EmailClassifier {
     }
 
     /// Calculate confidence score
-    fn calculate_confidence(&self, message: &MessageMetadata, category: &EmailCategory, is_automated: bool) -> f32 {
+    fn calculate_confidence(&self, message: &MessageMetadata, _category: &EmailCategory, is_automated: bool) -> f32 {
         let mut confidence: f32 = 0.5;
 
         // Known service = high confidence

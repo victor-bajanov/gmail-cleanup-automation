@@ -197,10 +197,10 @@ async fn run() -> Result<()> {
         }
 
         Commands::Rollback {
-            run_id,
-            labels_only,
-            filters_only,
-            force,
+            run_id: _,
+            labels_only: _,
+            filters_only: _,
+            force: _,
         } => {
             tracing::info!("Rollback command (not yet implemented)");
             println!("Rollback functionality coming soon!");
@@ -287,6 +287,7 @@ async fn run() -> Result<()> {
 }
 
 /// Display error with context
+#[allow(dead_code)]
 fn display_error(error: &anyhow::Error) {
     eprintln!("Error: {}", error);
 

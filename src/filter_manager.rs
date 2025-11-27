@@ -3,13 +3,13 @@
 use crate::client::GmailClient;
 use crate::error::{GmailError, Result};
 use crate::models::{Classification, EmailCategory, FilterRule, MessageMetadata};
-use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info, warn};
 
 /// Manages Gmail filters including generation, creation, and deduplication
 pub struct FilterManager {
     client: Box<dyn GmailClient>,
+    #[allow(dead_code)]
     existing_filters: Vec<FilterRule>,
     created_filters: Vec<String>,
 }
@@ -806,6 +806,7 @@ impl FilterManager {
 
 /// Pattern analysis results for a domain
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PatternAnalysis {
     domain: String,
     subject_keywords: Vec<String>,

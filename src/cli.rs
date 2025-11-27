@@ -421,7 +421,6 @@ use crate::label_manager::LabelManager;
 use crate::models::{FilterRule, MessageMetadata};
 use crate::state::{ProcessingPhase, ProcessingState};
 use chrono::Utc;
-use futures::StreamExt;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -701,8 +700,8 @@ pub async fn run_pipeline(
 
         // Determine which labels already exist vs need to be created
         let unique_labels_vec: Vec<String> = unique_labels.iter().cloned().collect();
-        let existing_labels = label_manager.find_existing_labels(&unique_labels_vec);
-        let new_labels = label_manager.find_new_labels(&unique_labels_vec);
+        let _existing_labels = label_manager.find_existing_labels(&unique_labels_vec);
+        let _new_labels = label_manager.find_new_labels(&unique_labels_vec);
 
         let label_spinner = reporter.add_spinner("Creating Gmail labels...");
 
