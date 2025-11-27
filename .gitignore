@@ -1,0 +1,41 @@
+# Rust
+/target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Credentials and tokens
+credentials.json
+token.json
+.gmail-automation/
+
+# Configuration
+config.toml
+*.local.toml
+
+# Logs
+*.log
+
+# State files
+*.state.json
+checkpoint.json
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+
+# Test artifacts
+/tests/fixtures/generated/
