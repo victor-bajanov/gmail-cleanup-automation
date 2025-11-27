@@ -154,8 +154,8 @@ impl ReviewSession {
         let reviewed = self.decisions.len();
         let deferred = self.deferred_indices.len();
 
-        // Box width (inner content width, not including borders)
-        const W: usize = 60;
+        // Dynamic box width based on terminal size (inner content width, not including borders)
+        let w = get_display_width();
 
         // Helper macro for raw mode: \r\n needed (not just \n)
         macro_rules! out {
@@ -169,23 +169,23 @@ impl ReviewSession {
         let line = |content: &str| -> String {
             let chars: Vec<char> = content.chars().collect();
             let len = chars.len();
-            if len >= W {
-                format!("│ {} │", chars.iter().take(W).collect::<String>())
+            if len >= w {
+                format!("│ {} │", chars.iter().take(w).collect::<String>())
             } else {
-                format!("│ {}{} │", content, " ".repeat(W - len))
+                format!("│ {}{} │", content, " ".repeat(w - len))
             }
         };
 
-        // Progress bar
-        let progress_width = 30;
+        // Progress bar scales with width
+        let progress_width = (w / 2).min(60);
         let filled = (reviewed * progress_width) / total.max(1);
         let bar: String = (0..progress_width)
             .map(|i| if i < filled { '█' } else { '░' })
             .collect();
 
-        let top    = format!("┌{}┐", "─".repeat(W + 2));
-        let mid    = format!("├{}┤", "─".repeat(W + 2));
-        let bottom = format!("└{}┘", "─".repeat(W + 2));
+        let top    = format!("┌{}┐", "─".repeat(w + 2));
+        let mid    = format!("├{}┤", "─".repeat(w + 2));
+        let bottom = format!("└{}┘", "─".repeat(w + 2));
 
         out!("{}", top);
         out!("{}", line(&format!("Progress: [{}] {:>3}/{:<3} clusters", bar, reviewed, total)));
@@ -228,17 +228,23 @@ impl ReviewSession {
                 format!("*@{}", cluster.sender_domain)
             };
 
-            out!("{}", line(&format!("CLUSTER: {} ({} emails)", truncate_str(&cluster_name, 40), cluster.email_count())));
+            // Truncation lengths scale with width
+            let name_max = w.saturating_sub(22);  // "CLUSTER: " + " (XX emails)"
+            let query_max = w.saturating_sub(12); // "  Query:   "
+            let label_max = w.saturating_sub(12); // "  Label:   "
+            let subject_max = w.saturating_sub(6); // "  • "
+
+            out!("{}", line(&format!("CLUSTER: {} ({} emails)", truncate_str(&cluster_name, name_max), cluster.email_count())));
             out!("{}", mid);
             out!("{}", line("Proposed filter rule:"));
-            out!("{}", line(&format!("  Query:   {}", truncate_str(&filter_query, 48))));
-            out!("{}", line(&format!("  Label:   {}", truncate_str(&cluster.suggested_label, 48))));
+            out!("{}", line(&format!("  Query:   {}", truncate_str(&filter_query, query_max))));
+            out!("{}", line(&format!("  Label:   {}", truncate_str(&cluster.suggested_label, label_max))));
             out!("{}", line(&format!("  Archive: {}", archive_status)));
             out!("{}", mid);
             out!("{}", line("Sample subjects:"));
 
             for subject in cluster.sample_subjects.iter().take(4) {
-                let truncated = truncate_str(subject, 56);
+                let truncated = truncate_str(subject, subject_max);
                 out!("{}", line(&format!("  • {}", truncated)));
             }
 
@@ -517,19 +523,24 @@ impl ReviewSession {
         let _ = terminal::disable_raw_mode();
         let _ = execute!(io::stdout(), cursor::Show, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0));
 
-        const W: usize = 62;
+        let w = get_display_width();
         let line = |content: &str| {
             let len = content.chars().count();
-            if len >= W {
-                println!("║ {} ║", content.chars().take(W).collect::<String>());
+            if len >= w {
+                println!("║ {} ║", content.chars().take(w).collect::<String>());
             } else {
-                println!("║ {}{} ║", content, " ".repeat(W - len));
+                println!("║ {}{} ║", content, " ".repeat(w - len));
             }
         };
-        let sep = || println!("╠{}╣", "═".repeat(W + 2));
+        let sep = || println!("╠{}╣", "═".repeat(w + 2));
 
-        println!("╔{}╗", "═".repeat(W + 2));
-        line("                    KEYBOARD SHORTCUTS");
+        // Center the title
+        let title = "KEYBOARD SHORTCUTS";
+        let title_padding = (w.saturating_sub(title.len())) / 2;
+        let centered_title = format!("{}{}", " ".repeat(title_padding), title);
+
+        println!("╔{}╗", "═".repeat(w + 2));
+        line(&centered_title);
         sep();
         line("DECISIONS:");
         line("  Y / Enter  CREATE FILTER with shown label & archive setting");
@@ -548,11 +559,11 @@ impl ReviewSession {
         line("  Ctrl+C     Force quit immediately");
         sep();
         line("WHAT HAPPENS:");
-        line("  Y creates: Gmail filter matching from:(*@domain)");
+        line("  Y creates: Gmail filter matching from:(*@domain) or from:(specific@email)");
         line("             → applies your chosen label");
         line("             → optionally archives matching emails");
-        line("  N ignores: No filter or label created for this domain");
-        println!("╚{}╝", "═".repeat(W + 2));
+        line("  N ignores: No filter or label created for this sender/domain");
+        println!("╚{}╝", "═".repeat(w + 2));
         println!();
         println!("Press any key to continue...");
 
@@ -572,12 +583,26 @@ enum SessionAction {
     Finish,
 }
 
+/// Get the display width for the UI box, based on terminal size
+/// Returns inner content width (excluding borders)
+fn get_display_width() -> usize {
+    // Get terminal width, default to 120 if detection fails
+    let term_width = terminal::size()
+        .map(|(cols, _)| cols as usize)
+        .unwrap_or(120);
+
+    // Content width = terminal width - 4 (for "│ " and " │" borders)
+    // Clamp between 80 and 160 for reasonable display
+    let content_width = term_width.saturating_sub(4);
+    content_width.clamp(80, 160)
+}
+
 /// Truncate a string to fit within max_len characters (UTF-8 safe)
 fn truncate_str(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", s.chars().take(max_len - 3).collect::<String>())
+        format!("{}...", s.chars().take(max_len.saturating_sub(3)).collect::<String>())
     }
 }
 
