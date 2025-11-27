@@ -167,6 +167,27 @@ impl Default for ProgressReporter {
 }
 
 /// Report data structure
+/// Planned filter to be created (for dry run reporting)
+#[derive(Debug, Clone)]
+pub struct PlannedFilter {
+    pub name: String,
+    pub from_pattern: Option<String>,
+    pub subject_keywords: Vec<String>,
+    pub target_label: String,
+    pub should_archive: bool,
+    pub estimated_matches: usize,
+    pub gmail_query: String,
+}
+
+/// Planned changes for dry run mode
+#[derive(Debug, Clone, Default)]
+pub struct PlannedChanges {
+    pub labels: Vec<String>,
+    pub filters: Vec<PlannedFilter>,
+    pub messages_to_label: usize,
+    pub messages_to_archive: usize,
+}
+
 pub struct Report {
     pub run_id: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -182,6 +203,10 @@ pub struct Report {
     pub top_senders: Vec<(String, usize, String)>,
     /// Examples per category: category -> [(sender_email, subject)]
     pub category_examples: HashMap<String, Vec<(String, String)>>,
+    /// Whether this was a dry run
+    pub dry_run: bool,
+    /// Planned changes (only populated in dry run mode)
+    pub planned_changes: Option<PlannedChanges>,
 }
 
 impl Report {
@@ -189,7 +214,12 @@ impl Report {
     pub fn to_markdown(&self) -> String {
         let mut md = String::new();
 
-        md.push_str("# Email Management Report\n\n");
+        if self.dry_run {
+            md.push_str("# Email Management Report (DRY RUN)\n\n");
+            md.push_str("> **⚠️ DRY RUN MODE** - No changes were made. This report shows what WOULD happen.\n\n");
+        } else {
+            md.push_str("# Email Management Report\n\n");
+        }
         md.push_str(&format!(
             "Generated: {}\n\n",
             self.completed_at.format("%Y-%m-%d %H:%M:%S")
@@ -199,10 +229,65 @@ impl Report {
         md.push_str(&format!("- **Run ID:** {}\n", self.run_id));
         md.push_str(&format!("- **Emails scanned:** {}\n", self.emails_scanned));
         md.push_str(&format!(
-            "- **Processing time:** {} minutes {} seconds\n\n",
+            "- **Processing time:** {} minutes {} seconds\n",
             self.duration_seconds / 60,
             self.duration_seconds % 60
         ));
+        if self.dry_run {
+            md.push_str("- **Mode:** Dry Run (preview only)\n");
+        }
+        md.push_str("\n");
+
+        // If dry run, show planned changes prominently
+        if let Some(ref planned) = self.planned_changes {
+            md.push_str("## Planned Changes\n\n");
+            md.push_str("The following changes would be made when running without `--dry-run`:\n\n");
+
+            // Labels section
+            md.push_str("### Labels to Create\n\n");
+            if planned.labels.is_empty() {
+                md.push_str("_No new labels would be created._\n\n");
+            } else {
+                for label in &planned.labels {
+                    md.push_str(&format!("- `{}`\n", label));
+                }
+                md.push_str(&format!("\n**Total: {} labels**\n\n", planned.labels.len()));
+            }
+
+            // Filters section
+            md.push_str("### Filters to Create\n\n");
+            if planned.filters.is_empty() {
+                md.push_str("_No filters would be created._\n\n");
+            } else {
+                md.push_str("| Filter Name | Gmail Query | Archive | Matches |\n");
+                md.push_str("|-------------|-------------|---------|----------|\n");
+                for filter in &planned.filters {
+                    let archive_str = if filter.should_archive { "Yes" } else { "No" };
+                    // Escape pipes in query
+                    let escaped_query = filter.gmail_query.replace('|', "\\|");
+                    md.push_str(&format!(
+                        "| {} | `{}` | {} | {} |\n",
+                        filter.name, escaped_query, archive_str, filter.estimated_matches
+                    ));
+                }
+                md.push_str(&format!("\n**Total: {} filters**\n\n", planned.filters.len()));
+            }
+
+            // Actions summary
+            md.push_str("### Actions Summary\n\n");
+            md.push_str(&format!(
+                "- **Messages that would be labelled:** {}\n",
+                planned.messages_to_label
+            ));
+            md.push_str(&format!(
+                "- **Messages that would be archived:** {}\n",
+                planned.messages_to_archive
+            ));
+            md.push_str(&format!(
+                "- **Messages that would stay in inbox:** {}\n\n",
+                planned.messages_to_label.saturating_sub(planned.messages_to_archive)
+            ));
+        }
 
         md.push_str("## Classification Results\n\n");
         for (category, count, percentage) in &self.classification_breakdown {
@@ -230,25 +315,49 @@ impl Report {
         }
         md.push_str("\n");
 
-        md.push_str("## Labels Created\n\n");
-        md.push_str(&format!("- **Total labels:** {}\n\n", self.labels_created));
+        if self.dry_run {
+            md.push_str("## Labels (Preview)\n\n");
+            md.push_str(&format!("- **Would create:** {} labels\n\n", self.labels_created));
 
-        md.push_str("## Filters Created\n\n");
-        md.push_str(&format!("- **Total filters:** {}\n\n", self.filters_created));
+            md.push_str("## Filters (Preview)\n\n");
+            md.push_str(&format!("- **Would create:** {} filters\n\n", self.filters_created));
+        } else {
+            md.push_str("## Labels Created\n\n");
+            md.push_str(&format!("- **Total labels:** {}\n\n", self.labels_created));
 
-        md.push_str("## Actions Taken\n\n");
-        md.push_str(&format!(
-            "- **Messages labelled:** {}\n",
-            self.messages_modified
-        ));
-        md.push_str(&format!(
-            "- **Messages archived:** {}\n",
-            self.messages_archived
-        ));
-        md.push_str(&format!(
-            "- **Messages kept in inbox:** {}\n\n",
-            self.emails_scanned - self.messages_archived
-        ));
+            md.push_str("## Filters Created\n\n");
+            md.push_str(&format!("- **Total filters:** {}\n\n", self.filters_created));
+        }
+
+        if self.dry_run {
+            md.push_str("## Actions (Preview)\n\n");
+            md.push_str(&format!(
+                "- **Would label:** {} messages\n",
+                self.messages_modified
+            ));
+            md.push_str(&format!(
+                "- **Would archive:** {} messages\n",
+                self.messages_archived
+            ));
+            md.push_str(&format!(
+                "- **Would keep in inbox:** {} messages\n\n",
+                self.emails_scanned - self.messages_archived
+            ));
+        } else {
+            md.push_str("## Actions Taken\n\n");
+            md.push_str(&format!(
+                "- **Messages labelled:** {}\n",
+                self.messages_modified
+            ));
+            md.push_str(&format!(
+                "- **Messages archived:** {}\n",
+                self.messages_archived
+            ));
+            md.push_str(&format!(
+                "- **Messages kept in inbox:** {}\n\n",
+                self.emails_scanned - self.messages_archived
+            ));
+        }
 
         md.push_str("## Top Senders\n\n");
         for (i, (sender, count, label)) in self.top_senders.iter().enumerate() {
@@ -261,6 +370,11 @@ impl Report {
             ));
         }
         md.push_str("\n");
+
+        if self.dry_run {
+            md.push_str("---\n\n");
+            md.push_str("_To apply these changes, run the command again without the `--dry-run` flag._\n");
+        }
 
         md
     }
@@ -473,24 +587,27 @@ pub async fn run_pipeline(
         let label_spinner = reporter.add_spinner("Creating Gmail labels...");
         let mut label_manager = LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
 
-        // Create labels for each category
+        // Create labels for each category (or collect planned labels in dry run mode)
         let mut labels_created = 0;
+        let mut planned_labels: Vec<String> = Vec::new();
         for category in category_counts.keys() {
+            let full_label = format!("{}/{}", config.labels.prefix, category);
             if !dry_run {
                 let label_id = label_manager.create_label(category).await?;
                 state.labels_created.push(label_id);
                 labels_created += 1;
             } else {
-                tracing::info!("[DRY RUN] Would create label: {}", category);
+                planned_labels.push(full_label);
                 labels_created += 1;
             }
         }
 
-        reporter.finish_spinner(&label_spinner, &format!("Created {} labels", labels_created));
+        let label_action = if dry_run { "Would create" } else { "Created" };
+        reporter.finish_spinner(&label_spinner, &format!("{} {} labels", label_action, labels_created));
         state.checkpoint(&cli.state_file).await?;
 
         // Step 9: Create filters (unless labels_only)
-        if !labels_only {
+        let (filters_created, planned_filters): (usize, Vec<PlannedFilter>) = if !labels_only {
             state.phase = ProcessingPhase::CreatingFilters;
             state.save(&cli.state_file).await?;
 
@@ -502,28 +619,46 @@ pub async fn run_pipeline(
             }
 
             let filter_spinner = reporter.add_spinner("Generating and creating filter rules...");
-            let mut filter_manager = FilterManager::new(Box::new(client.clone()));
+            let filter_manager = FilterManager::new(Box::new(client.clone()));
 
             let filters = filter_manager.generate_filters_from_classifications(
                 &classifications,
                 config.classification.minimum_emails_for_label,
             );
 
+            // Collect planned filters for dry run report
+            let mut planned_filters: Vec<PlannedFilter> = Vec::new();
             let mut filters_created = 0;
             for filter in &filters {
                 if !dry_run {
-                    let filter_id = filter_manager.create_filter(filter).await?;
+                    let mut fm = FilterManager::new(Box::new(client.clone()));
+                    let filter_id = fm.create_filter(filter).await?;
                     state.filters_created.push(filter_id);
                     filters_created += 1;
                 } else {
-                    tracing::info!("[DRY RUN] Would create filter: {:?}", filter);
+                    // Build the Gmail query for display
+                    let gmail_query = filter_manager.build_gmail_query(filter);
+                    planned_filters.push(PlannedFilter {
+                        name: filter.name.clone(),
+                        from_pattern: filter.from_pattern.clone(),
+                        subject_keywords: filter.subject_keywords.clone(),
+                        target_label: filter.target_label_id.clone(),
+                        should_archive: filter.should_archive,
+                        estimated_matches: filter.estimated_matches,
+                        gmail_query,
+                    });
                     filters_created += 1;
                 }
             }
 
-            reporter.finish_spinner(&filter_spinner, &format!("Created {} filters", filters_created));
+            let filter_action = if dry_run { "Would create" } else { "Created" };
+            reporter.finish_spinner(&filter_spinner, &format!("{} {} filters", filter_action, filters_created));
             state.checkpoint(&cli.state_file).await?;
-        }
+
+            (filters_created, planned_filters)
+        } else {
+            (0, Vec::new())
+        };
 
         // Step 10: Apply labels to existing messages
         state.phase = ProcessingPhase::ApplyingLabels;
@@ -611,6 +746,18 @@ pub async fn run_pipeline(
             }
         }
 
+        // Build planned changes for dry run mode
+        let planned_changes = if dry_run {
+            Some(PlannedChanges {
+                labels: planned_labels.clone(),
+                filters: planned_filters,
+                messages_to_label: messages_modified,
+                messages_to_archive: messages_archived,
+            })
+        } else {
+            None
+        };
+
         let report = Report {
             run_id: run_id.clone(),
             started_at,
@@ -618,13 +765,15 @@ pub async fn run_pipeline(
             duration_seconds,
             emails_scanned: state.messages_scanned,
             emails_classified: state.messages_classified,
-            labels_created: state.labels_created.len(),
-            filters_created: state.filters_created.len(),
+            labels_created: if dry_run { labels_created } else { state.labels_created.len() },
+            filters_created: if dry_run { filters_created } else { state.filters_created.len() },
             messages_modified,
             messages_archived,
             classification_breakdown,
             top_senders,
             category_examples,
+            dry_run,
+            planned_changes,
         };
 
         // Save report
@@ -633,8 +782,13 @@ pub async fn run_pipeline(
             .map_err(|e| GmailError::Unknown(format!("Failed to save report: {}", e)))?;
 
         tracing::info!("Report saved to {:?}", report_path);
-        println!("\nPipeline completed successfully!");
-        println!("Report saved to: {:?}", report_path);
+        if dry_run {
+            println!("\nDry run completed! No changes were made.");
+            println!("Review the report to see what would happen: {:?}", report_path);
+        } else {
+            println!("\nPipeline completed successfully!");
+            println!("Report saved to: {:?}", report_path);
+        }
 
         Ok(report)
     } else {
