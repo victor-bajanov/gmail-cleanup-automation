@@ -23,6 +23,63 @@ pub struct LabelInfo {
     pub name: String,
 }
 
+/// Existing Gmail filter info for comparison
+#[derive(Debug, Clone)]
+pub struct ExistingFilterInfo {
+    pub id: String,
+    pub query: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub subject: Option<String>,
+    pub add_label_ids: Vec<String>,
+    pub remove_label_ids: Vec<String>,
+}
+
+impl ExistingFilterInfo {
+    /// Check if this existing filter matches the new filter rule
+    /// Returns true if they are functionally equivalent
+    pub fn matches_filter_rule(&self, new_filter: &FilterRule) -> bool {
+        // Compare the from pattern / query
+        let query_matches = match (&self.query, &new_filter.from_pattern) {
+            (Some(existing_query), Some(new_pattern)) => {
+                // Normalize for comparison
+                let existing_normalized = existing_query.to_lowercase().trim().to_string();
+                let new_normalized = new_pattern.to_lowercase().trim().to_string();
+                existing_normalized == new_normalized
+            }
+            (None, None) => true,
+            _ => false,
+        };
+
+        // Compare the from field directly as well
+        let from_matches = match (&self.from, &new_filter.from_pattern) {
+            (Some(existing_from), Some(new_pattern)) => {
+                let existing_normalized = existing_from.to_lowercase().trim().to_string();
+                let new_normalized = new_pattern.to_lowercase().trim().to_string();
+                existing_normalized == new_normalized
+            }
+            _ => false, // from field is alternative to query
+        };
+
+        // If neither query nor from matches, filters are different
+        if !query_matches && !from_matches {
+            return false;
+        }
+
+        // Compare add_label_ids
+        let label_matches = self.add_label_ids.contains(&new_filter.target_label_id);
+
+        // Compare archive behavior (remove INBOX)
+        let archive_matches = if new_filter.should_archive {
+            self.remove_label_ids.iter().any(|l| l == "INBOX")
+        } else {
+            !self.remove_label_ids.iter().any(|l| l == "INBOX")
+        };
+
+        label_matches && archive_matches
+    }
+}
+
 /// Trait defining Gmail client operations for easier testing
 #[async_trait]
 pub trait GmailClient: Send + Sync {
@@ -40,6 +97,9 @@ pub trait GmailClient: Send + Sync {
 
     /// Create a new filter rule
     async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+
+    /// List all existing filters
+    async fn list_filters(&self) -> Result<Vec<ExistingFilterInfo>>;
 
     /// Apply a label to a message
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
@@ -437,6 +497,39 @@ impl GmailClient for ProductionGmailClient {
             .ok_or_else(|| GmailError::FilterError("Created filter has no ID".to_string()))
     }
 
+    async fn list_filters(&self) -> Result<Vec<ExistingFilterInfo>> {
+        let (_, response) = self
+            .hub
+            .users()
+            .settings_filters_list("me")
+            .add_scope("https://www.googleapis.com/auth/gmail.settings.basic")
+            .doit()
+            .await?;
+
+        let filters = response
+            .filter
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|f| {
+                let id = f.id?;
+                let criteria = f.criteria.unwrap_or_default();
+                let action = f.action.unwrap_or_default();
+
+                Some(ExistingFilterInfo {
+                    id,
+                    query: criteria.query,
+                    from: criteria.from,
+                    to: criteria.to,
+                    subject: criteria.subject,
+                    add_label_ids: action.add_label_ids.unwrap_or_default(),
+                    remove_label_ids: action.remove_label_ids.unwrap_or_default(),
+                })
+            })
+            .collect();
+
+        Ok(filters)
+    }
+
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {
         let modify_request = ModifyMessageRequest {
             add_label_ids: Some(vec![label_id.to_string()]),
@@ -565,6 +658,10 @@ impl GmailClient for Arc<ProductionGmailClient> {
 
     async fn create_filter(&self, filter: &FilterRule) -> Result<String> {
         self.as_ref().create_filter(filter).await
+    }
+
+    async fn list_filters(&self) -> Result<Vec<ExistingFilterInfo>> {
+        self.as_ref().list_filters().await
     }
 
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {

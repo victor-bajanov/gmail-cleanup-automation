@@ -850,6 +850,7 @@ mod tests {
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -904,6 +905,7 @@ mod tests {
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -942,6 +944,7 @@ mod tests {
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -986,6 +989,7 @@ mod tests {
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -1044,6 +1048,7 @@ mod tests {
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -1110,6 +1115,7 @@ mod tests {
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -1172,6 +1178,7 @@ mod tests {
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -1240,6 +1247,7 @@ mod tests {
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -1290,6 +1298,7 @@ mod tests {
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;

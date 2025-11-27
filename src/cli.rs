@@ -794,7 +794,18 @@ pub async fn run_pipeline(
             // Collect planned filters for dry run report
             let mut planned_filters: Vec<PlannedFilter> = Vec::new();
             let mut filters_created = 0;
+            let mut filters_skipped = 0;
             let mut total_archived = 0;
+
+            // Fetch existing filters once for duplicate detection
+            let existing_filters = if !dry_run {
+                client.list_filters().await.unwrap_or_else(|e| {
+                    warn!("Failed to fetch existing filters for dedup check: {}", e);
+                    Vec::new()
+                })
+            } else {
+                Vec::new()
+            };
 
             for filter in &filters {
                 filter_bar.set_message(format!("Processing: {}", truncate_string(&filter.name, 40)));
@@ -811,6 +822,15 @@ pub async fn run_pipeline(
                     // Create a modified filter with the actual label ID
                     let mut filter_with_id = filter.clone();
                     filter_with_id.target_label_id = label_id.clone();
+
+                    // Check if an equivalent filter already exists
+                    let existing_match = existing_filters.iter().find(|ef| ef.matches_filter_rule(&filter_with_id));
+                    if let Some(existing) = existing_match {
+                        info!("Filter '{}' already exists (ID: {}), skipping", filter.name, existing.id);
+                        filters_skipped += 1;
+                        filter_bar.inc(1);
+                        continue;
+                    }
 
                     // Create the filter
                     let mut fm = FilterManager::new(Box::new(client.clone()));
@@ -850,12 +870,17 @@ pub async fn run_pipeline(
             }
 
             let filter_action = if dry_run { "Would create" } else { "Created" };
+            let skip_msg = if filters_skipped > 0 {
+                format!(", {} already existed", filters_skipped)
+            } else {
+                String::new()
+            };
             let archive_msg = if !dry_run && total_archived > 0 {
                 format!(" (archived {} emails)", total_archived)
             } else {
                 String::new()
             };
-            filter_bar.finish_with_message(format!("{} {} filters{}", filter_action, filters_created, archive_msg));
+            filter_bar.finish_with_message(format!("{} {} filters{}{}", filter_action, filters_created, skip_msg, archive_msg));
             state.checkpoint(&cli.state_file).await?;
 
             (filters_created, planned_filters)
