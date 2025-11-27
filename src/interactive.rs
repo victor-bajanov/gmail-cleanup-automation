@@ -146,6 +146,14 @@ impl ReviewSession {
         // Box width (inner content width, not including borders)
         const W: usize = 60;
 
+        // Helper macro for raw mode: \r\n needed (not just \n)
+        macro_rules! out {
+            ($($arg:tt)*) => {
+                write!(stdout, "{}\r\n", format!($($arg)*))
+                    .map_err(|e| GmailError::Unknown(e.to_string()))?
+            };
+        }
+
         // Helper to create a padded line
         let line = |content: &str| -> String {
             let chars: Vec<char> = content.chars().collect();
@@ -168,53 +176,47 @@ impl ReviewSession {
         let mid    = format!("├{}┤", "─".repeat(W + 2));
         let bottom = format!("└{}┘", "─".repeat(W + 2));
 
-        writeln!(stdout, "{}", top).map_err(|e| GmailError::Unknown(e.to_string()))?;
-        writeln!(stdout, "{}", line(&format!("Progress: [{}] {:>3}/{:<3} clusters", bar, reviewed, total)))
-            .map_err(|e| GmailError::Unknown(e.to_string()))?;
-        writeln!(stdout, "{}", mid).map_err(|e| GmailError::Unknown(e.to_string()))?;
+        out!("{}", top);
+        out!("{}", line(&format!("Progress: [{}] {:>3}/{:<3} clusters", bar, reviewed, total)));
+        out!("{}", mid);
 
         if self.current_index >= self.clusters.len() {
             // All done - show summary
-            writeln!(stdout, "{}", line("")).map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line("All clusters reviewed!")).map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line("")).map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line("Summary:")).map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line(&format!("  Reviewed: {:>4}", reviewed))).map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line(&format!("  Deferred: {:>4}", deferred))).map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line("")).map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line("Press [W] to write changes, [Q] to quit without saving")).map_err(|e| GmailError::Unknown(e.to_string()))?;
+            out!("{}", line(""));
+            out!("{}", line("All clusters reviewed!"));
+            out!("{}", line(""));
+            out!("{}", line("Summary:"));
+            out!("{}", line(&format!("  Reviewed: {:>4}", reviewed)));
+            out!("{}", line(&format!("  Deferred: {:>4}", deferred)));
+            out!("{}", line(""));
+            out!("{}", line("Press [W] to write changes, [Q] to quit without saving"));
         } else {
             let cluster = &self.clusters[self.current_index];
             let archive_status = if cluster.should_archive { "ON" } else { "OFF" };
             let confidence_pct = (cluster.confidence * 100.0) as u32;
             let category_str = format!("{:?}", cluster.suggested_category);
 
-            writeln!(stdout, "{}", line(&format!("CLUSTER: {}", truncate_str(&cluster.sender_domain, 48))))
-                .map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line(&format!("Emails: {:>4} | Suggested: {} ({}%)", cluster.email_count(), category_str, confidence_pct)))
-                .map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line(&format!("Archive: {}", archive_status)))
-                .map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line("")).map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line("Sample subjects:")).map_err(|e| GmailError::Unknown(e.to_string()))?;
+            out!("{}", line(&format!("CLUSTER: {}", truncate_str(&cluster.sender_domain, 48))));
+            out!("{}", line(&format!("Emails: {:>4} | Suggested: {} ({}%)", cluster.email_count(), category_str, confidence_pct)));
+            out!("{}", line(&format!("Archive: {}", archive_status)));
+            out!("{}", line(""));
+            out!("{}", line("Sample subjects:"));
 
             for subject in cluster.sample_subjects.iter().take(5) {
                 let truncated = truncate_str(subject, 56);
-                writeln!(stdout, "{}", line(&format!("  • {}", truncated)))
-                    .map_err(|e| GmailError::Unknown(e.to_string()))?;
+                out!("{}", line(&format!("  • {}", truncated)));
             }
 
             // Pad remaining lines if fewer than 5 subjects
             for _ in cluster.sample_subjects.len()..5 {
-                writeln!(stdout, "{}", line("")).map_err(|e| GmailError::Unknown(e.to_string()))?;
+                out!("{}", line(""));
             }
 
-            writeln!(stdout, "{}", line("")).map_err(|e| GmailError::Unknown(e.to_string()))?;
-            writeln!(stdout, "{}", line("[Y]es  [N]o  [A]rchive  [L]abel  [S]kip  [U]ndo  [?]Help"))
-                .map_err(|e| GmailError::Unknown(e.to_string()))?;
+            out!("{}", line(""));
+            out!("{}", line("[Y]es  [N]o  [A]rchive  [L]abel  [S]kip  [U]ndo  [?]Help"));
         }
 
-        writeln!(stdout, "{}", bottom).map_err(|e| GmailError::Unknown(e.to_string()))?;
+        out!("{}", bottom);
 
         Ok(())
     }
