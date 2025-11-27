@@ -570,6 +570,45 @@ pub async fn run_pipeline(
                     }
                 }
 
+                // Print review decisions summary
+                println!("\n### User Review Decisions\n");
+                for decision in &decisions {
+                    let action_str = match &decision.action {
+                        DecisionAction::Accept => "Accept",
+                        DecisionAction::Reject => "Reject",
+                        DecisionAction::Custom(_) => "Custom",
+                        DecisionAction::Skip => "Skip",
+                    };
+
+                    let sender_pattern = if decision.is_specific_sender {
+                        format!("from:({})", decision.sender_email)
+                    } else if decision.excluded_senders.is_empty() {
+                        format!("from:(*@{})", decision.sender_domain)
+                    } else {
+                        format!("from:(*@{}) excluding {} senders",
+                            decision.sender_domain,
+                            decision.excluded_senders.len())
+                    };
+
+                    let label_info = if !decision.label.is_empty() {
+                        format!(" -> Label: {}", decision.label)
+                    } else {
+                        String::new()
+                    };
+
+                    let archive_info = if decision.should_archive {
+                        " [Archive: Yes]"
+                    } else {
+                        ""
+                    };
+
+                    println!("  [{}] {}{}{}",
+                        action_str,
+                        sender_pattern,
+                        label_info,
+                        archive_info);
+                }
+
                 // Store decisions for filter generation (only accepted ones)
                 review_decisions = decisions.into_iter()
                     .filter(|d| matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_)))
@@ -619,21 +658,31 @@ pub async fn run_pipeline(
         let existing_label_count = label_manager.load_existing_labels().await?;
         reporter.finish_spinner(&label_spinner, &format!("Found {} existing labels", existing_label_count));
 
-        // Only collect labels from domains that meet the threshold (will have filters)
-        let threshold = config.classification.minimum_emails_for_label;
-        let domains_above_threshold: std::collections::HashSet<String> = domain_counts
-            .iter()
-            .filter(|(_, msgs)| msgs.len() >= threshold)
-            .map(|(domain, _)| domain.clone())
-            .collect();
-
-        // Collect unique labels only for domains that will have filters
+        // Collect unique labels - from review decisions if available, otherwise from classifications
         let mut unique_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (msg, classification) in &classifications {
-            if !classification.suggested_label.is_empty()
-                && domains_above_threshold.contains(&msg.sender_domain)
-            {
-                unique_labels.insert(classification.suggested_label.clone());
+
+        if !review_decisions.is_empty() {
+            // When review mode was used, only create labels for accepted clusters
+            for decision in &review_decisions {
+                if !decision.label.is_empty() {
+                    unique_labels.insert(decision.label.clone());
+                }
+            }
+        } else {
+            // Fallback: collect from classifications for domains above threshold
+            let threshold = config.classification.minimum_emails_for_label;
+            let domains_above_threshold: std::collections::HashSet<String> = domain_counts
+                .iter()
+                .filter(|(_, msgs)| msgs.len() >= threshold)
+                .map(|(domain, _)| domain.clone())
+                .collect();
+
+            for (msg, classification) in &classifications {
+                if !classification.suggested_label.is_empty()
+                    && domains_above_threshold.contains(&msg.sender_domain)
+                {
+                    unique_labels.insert(classification.suggested_label.clone());
+                }
             }
         }
 
