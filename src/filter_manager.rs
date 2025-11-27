@@ -246,6 +246,7 @@ impl FilterManager {
     /// - `subject:(receipt OR invoice OR order)` - Multiple subject keywords
     pub fn build_gmail_query(&self, filter: &FilterRule) -> String {
         let mut query_parts = Vec::new();
+        let mut is_domain_wide = false;
 
         // Add from pattern
         if let Some(from_pattern) = &filter.from_pattern {
@@ -253,14 +254,16 @@ impl FilterManager {
                 // Domain-wide pattern: *@domain.com or @domain.com
                 let domain = from_pattern.trim_start_matches('*');
                 query_parts.push(format!("from:(*{})", domain));
+                is_domain_wide = true;
             } else {
                 // Specific email address
                 query_parts.push(format!("from:({})", from_pattern));
             }
         }
 
-        // Add subject keywords
-        if !filter.subject_keywords.is_empty() {
+        // Only add subject keywords for non-domain-wide filters
+        // Domain-wide filters should match ALL emails from that domain
+        if !is_domain_wide && !filter.subject_keywords.is_empty() {
             let keywords = filter
                 .subject_keywords
                 .iter()
