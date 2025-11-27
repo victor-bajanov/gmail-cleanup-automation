@@ -96,6 +96,15 @@ impl FilterManager {
             let category = self.determine_dominant_category(&messages);
             let target_label = self.determine_dominant_label(&messages);
 
+            // Skip domains where user rejected (empty label means no filter wanted)
+            if target_label.is_empty() {
+                debug!(
+                    "Skipping domain {} (user rejected - no label set)",
+                    domain
+                );
+                continue;
+            }
+
             // Determine should_archive from user's choices
             let should_archive = messages.iter()
                 .filter(|(_, c)| c.should_archive)
