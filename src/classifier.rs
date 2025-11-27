@@ -573,13 +573,104 @@ pub struct DomainStats {
     pub automation_ratio: f32,
 }
 
-/// Extract main domain from full domain (remove subdomains)
+/// Known compound TLD suffixes (second-level domains that are part of the TLD)
+static COMPOUND_TLD_SUFFIXES: &[&str] = &[
+    // Generic compound TLDs
+    "com", "co", "org", "net", "edu", "gov", "ac", "mil",
+    // Country-specific common patterns
+    "or", "ne", "go", "gob", "nic",
+];
+
+/// Known compound TLDs (full patterns)
+static COMPOUND_TLDS: &[&str] = &[
+    // Australia
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au",
+    // United Kingdom
+    "co.uk", "org.uk", "me.uk", "net.uk", "ac.uk", "gov.uk", "ltd.uk", "plc.uk",
+    // New Zealand
+    "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz",
+    // Japan
+    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
+    // Korea
+    "co.kr", "or.kr", "ne.kr", "go.kr", "ac.kr",
+    // Brazil
+    "com.br", "net.br", "org.br", "gov.br", "edu.br",
+    // India
+    "co.in", "net.in", "org.in", "gov.in", "ac.in",
+    // South Africa
+    "co.za", "org.za", "net.za", "gov.za", "ac.za",
+    // Germany (rare but exist)
+    "com.de",
+    // France
+    "com.fr",
+    // Spain
+    "com.es", "org.es", "nom.es",
+    // Italy
+    "com.it",
+    // Mexico
+    "com.mx", "org.mx", "gob.mx", "net.mx",
+    // China
+    "com.cn", "net.cn", "org.cn", "gov.cn", "ac.cn",
+    // Hong Kong
+    "com.hk", "org.hk", "net.hk", "gov.hk", "edu.hk",
+    // Singapore
+    "com.sg", "org.sg", "net.sg", "gov.sg", "edu.sg",
+    // Taiwan
+    "com.tw", "org.tw", "net.tw", "gov.tw", "edu.tw",
+    // Indonesia
+    "co.id", "or.id", "go.id", "ac.id",
+    // Malaysia
+    "com.my", "org.my", "net.my", "gov.my", "edu.my",
+    // Thailand
+    "co.th", "or.th", "go.th", "ac.th",
+    // Philippines
+    "com.ph", "org.ph", "net.ph", "gov.ph", "edu.ph",
+    // Vietnam
+    "com.vn", "net.vn", "org.vn", "gov.vn", "edu.vn",
+    // Russia
+    "com.ru", "org.ru", "net.ru",
+    // Turkey
+    "com.tr", "org.tr", "net.tr", "gov.tr", "edu.tr",
+    // Argentina
+    "com.ar", "org.ar", "net.ar", "gov.ar", "edu.ar",
+    // Colombia
+    "com.co", "org.co", "net.co", "gov.co", "edu.co",
+    // Chile
+    "com.cl",
+    // Peru
+    "com.pe", "org.pe", "net.pe", "gob.pe", "edu.pe",
+    // Other common patterns
+    "co.il", "org.il", "ac.il", // Israel
+    "co.at", // Austria
+];
+
+/// Extract main domain from full domain (remove subdomains, handle compound TLDs)
 fn extract_main_domain(domain: &str) -> String {
     let parts: Vec<&str> = domain.split('.').collect();
 
-    if parts.len() >= 2 {
-        // Get last two parts (e.g., "example.com" from "mail.example.com")
-        format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
+    if parts.len() < 2 {
+        return domain.to_string();
+    }
+
+    // Check if this domain has a compound TLD
+    let tld_parts_count = if parts.len() >= 3 {
+        // Check against known compound TLDs
+        let last_two = format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+        if COMPOUND_TLDS.contains(&last_two.as_str()) {
+            3 // Need 3 parts: org.compound.tld
+        } else if COMPOUND_TLD_SUFFIXES.contains(&parts[parts.len() - 2]) {
+            // Fallback: check if second-to-last looks like a TLD category
+            3
+        } else {
+            2 // Standard TLD
+        }
+    } else {
+        2 // Only 2 parts, use both
+    };
+
+    if parts.len() >= tld_parts_count {
+        parts[parts.len() - tld_parts_count..]
+            .join(".")
     } else {
         domain.to_string()
     }
@@ -660,9 +751,18 @@ mod tests {
 
     #[test]
     fn test_extract_main_domain() {
+        // Standard TLDs
         assert_eq!(extract_main_domain("mail.google.com"), "google.com");
         assert_eq!(extract_main_domain("example.com"), "example.com");
         assert_eq!(extract_main_domain("sub.domain.example.com"), "example.com");
+
+        // Compound TLDs - should include the org name, not just the TLD
+        assert_eq!(extract_main_domain("amazon.com.au"), "amazon.com.au");
+        assert_eq!(extract_main_domain("shop.amazon.com.au"), "amazon.com.au");
+        assert_eq!(extract_main_domain("bbc.co.uk"), "bbc.co.uk");
+        assert_eq!(extract_main_domain("news.bbc.co.uk"), "bbc.co.uk");
+        assert_eq!(extract_main_domain("example.co.nz"), "example.co.nz");
+        assert_eq!(extract_main_domain("shop.example.co.jp"), "example.co.jp");
     }
 
     #[test]
