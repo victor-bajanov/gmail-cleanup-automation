@@ -192,28 +192,33 @@ impl ReviewSession {
             out!("{}", line("Press [W] to write changes, [Q] to quit without saving"));
         } else {
             let cluster = &self.clusters[self.current_index];
-            let archive_status = if cluster.should_archive { "ON" } else { "OFF" };
-            let confidence_pct = (cluster.confidence * 100.0) as u32;
-            let category_str = format!("{:?}", cluster.suggested_category);
+            let archive_status = if cluster.should_archive { "YES" } else { "NO" };
 
-            out!("{}", line(&format!("CLUSTER: {}", truncate_str(&cluster.sender_domain, 48))));
-            out!("{}", line(&format!("Emails: {:>4} | Suggested: {} ({}%)", cluster.email_count(), category_str, confidence_pct)));
-            out!("{}", line(&format!("Archive: {}", archive_status)));
-            out!("{}", line(""));
+            // Build the filter query for display
+            let filter_query = format!("from:(*@{})", cluster.sender_domain);
+
+            out!("{}", line(&format!("CLUSTER: {} ({} emails)", truncate_str(&cluster.sender_domain, 40), cluster.email_count())));
+            out!("{}", mid);
+            out!("{}", line("Proposed filter rule:"));
+            out!("{}", line(&format!("  Query:   {}", truncate_str(&filter_query, 48))));
+            out!("{}", line(&format!("  Label:   {}", truncate_str(&cluster.suggested_label, 48))));
+            out!("{}", line(&format!("  Archive: {}", archive_status)));
+            out!("{}", mid);
             out!("{}", line("Sample subjects:"));
 
-            for subject in cluster.sample_subjects.iter().take(5) {
+            for subject in cluster.sample_subjects.iter().take(4) {
                 let truncated = truncate_str(subject, 56);
                 out!("{}", line(&format!("  • {}", truncated)));
             }
 
-            // Pad remaining lines if fewer than 5 subjects
-            for _ in cluster.sample_subjects.len()..5 {
+            // Pad remaining lines if fewer than 4 subjects
+            for _ in cluster.sample_subjects.len()..4 {
                 out!("{}", line(""));
             }
 
-            out!("{}", line(""));
-            out!("{}", line("[Y]es  [N]o  [A]rchive  [L]abel  [S]kip  [U]ndo  [?]Help"));
+            out!("{}", mid);
+            out!("{}", line("[Y] Create filter  [N] Mark needs-review  [S] Skip"));
+            out!("{}", line("[A] Toggle archive [L] Change label       [?] Help"));
         }
 
         out!("{}", bottom);
@@ -455,7 +460,7 @@ impl ReviewSession {
         let _ = terminal::disable_raw_mode();
         let _ = execute!(io::stdout(), cursor::Show, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0));
 
-        const W: usize = 58;
+        const W: usize = 62;
         let line = |content: &str| {
             let len = content.chars().count();
             if len >= W {
@@ -464,20 +469,32 @@ impl ReviewSession {
                 println!("║ {}{} ║", content, " ".repeat(W - len));
             }
         };
+        let sep = || println!("╠{}╣", "═".repeat(W + 2));
 
         println!("╔{}╗", "═".repeat(W + 2));
-        line("               KEYBOARD SHORTCUTS");
-        println!("╠{}╣", "═".repeat(W + 2));
-        line("Y / Enter  Accept suggested label and move to next");
-        line("N          Reject (mark as needs-review) and move to next");
-        line("A          Toggle auto-archive ON/OFF for this cluster");
-        line("L          Open label picker for custom label");
-        line("S          Skip/defer this cluster for later");
-        line("U          Undo last action");
-        line("?          Show this help");
-        line("Q          Quit without saving");
-        line("W          Write changes (only at end)");
-        line("Ctrl+C     Force quit");
+        line("                    KEYBOARD SHORTCUTS");
+        sep();
+        line("DECISIONS:");
+        line("  Y / Enter  CREATE FILTER with shown label & archive setting");
+        line("  N          NO FILTER - just tag emails 'needs-review'");
+        line("  S          SKIP - don't decide now, come back later");
+        sep();
+        line("EDIT BEFORE ACCEPTING:");
+        line("  A          Toggle auto-archive ON/OFF");
+        line("  L          Change the target label");
+        sep();
+        line("NAVIGATION:");
+        line("  U          Undo last decision");
+        line("  ?          Show this help");
+        line("  Q          Quit without saving any changes");
+        line("  W          Write all changes (shown at end of review)");
+        line("  Ctrl+C     Force quit immediately");
+        sep();
+        line("WHAT HAPPENS:");
+        line("  Y creates: Gmail filter matching from:(*@domain)");
+        line("             → applies your chosen label");
+        line("             → optionally archives matching emails");
+        line("  N marks:   Emails tagged 'needs-review' for manual sorting");
         println!("╚{}╝", "═".repeat(W + 2));
         println!();
         println!("Press any key to continue...");
