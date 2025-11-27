@@ -315,35 +315,15 @@ impl Report {
         }
         md.push_str("\n");
 
-        if self.dry_run {
-            md.push_str("## Labels (Preview)\n\n");
-            md.push_str(&format!("- **Would create:** {} labels\n\n", self.labels_created));
-
-            md.push_str("## Filters (Preview)\n\n");
-            md.push_str(&format!("- **Would create:** {} filters\n\n", self.filters_created));
-        } else {
+        // Only show these summary sections for non-dry-run mode
+        // (dry run already has detailed info in "Planned Changes" section)
+        if !self.dry_run {
             md.push_str("## Labels Created\n\n");
             md.push_str(&format!("- **Total labels:** {}\n\n", self.labels_created));
 
             md.push_str("## Filters Created\n\n");
             md.push_str(&format!("- **Total filters:** {}\n\n", self.filters_created));
-        }
 
-        if self.dry_run {
-            md.push_str("## Actions (Preview)\n\n");
-            md.push_str(&format!(
-                "- **Would label:** {} messages\n",
-                self.messages_modified
-            ));
-            md.push_str(&format!(
-                "- **Would archive:** {} messages\n",
-                self.messages_archived
-            ));
-            md.push_str(&format!(
-                "- **Would keep in inbox:** {} messages\n\n",
-                self.emails_scanned - self.messages_archived
-            ));
-        } else {
             md.push_str("## Actions Taken\n\n");
             md.push_str(&format!(
                 "- **Messages labelled:** {}\n",
@@ -587,17 +567,26 @@ pub async fn run_pipeline(
         let label_spinner = reporter.add_spinner("Creating Gmail labels...");
         let mut label_manager = LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
 
-        // Create labels for each category (or collect planned labels in dry run mode)
+        // Collect unique labels from suggested_label field (includes user's review choices)
+        let mut unique_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (_, classification) in &classifications {
+            if !classification.suggested_label.is_empty() {
+                unique_labels.insert(classification.suggested_label.clone());
+            }
+        }
+
+        // Create labels (or collect planned labels in dry run mode)
         let mut labels_created = 0;
         let mut planned_labels: Vec<String> = Vec::new();
-        for category in category_counts.keys() {
-            let full_label = format!("{}/{}", config.labels.prefix, category);
+        for label in &unique_labels {
             if !dry_run {
-                let label_id = label_manager.create_label(category).await?;
+                // Extract the category part after the prefix for label creation
+                let label_name = label.split('/').last().unwrap_or(label);
+                let label_id = label_manager.create_label(label_name).await?;
                 state.labels_created.push(label_id);
                 labels_created += 1;
             } else {
-                planned_labels.push(full_label);
+                planned_labels.push(label.clone());
                 labels_created += 1;
             }
         }

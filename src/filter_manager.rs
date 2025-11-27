@@ -92,11 +92,17 @@ impl FilterManager {
             // Analyze patterns in this domain
             let pattern_analysis = self.analyze_domain_patterns(&domain, &messages);
 
-            // Determine category (use most common category)
+            // Determine category and label (use most common from user's choices)
             let category = self.determine_dominant_category(&messages);
+            let target_label = self.determine_dominant_label(&messages);
+
+            // Determine should_archive from user's choices
+            let should_archive = messages.iter()
+                .filter(|(_, c)| c.should_archive)
+                .count() > messages.len() / 2;
 
             // Build filter rule
-            if let Some(filter) = self.build_filter_rule(domain, pattern_analysis, category, messages.len())
+            if let Some(filter) = self.build_filter_rule(domain, pattern_analysis, category, target_label, should_archive, messages.len())
             {
                 filters.push(filter);
             }
@@ -147,9 +153,17 @@ impl FilterManager {
             // Analyze patterns
             let pattern_analysis = self.analyze_domain_patterns_simple(&domain, &msgs);
 
-            // Build filter
+            // Determine should_archive based on category
+            let should_archive = matches!(
+                category,
+                EmailCategory::Newsletter
+                    | EmailCategory::Marketing
+                    | EmailCategory::Notification
+            );
+
+            // Build filter (no suggested_label since no classifications)
             if let Some(filter) =
-                self.build_filter_rule(domain, pattern_analysis, category, msgs.len())
+                self.build_filter_rule(domain, pattern_analysis, category, String::new(), should_archive, msgs.len())
             {
                 filters.push(filter);
             }
@@ -658,6 +672,30 @@ impl FilterManager {
             .unwrap_or(EmailCategory::Other)
     }
 
+    /// Determines the dominant suggested_label from classified messages
+    /// This reflects the user's choices from interactive review
+    fn determine_dominant_label(
+        &self,
+        messages: &[&(MessageMetadata, Classification)],
+    ) -> String {
+        let mut label_counts: HashMap<String, usize> = HashMap::new();
+
+        for (_, classification) in messages {
+            if !classification.suggested_label.is_empty() {
+                *label_counts
+                    .entry(classification.suggested_label.clone())
+                    .or_insert(0) += 1;
+            }
+        }
+
+        // Return most common label
+        label_counts
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(label, _)| label)
+            .unwrap_or_default()
+    }
+
     /// Infers category from message characteristics (without classification)
     fn infer_category_from_messages(&self, messages: &[&MessageMetadata]) -> EmailCategory {
         // Use heuristics to determine likely category
@@ -692,6 +730,8 @@ impl FilterManager {
         domain: String,
         analysis: PatternAnalysis,
         category: EmailCategory,
+        target_label: String,
+        should_archive: bool,
         message_count: usize,
     ) -> Option<FilterRule> {
         // Build from pattern (domain-wide)
@@ -701,23 +741,19 @@ impl FilterManager {
             None
         };
 
-        // Determine if should archive based on category
-        let should_archive = matches!(
-            category,
-            EmailCategory::Newsletter
-                | EmailCategory::Marketing
-                | EmailCategory::Notification
-        );
-
-        // Build filter name
-        let filter_name = format!("{} - {}", domain, format!("{:?}", category));
+        // Build filter name using target_label if available, otherwise category
+        let filter_name = if !target_label.is_empty() {
+            format!("{} → {}", domain, target_label)
+        } else {
+            format!("{} - {:?}", domain, category)
+        };
 
         Some(FilterRule {
             id: None,
             name: filter_name,
             from_pattern,
             subject_keywords: analysis.subject_keywords,
-            target_label_id: String::new(), // Will be set by caller
+            target_label_id: target_label,
             should_archive,
             estimated_matches: message_count,
         })
