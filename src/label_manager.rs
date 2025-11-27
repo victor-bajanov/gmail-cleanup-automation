@@ -630,6 +630,7 @@ mod tests {
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -672,6 +673,7 @@ mod tests {
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -702,6 +704,7 @@ mod tests {
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -740,6 +743,7 @@ mod tests {
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -782,6 +786,7 @@ mod tests {
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -861,6 +866,7 @@ mod tests {
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }

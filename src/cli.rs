@@ -818,17 +818,14 @@ pub async fn run_pipeline(
                     state.filters_created.push(filter_id);
                     filters_created += 1;
 
-                    // If filter has auto-archive, find and archive matching emails
+                    // If filter has auto-archive, find and archive matching emails in batch
                     if filter.should_archive {
                         let matching_ids = client.list_message_ids(&gmail_query).await?;
                         if !matching_ids.is_empty() {
                             info!("Archiving {} emails matching filter '{}'", matching_ids.len(), filter.name);
-                            for msg_id in &matching_ids {
-                                if let Err(e) = client.remove_label(msg_id, "INBOX").await {
-                                    warn!("Failed to archive message {}: {}", msg_id, e);
-                                } else {
-                                    total_archived += 1;
-                                }
+                            match client.batch_remove_label(&matching_ids, "INBOX").await {
+                                Ok(count) => total_archived += count,
+                                Err(e) => warn!("Failed to archive emails for filter '{}': {}", filter.name, e),
                             }
                         }
                     }

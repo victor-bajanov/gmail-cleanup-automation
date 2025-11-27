@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use google_gmail1::{
-    api::{Filter, FilterAction, FilterCriteria, Label, Message, ModifyMessageRequest},
+    api::{BatchModifyMessagesRequest, Filter, FilterAction, FilterCriteria, Label, Message, ModifyMessageRequest},
     hyper_rustls, hyper_util, Gmail,
 };
 use std::sync::Arc;
@@ -46,6 +46,10 @@ pub trait GmailClient: Send + Sync {
 
     /// Remove a label from a message (used for archiving - removing INBOX)
     async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+
+    /// Remove a label from multiple messages in batch (up to 1000 per call)
+    /// Returns the number of messages successfully modified
+    async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
 
     /// Fetch multiple messages concurrently
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>>;
@@ -465,6 +469,35 @@ impl GmailClient for ProductionGmailClient {
         Ok(())
     }
 
+    async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize> {
+        if message_ids.is_empty() {
+            return Ok(0);
+        }
+
+        // Gmail API allows up to 1000 messages per batch request
+        const BATCH_SIZE: usize = 1000;
+        let mut total_modified = 0;
+
+        for chunk in message_ids.chunks(BATCH_SIZE) {
+            let request = BatchModifyMessagesRequest {
+                ids: Some(chunk.to_vec()),
+                add_label_ids: None,
+                remove_label_ids: Some(vec![label_id.to_string()]),
+            };
+
+            self.hub
+                .users()
+                .messages_batch_modify(request, "me")
+                .add_scope("https://www.googleapis.com/auth/gmail.modify")
+                .doit()
+                .await?;
+
+            total_modified += chunk.len();
+        }
+
+        Ok(total_modified)
+    }
+
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>> {
         // Note: fetch_single_with_retry already handles rate limiting via semaphore
         // buffer_unordered limits concurrency to 40 parallel requests
@@ -540,6 +573,10 @@ impl GmailClient for Arc<ProductionGmailClient> {
 
     async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()> {
         self.as_ref().remove_label(message_id, label_id).await
+    }
+
+    async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize> {
+        self.as_ref().batch_remove_label(message_ids, label_id).await
     }
 
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>> {
