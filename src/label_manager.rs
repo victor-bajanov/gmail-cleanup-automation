@@ -348,11 +348,9 @@ impl LabelManager {
         consolidated
     }
 
-    /// Applies labels to a batch of messages
+    /// Applies labels to a batch of messages using batch API calls
     ///
-    /// Processes label applications with proper error handling.
-    /// Note: This uses individual API calls per message, not Gmail's batch modify,
-    /// as per the spec's recommendation for better error handling.
+    /// Groups messages by label for efficient batch operations.
     ///
     /// # Arguments
     /// * `message_label_map` - Map from message ID to list of label IDs to apply
@@ -366,44 +364,56 @@ impl LabelManager {
         remove_inbox: bool,
     ) -> Result<usize> {
         let total_messages = message_label_map.len();
-        let mut success_count = 0;
 
         info!(
             "Applying labels to {} messages (remove_inbox: {})",
             total_messages, remove_inbox
         );
 
-        for (message_id, label_ids) in message_label_map {
-            // Apply each label to the message
+        // Invert the map: label_id -> Vec<message_ids> for batch operations
+        let mut label_to_messages: HashMap<String, Vec<String>> = HashMap::new();
+        for (message_id, label_ids) in &message_label_map {
             for label_id in label_ids {
-                match self.client.apply_label(&message_id, &label_id).await {
-                    Ok(_) => {
-                        debug!("Applied label {} to message {}", label_id, message_id);
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to apply label {} to message {}: {}",
-                            label_id, message_id, e
-                        );
-                        // Continue with other labels rather than failing completely
-                    }
-                }
+                label_to_messages
+                    .entry(label_id.clone())
+                    .or_default()
+                    .push(message_id.clone());
             }
-
-            // Remove INBOX label if archiving
-            if remove_inbox {
-                // Note: In production, this would use a modify call to remove INBOX
-                // For now, we track success based on label application
-            }
-
-            success_count += 1;
         }
 
+        let mut success_count = 0;
+
+        // Batch apply each label to its messages
+        for (label_id, message_ids) in label_to_messages {
+            let remove_labels = if remove_inbox {
+                vec!["INBOX".to_string()]
+            } else {
+                vec![]
+            };
+
+            match self.client.batch_modify_labels(
+                &message_ids,
+                &[label_id.clone()],
+                &remove_labels,
+            ).await {
+                Ok(count) => {
+                    debug!("Batch applied label {} to {} messages", label_id, count);
+                    success_count += count;
+                }
+                Err(e) => {
+                    warn!("Failed to batch apply label {}: {}", label_id, e);
+                }
+            }
+        }
+
+        // Deduplicate success count (a message might have multiple labels)
+        let actual_messages = total_messages.min(success_count);
+
         info!(
-            "Successfully applied labels to {}/{} messages",
-            success_count, total_messages
+            "Successfully applied labels to ~{} messages",
+            actual_messages
         );
-        Ok(success_count)
+        Ok(actual_messages)
     }
 
     /// Gets the list of labels created by this manager
@@ -632,6 +642,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -676,6 +688,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -708,6 +722,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -748,6 +764,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -792,6 +810,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -873,6 +893,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -880,18 +902,16 @@ mod tests {
 
         let mut mock_client = MockTestGmailClient::new();
 
-        // Expect label application for each message
+        // Expect batch_modify_labels to be called once with both messages
         mock_client
-            .expect_apply_label()
-            .with(eq("msg-1"), eq("label-123"))
+            .expect_batch_modify_labels()
+            .withf(|msg_ids, add_labels, remove_labels| {
+                msg_ids.len() == 2
+                    && add_labels == &["label-123".to_string()]
+                    && remove_labels.is_empty()
+            })
             .times(1)
-            .returning(|_, _| Ok(()));
-
-        mock_client
-            .expect_apply_label()
-            .with(eq("msg-2"), eq("label-123"))
-            .times(1)
-            .returning(|_, _| Ok(()));
+            .returning(|msg_ids, _, _| Ok(msg_ids.len()));
 
         let manager = LabelManager::new(
             Box::new(mock_client),

@@ -736,7 +736,7 @@ pub async fn run_pipeline(
         state.checkpoint(&cli.state_file).await?;
 
         // Step 9: Create filters (unless labels_only)
-        let (filters_created, planned_filters): (usize, Vec<PlannedFilter>) = if !labels_only {
+        let (filters_created, planned_filters, total_labeled_count): (usize, Vec<PlannedFilter>, usize) = if !labels_only {
             state.phase = ProcessingPhase::CreatingFilters;
             state.save(&cli.state_file).await?;
 
@@ -747,7 +747,7 @@ pub async fn run_pipeline(
                 }
             }
 
-            let filter_manager = FilterManager::new(Box::new(client.clone()));
+            let mut filter_manager = FilterManager::new(Box::new(client.clone()));
 
             // Generate filters: from review decisions if available, otherwise from classifications
             let filters: Vec<FilterRule> = if !review_decisions.is_empty() {
@@ -795,6 +795,7 @@ pub async fn run_pipeline(
             let mut planned_filters: Vec<PlannedFilter> = Vec::new();
             let mut filters_created = 0;
             let mut filters_skipped = 0;
+            let mut total_labeled = 0;
             let mut total_archived = 0;
 
             // Fetch existing filters once for duplicate detection
@@ -832,20 +833,35 @@ pub async fn run_pipeline(
                         continue;
                     }
 
-                    // Create the filter
-                    let mut fm = FilterManager::new(Box::new(client.clone()));
-                    let filter_id = fm.create_filter(&filter_with_id).await?;
+                    // Create the filter (reuse filter_manager instance)
+                    let filter_id = filter_manager.create_filter(&filter_with_id).await?;
                     state.filters_created.push(filter_id);
                     filters_created += 1;
 
-                    // If filter has auto-archive, find and archive matching emails in batch
-                    if filter.should_archive {
-                        let matching_ids = client.list_message_ids(&gmail_query).await?;
-                        if !matching_ids.is_empty() {
-                            info!("Archiving {} emails matching filter '{}'", matching_ids.len(), filter.name);
-                            match client.batch_remove_label(&matching_ids, "INBOX").await {
-                                Ok(count) => total_archived += count,
-                                Err(e) => warn!("Failed to archive emails for filter '{}': {}", filter.name, e),
+                    // Retroactively apply label (and archive if needed) to ALL matching emails
+                    let matching_ids = client.list_message_ids(&gmail_query).await?;
+                    if !matching_ids.is_empty() {
+                        let count = matching_ids.len();
+                        if filter.should_archive {
+                            // Add label + remove INBOX in one batch call
+                            info!("Labeling and archiving {} emails for filter '{}'", count, filter.name);
+                            match client.batch_modify_labels(
+                                &matching_ids,
+                                &[label_id.clone()],
+                                &["INBOX".to_string()],
+                            ).await {
+                                Ok(modified) => {
+                                    total_labeled += modified;
+                                    total_archived += modified;
+                                }
+                                Err(e) => warn!("Failed to label/archive emails for filter '{}': {}", filter.name, e),
+                            }
+                        } else {
+                            // Just add label
+                            info!("Labeling {} emails for filter '{}'", count, filter.name);
+                            match client.batch_add_label(&matching_ids, label_id).await {
+                                Ok(modified) => total_labeled += modified,
+                                Err(e) => warn!("Failed to label emails for filter '{}': {}", filter.name, e),
                             }
                         }
                     }
@@ -875,65 +891,27 @@ pub async fn run_pipeline(
             } else {
                 String::new()
             };
-            let archive_msg = if !dry_run && total_archived > 0 {
-                format!(" (archived {} emails)", total_archived)
+            let retroactive_msg = if !dry_run && (total_labeled > 0 || total_archived > 0) {
+                let parts: Vec<String> = [
+                    if total_labeled > 0 { Some(format!("labeled {}", total_labeled)) } else { None },
+                    if total_archived > 0 { Some(format!("archived {}", total_archived)) } else { None },
+                ].into_iter().flatten().collect();
+                format!(" ({})", parts.join(", "))
             } else {
                 String::new()
             };
-            filter_bar.finish_with_message(format!("{} {} filters{}{}", filter_action, filters_created, skip_msg, archive_msg));
+            filter_bar.finish_with_message(format!("{} {} filters{}{}", filter_action, filters_created, skip_msg, retroactive_msg));
             state.checkpoint(&cli.state_file).await?;
 
-            (filters_created, planned_filters)
+            (filters_created, planned_filters, total_labeled)
         } else {
-            (0, Vec::new())
+            (0, Vec::new(), 0)
         };
 
-        // Step 10: Apply labels to existing messages
+        // Step 10: Labels already applied during filter creation (using Gmail query search)
+        // This catches ALL matching emails, not just recent ones
         state.phase = ProcessingPhase::ApplyingLabels;
-        state.save(&cli.state_file).await?;
-
-        let apply_bar = reporter.add_progress_bar(
-            classifications.len() as u64,
-            "Applying labels to messages...",
-        );
-
-        let mut messages_modified = 0;
-        let mut messages_archived = 0;
-
-        for (msg, classification) in &classifications {
-            // Get label ID for this category
-            let label_name = format!("{:?}", classification.category);
-
-            if !dry_run {
-                if let Ok(label_id) = label_manager.get_or_create_label(&label_name).await {
-                    client.apply_label(&msg.id, &label_id).await?;
-                    messages_modified += 1;
-
-                    if classification.should_archive {
-                        messages_archived += 1;
-                    }
-                }
-            } else {
-                tracing::info!(
-                    "[DRY RUN] Would label message {} with {}",
-                    msg.id,
-                    label_name
-                );
-                messages_modified += 1;
-                if classification.should_archive {
-                    messages_archived += 1;
-                }
-            }
-
-            apply_bar.inc(1);
-        }
-
-        apply_bar.finish_with_message(format!(
-            "Applied labels to {} messages",
-            messages_modified
-        ));
-
-        state.messages_modified = messages_modified;
+        state.messages_modified = total_labeled_count;
         state.phase = ProcessingPhase::Complete;
         state.completed = true;
         state.save(&cli.state_file).await?;
@@ -974,14 +952,29 @@ pub async fn run_pipeline(
             }
         }
 
+        // Calculate message counts for report
+        let (messages_labeled, messages_archived_count) = if dry_run {
+            // For dry run, estimate from classifications
+            let to_label = classifications.iter()
+                .filter(|(_, c)| !c.suggested_label.is_empty())
+                .count();
+            let to_archive = classifications.iter()
+                .filter(|(_, c)| c.should_archive)
+                .count();
+            (to_label, to_archive)
+        } else {
+            // Use actual counts from filter creation
+            (total_labeled_count, state.messages_modified) // total_labeled_count tracks both
+        };
+
         // Build planned changes for dry run mode
         let planned_changes = if dry_run {
             Some(PlannedChanges {
                 new_labels: planned_labels.clone(),
                 existing_labels: existing_label_names.clone(),
                 filters: planned_filters,
-                messages_to_label: messages_modified,
-                messages_to_archive: messages_archived,
+                messages_to_label: messages_labeled,
+                messages_to_archive: messages_archived_count,
             })
         } else {
             None
@@ -996,8 +989,8 @@ pub async fn run_pipeline(
             emails_classified: state.messages_classified,
             labels_created: if dry_run { labels_created } else { state.labels_created.len() },
             filters_created: if dry_run { filters_created } else { state.filters_created.len() },
-            messages_modified,
-            messages_archived,
+            messages_modified: messages_labeled,
+            messages_archived: messages_archived_count,
             classification_breakdown,
             top_senders,
             category_examples,

@@ -370,19 +370,17 @@ impl FilterManager {
             );
 
             if !dry_run && !message_ids.is_empty() {
-                // Apply label to each matching message
-                for message_id in &message_ids {
-                    match self
-                        .client
-                        .apply_label(message_id, &filter.target_label_id)
-                        .await
-                    {
-                        Ok(_) => {
-                            debug!("Applied label to message {}", message_id);
-                        }
-                        Err(e) => {
-                            warn!("Failed to apply label to message {}: {}", message_id, e);
-                        }
+                // Apply label to all matching messages in batch
+                match self
+                    .client
+                    .batch_add_label(&message_ids, &filter.target_label_id)
+                    .await
+                {
+                    Ok(count) => {
+                        debug!("Applied label to {} messages for filter '{}'", count, filter.name);
+                    }
+                    Err(e) => {
+                        warn!("Failed to batch apply label for filter '{}': {}", filter.name, e);
                     }
                 }
             }
@@ -854,6 +852,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -909,6 +909,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -948,6 +950,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -993,6 +997,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -1052,6 +1058,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -1119,6 +1127,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -1182,6 +1192,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -1251,6 +1263,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -1302,6 +1316,8 @@ mod tests {
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }

@@ -111,6 +111,20 @@ pub trait GmailClient: Send + Sync {
     /// Returns the number of messages successfully modified
     async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
 
+    /// Add a label to multiple messages in batch (up to 1000 per call)
+    /// Returns the number of messages successfully modified
+    async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+
+    /// Batch modify labels on multiple messages (up to 1000 per call)
+    /// Can add and remove labels in a single API call
+    /// Returns the number of messages successfully modified
+    async fn batch_modify_labels(
+        &self,
+        message_ids: &[String],
+        add_label_ids: &[String],
+        remove_label_ids: &[String],
+    ) -> Result<usize>;
+
     /// Fetch multiple messages concurrently
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>>;
 
@@ -591,6 +605,79 @@ impl GmailClient for ProductionGmailClient {
         Ok(total_modified)
     }
 
+    async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize> {
+        if message_ids.is_empty() {
+            return Ok(0);
+        }
+
+        const BATCH_SIZE: usize = 1000;
+        let mut total_modified = 0;
+
+        for chunk in message_ids.chunks(BATCH_SIZE) {
+            let request = BatchModifyMessagesRequest {
+                ids: Some(chunk.to_vec()),
+                add_label_ids: Some(vec![label_id.to_string()]),
+                remove_label_ids: None,
+            };
+
+            self.hub
+                .users()
+                .messages_batch_modify(request, "me")
+                .add_scope("https://www.googleapis.com/auth/gmail.modify")
+                .doit()
+                .await?;
+
+            total_modified += chunk.len();
+        }
+
+        Ok(total_modified)
+    }
+
+    async fn batch_modify_labels(
+        &self,
+        message_ids: &[String],
+        add_label_ids: &[String],
+        remove_label_ids: &[String],
+    ) -> Result<usize> {
+        if message_ids.is_empty() {
+            return Ok(0);
+        }
+
+        const BATCH_SIZE: usize = 1000;
+        let mut total_modified = 0;
+
+        let add_labels = if add_label_ids.is_empty() {
+            None
+        } else {
+            Some(add_label_ids.to_vec())
+        };
+
+        let remove_labels = if remove_label_ids.is_empty() {
+            None
+        } else {
+            Some(remove_label_ids.to_vec())
+        };
+
+        for chunk in message_ids.chunks(BATCH_SIZE) {
+            let request = BatchModifyMessagesRequest {
+                ids: Some(chunk.to_vec()),
+                add_label_ids: add_labels.clone(),
+                remove_label_ids: remove_labels.clone(),
+            };
+
+            self.hub
+                .users()
+                .messages_batch_modify(request, "me")
+                .add_scope("https://www.googleapis.com/auth/gmail.modify")
+                .doit()
+                .await?;
+
+            total_modified += chunk.len();
+        }
+
+        Ok(total_modified)
+    }
+
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>> {
         // Note: fetch_single_with_retry already handles rate limiting via semaphore
         // buffer_unordered limits concurrency to 40 parallel requests
@@ -674,6 +761,19 @@ impl GmailClient for Arc<ProductionGmailClient> {
 
     async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize> {
         self.as_ref().batch_remove_label(message_ids, label_id).await
+    }
+
+    async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize> {
+        self.as_ref().batch_add_label(message_ids, label_id).await
+    }
+
+    async fn batch_modify_labels(
+        &self,
+        message_ids: &[String],
+        add_label_ids: &[String],
+        remove_label_ids: &[String],
+    ) -> Result<usize> {
+        self.as_ref().batch_modify_labels(message_ids, add_label_ids, remove_label_ids).await
     }
 
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>> {
