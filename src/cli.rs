@@ -567,10 +567,20 @@ pub async fn run_pipeline(
         let label_spinner = reporter.add_spinner("Creating Gmail labels...");
         let mut label_manager = LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
 
-        // Collect unique labels from suggested_label field (includes user's review choices)
+        // Only collect labels from domains that meet the threshold (will have filters)
+        let threshold = config.classification.minimum_emails_for_label;
+        let domains_above_threshold: std::collections::HashSet<String> = domain_counts
+            .iter()
+            .filter(|(_, msgs)| msgs.len() >= threshold)
+            .map(|(domain, _)| domain.clone())
+            .collect();
+
+        // Collect unique labels only for domains that will have filters
         let mut unique_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (_, classification) in &classifications {
-            if !classification.suggested_label.is_empty() {
+        for (msg, classification) in &classifications {
+            if !classification.suggested_label.is_empty()
+                && domains_above_threshold.contains(&msg.sender_domain)
+            {
                 unique_labels.insert(classification.suggested_label.clone());
             }
         }
