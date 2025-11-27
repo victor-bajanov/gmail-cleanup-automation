@@ -217,8 +217,8 @@ impl ReviewSession {
             }
 
             out!("{}", mid);
-            out!("{}", line("[Y] Create filter  [N] Mark needs-review  [S] Skip"));
-            out!("{}", line("[A] Toggle archive [L] Change label       [?] Help"));
+            out!("{}", line("[Y] Create filter  [N] No filter  [S] Skip for now"));
+            out!("{}", line("[A] Toggle archive [L] Change label         [?] Help"));
         }
 
         out!("{}", bottom);
@@ -317,10 +317,11 @@ impl ReviewSession {
                 decision: self.decisions.get(&cluster.sender_domain).cloned(),
             });
 
+            // Reject = no filter, no label - just skip this domain
             let decision = ClusterDecision {
                 sender_domain: cluster.sender_domain.clone(),
                 message_ids: cluster.message_ids.clone(),
-                label: "needs-review".to_string(),
+                label: String::new(), // No label
                 should_archive: false,
                 action: DecisionAction::Reject,
             };
@@ -476,7 +477,7 @@ impl ReviewSession {
         sep();
         line("DECISIONS:");
         line("  Y / Enter  CREATE FILTER with shown label & archive setting");
-        line("  N          NO FILTER - just tag emails 'needs-review'");
+        line("  N          NO FILTER - leave these emails alone");
         line("  S          SKIP - don't decide now, come back later");
         sep();
         line("EDIT BEFORE ACCEPTING:");
@@ -494,7 +495,7 @@ impl ReviewSession {
         line("  Y creates: Gmail filter matching from:(*@domain)");
         line("             → applies your chosen label");
         line("             → optionally archives matching emails");
-        line("  N marks:   Emails tagged 'needs-review' for manual sorting");
+        line("  N ignores: No filter or label created for this domain");
         println!("╚{}╝", "═".repeat(W + 2));
         println!();
         println!("Press any key to continue...");
