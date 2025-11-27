@@ -111,6 +111,15 @@ pub enum Commands {
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::time::Duration;
 
+/// Truncate a string to max_len characters, adding "..." if truncated
+fn truncate_string(s: &str, max_len: usize) -> String {
+    if s.chars().count() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", s.chars().take(max_len.saturating_sub(3)).collect::<String>())
+    }
+}
+
 /// Progress reporter using indicatif
 pub struct ProgressReporter {
     multi: MultiProgress,
@@ -397,9 +406,9 @@ use crate::classifier::EmailClassifier;
 use crate::config::Config;
 use crate::error::{GmailError, Result};
 use crate::filter_manager::FilterManager;
-use crate::interactive::{create_clusters, DecisionAction, ReviewSession};
+use crate::interactive::{create_clusters, ClusterDecision, DecisionAction, ReviewSession};
 use crate::label_manager::LabelManager;
-use crate::models::MessageMetadata;
+use crate::models::{FilterRule, MessageMetadata};
 use crate::state::{ProcessingPhase, ProcessingState};
 use chrono::Utc;
 use futures::StreamExt;
@@ -437,7 +446,7 @@ pub async fn run_pipeline(
     review: bool,
     resume: bool,
 ) -> Result<Report> {
-    let reporter = ProgressReporter::new();
+    let mut reporter = ProgressReporter::new();
     let started_at = Utc::now();
 
     // Step 1: Load configuration
@@ -521,6 +530,9 @@ pub async fn run_pipeline(
         state.checkpoint(&cli.state_file).await?;
 
         // Step 7: Interactive review (if enabled)
+        // Track review decisions for filter generation
+        let mut review_decisions: Vec<ClusterDecision> = Vec::new();
+
         if review {
             let clusters = create_clusters(
                 &messages,
@@ -529,6 +541,9 @@ pub async fn run_pipeline(
             );
 
             if !clusters.is_empty() {
+                // Clear MultiProgress before entering interactive mode to prevent redraw issues
+                drop(reporter);
+
                 println!("\nEntering interactive review mode...");
                 println!("Found {} clusters to review (minimum {} emails each)\n",
                     clusters.len(),
@@ -536,6 +551,9 @@ pub async fn run_pipeline(
 
                 let mut session = ReviewSession::new(clusters);
                 let decisions = session.run()?;
+
+                // Create new reporter after interactive mode
+                reporter = ProgressReporter::new();
 
                 // Apply user decisions to classifications
                 for decision in &decisions {
@@ -552,7 +570,12 @@ pub async fn run_pipeline(
                     }
                 }
 
-                println!("\nReview complete. Applied {} decisions.", decisions.len());
+                // Store decisions for filter generation (only accepted ones)
+                review_decisions = decisions.into_iter()
+                    .filter(|d| matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_)))
+                    .collect();
+
+                println!("\nReview complete. {} filters will be created.", review_decisions.len());
             } else {
                 println!("\nNo clusters meet minimum size threshold for review.");
             }
@@ -675,12 +698,48 @@ pub async fn run_pipeline(
                 }
             }
 
-            let filter_spinner = reporter.add_spinner("Generating and creating filter rules...");
             let filter_manager = FilterManager::new(Box::new(client.clone()));
 
-            let filters = filter_manager.generate_filters_from_classifications(
-                &classifications,
-                config.classification.minimum_emails_for_label,
+            // Generate filters: from review decisions if available, otherwise from classifications
+            let filters: Vec<FilterRule> = if !review_decisions.is_empty() {
+                // Convert user decisions directly to filter rules (respects Accept/Reject choices)
+                review_decisions.iter().map(|d| {
+                    let from_pattern = if d.is_specific_sender {
+                        Some(d.sender_email.clone())
+                    } else {
+                        Some(format!("*@{}", d.sender_domain))
+                    };
+
+                    let filter_name = if d.is_specific_sender {
+                        format!("{} → {}", d.sender_email, d.label)
+                    } else {
+                        format!("{} → {}", d.sender_domain, d.label)
+                    };
+
+                    FilterRule {
+                        id: None,
+                        name: filter_name,
+                        from_pattern,
+                        is_specific_sender: d.is_specific_sender,
+                        excluded_senders: d.excluded_senders.clone(),
+                        subject_keywords: vec![], // No subject keywords from decisions
+                        target_label_id: d.label.clone(),
+                        should_archive: d.should_archive,
+                        estimated_matches: d.message_ids.len(),
+                    }
+                }).collect()
+            } else {
+                // No review, generate from classifications
+                filter_manager.generate_filters_from_classifications(
+                    &classifications,
+                    config.classification.minimum_emails_for_label,
+                )
+            };
+
+            // Use progress bar instead of spinner since we're iterating
+            let filter_bar = reporter.add_progress_bar(
+                filters.len() as u64,
+                if dry_run { "Validating filter rules..." } else { "Creating filter rules..." }
             );
 
             // Collect planned filters for dry run report
@@ -689,6 +748,7 @@ pub async fn run_pipeline(
             let mut total_archived = 0;
 
             for filter in &filters {
+                filter_bar.set_message(format!("Processing: {}", truncate_string(&filter.name, 40)));
                 // Build the Gmail query
                 let gmail_query = filter_manager.build_gmail_query(filter);
 
@@ -740,6 +800,7 @@ pub async fn run_pipeline(
                     });
                     filters_created += 1;
                 }
+                filter_bar.inc(1);
             }
 
             let filter_action = if dry_run { "Would create" } else { "Created" };
@@ -748,7 +809,7 @@ pub async fn run_pipeline(
             } else {
                 String::new()
             };
-            reporter.finish_spinner(&filter_spinner, &format!("{} {} filters{}", filter_action, filters_created, archive_msg));
+            filter_bar.finish_with_message(format!("{} {} filters{}", filter_action, filters_created, archive_msg));
             state.checkpoint(&cli.state_file).await?;
 
             (filters_created, planned_filters)
