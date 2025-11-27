@@ -1,0 +1,137 @@
+# Gmail Automation System Configuration
+# Copy this file to config.toml and customize as needed
+#
+# All settings shown here are the defaults. You can omit any setting
+# to use its default value.
+
+[scan]
+# Number of days to scan back for email analysis (1-365)
+# Default: 90 (approximately 3 months)
+#
+# Examples:
+#   30  = Last month
+#   90  = Last 3 months (recommended for initial setup)
+#   180 = Last 6 months
+#   365 = Last year
+period_days = 90
+
+# Maximum concurrent API requests (1-50)
+# Higher values = faster processing but risk hitting rate limits
+# Gmail API limit: 250 quota units/second
+# Each message.get = 5 units, so ~40 concurrent is safe
+# Default: 40
+#
+# Adjust based on your needs:
+#   20 = Conservative (100 units/sec)
+#   40 = Recommended (200 units/sec)
+#   50 = Maximum safe (250 units/sec)
+max_concurrent_requests = 40
+
+[classification]
+# Classification mode: "rules", "ml", or "hybrid"
+# Default: "rules"
+#
+# - rules:  Fast, deterministic pattern matching (no API costs)
+# - ml:     Uses LLM for intelligent classification (requires API key)
+# - hybrid: Rules first, ML for uncertain cases (best accuracy)
+mode = "rules"
+
+# LLM provider: "openai", "anthropic", or "anthropic-agents"
+# Only used when mode is "ml" or "hybrid"
+# Default: "openai"
+#
+# Requires environment variable:
+# - openai:            OPENAI_API_KEY
+# - anthropic:         ANTHROPIC_API_KEY
+# - anthropic-agents:  ANTHROPIC_API_KEY (requires --features claude-agents)
+llm_provider = "openai"
+
+# Minimum number of emails from a sender to create a dedicated label
+# Lower values = more labels, higher values = fewer labels
+# Default: 5
+#
+# Recommendations:
+#   3  = More granular labeling (may create 50+ labels)
+#   5  = Balanced (typically 20-40 labels)
+#   10 = Consolidated (typically 10-20 labels)
+minimum_emails_for_label = 5
+
+# Claude Agents SDK configuration (optional)
+# Requires building with: cargo build --features claude-agents
+[classification.claude_agents]
+# Enable Claude Agents SDK for advanced pattern analysis
+# Default: false
+enabled = false
+
+# Use multi-step reasoning for complex email patterns
+# Default: true
+use_advanced_analysis = true
+
+# Maximum iterations for pattern detection
+# Default: 3
+max_iterations = 3
+
+[labels]
+# Prefix for all auto-created labels
+# Creates hierarchy like "AutoManaged/Newsletters/Tech"
+# Cannot be empty or contain '/' character
+# Default: "AutoManaged"
+prefix = "AutoManaged"
+
+# Categories to automatically archive (remove from inbox)
+# These emails will still be accessible via their labels
+# Default: ["newsletters", "notifications", "marketing"]
+#
+# Recommended categories to archive:
+# - newsletters:   Regular email digests and updates
+# - notifications: Service notifications and alerts
+# - marketing:     Promotional emails and offers
+# - social:        Social media notifications (optional)
+# - receipts:      Purchase confirmations (optional)
+auto_archive_categories = [
+    "newsletters",
+    "notifications",
+    "marketing"
+]
+
+[execution]
+# Dry run mode: analyze and report but don't modify anything
+# Useful for testing configuration before making actual changes
+# Default: false
+#
+# When enabled:
+# - Scans and classifies emails
+# - Generates labels and filters
+# - Shows what WOULD be changed
+# - Does NOT modify Gmail account
+dry_run = false
+
+# ==============================================================================
+# Example Configurations for Different Use Cases
+# ==============================================================================
+
+# --- Quick scan of recent emails ---
+# [scan]
+# period_days = 30
+# max_concurrent_requests = 30
+
+# --- Aggressive labeling with ML assistance ---
+# [classification]
+# mode = "hybrid"
+# llm_provider = "anthropic"
+# minimum_emails_for_label = 3
+
+# --- Custom label structure with more archiving ---
+# [labels]
+# prefix = "Automated"
+# auto_archive_categories = [
+#     "newsletters",
+#     "notifications",
+#     "marketing",
+#     "social",
+#     "receipts"
+# ]
+
+# --- Safe testing mode (no changes to Gmail) ---
+# [execution]
+# dry_run = true

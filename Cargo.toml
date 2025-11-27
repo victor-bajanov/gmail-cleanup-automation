@@ -1,0 +1,82 @@
+[package]
+name = "gmail-automation"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+
+[dependencies]
+# Gmail API
+google-gmail1 = "6.0.0"
+yup-oauth2 = { version = "12.1.0", default-features = false, features = ["hyper-rustls", "aws-lc-rs"] }
+
+# Async runtime
+tokio = { version = "1.47", features = ["full"] }
+futures = "0.3"
+futures-buffered = "0.2"
+async-stream = "0.3"
+
+# HTTP client (required by google-gmail1)
+hyper = "1"
+hyper-rustls = { version = "0.27", features = ["http2", "native-tokio", "aws-lc-rs"] }
+hyper-util = "0.1"
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+backoff = { version = "0.4", features = ["tokio"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+indicatif = "0.17"
+
+# Regex and patterns
+regex = "1.10"
+once_cell = "1.19"
+
+# Caching
+lru = "0.12"
+
+# Database (optional)
+rusqlite = { version = "0.30", features = ["bundled"], optional = true }
+
+# ML providers (optional)
+async-openai = { version = "0.17", optional = true }
+
+# Python bridge for Claude Agents SDK (optional)
+pyo3 = { version = "0.20", features = ["auto-initialize"], optional = true }
+
+# Base64 encoding
+base64 = "0.22"
+
+# Async trait support
+async-trait = "0.1"
+
+# UUID generation for state management
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = "0.13"
+wiremock = "0.6"
+proptest = "1.8"
+tempfile = "3"
+
+[features]
+default = ["cli"]
+cli = []
+cache = ["rusqlite"]
+ml = ["async-openai"]
+claude-agents = ["pyo3", "ml"]
