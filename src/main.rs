@@ -3,8 +3,76 @@ use clap::Parser;
 use gmail_automation::cli::{self, Cli, Commands};
 use gmail_automation::config::Config;
 use gmail_automation::error::GmailError;
+use indicatif::MultiProgress;
+use std::io::Write;
 use std::process;
+use std::sync::Arc;
+use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::EnvFilter;
+
+/// A writer that prints through MultiProgress to avoid progress bar conflicts
+#[derive(Clone)]
+struct MultiProgressWriter {
+    multi: Arc<MultiProgress>,
+    buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl MultiProgressWriter {
+    fn new(multi: Arc<MultiProgress>) -> Self {
+        Self {
+            multi,
+            buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl Write for MultiProgressWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut buffer = self.buffer.lock().unwrap();
+        buffer.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut buffer = self.buffer.lock().unwrap();
+        if !buffer.is_empty() {
+            let msg = String::from_utf8_lossy(&buffer);
+            // Remove trailing newline for cleaner output
+            let msg = msg.trim_end_matches('\n');
+            if !msg.is_empty() {
+                let _ = self.multi.println(msg);
+            }
+            buffer.clear();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for MultiProgressWriter {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
+/// MakeWriter implementation for tracing
+#[derive(Clone)]
+struct MultiProgressMakeWriter {
+    multi: Arc<MultiProgress>,
+}
+
+impl MultiProgressMakeWriter {
+    fn new(multi: Arc<MultiProgress>) -> Self {
+        Self { multi }
+    }
+}
+
+impl<'a> MakeWriter<'a> for MultiProgressMakeWriter {
+    type Writer = MultiProgressWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        MultiProgressWriter::new(Arc::clone(&self.multi))
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -35,8 +103,14 @@ async fn run() -> Result<()> {
             .unwrap_or_else(|_| EnvFilter::new("gmail_automation=info,warn,error"))
     };
 
+    // Create shared MultiProgress for coordinated progress bar + logging
+    let multi_progress = Arc::new(MultiProgress::new());
+    let make_writer = MultiProgressMakeWriter::new(Arc::clone(&multi_progress));
+
+    // Set up tracing with MultiProgress writer - logs will print above progress bars
     tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_writer(make_writer)
         .with_target(false)
         .with_thread_ids(false)
         .with_file(false)
@@ -101,9 +175,9 @@ async fn run() -> Result<()> {
                 println!("Running with INTERACTIVE REVIEW mode enabled");
             }
 
-            // Run the complete pipeline
+            // Run the complete pipeline (clone the inner MultiProgress, not the Arc)
             let report =
-                cli::run_pipeline(&cli, dry_run, labels_only, interactive, review, resume).await?;
+                cli::run_pipeline(&cli, dry_run, labels_only, interactive, review, resume, (*multi_progress).clone()).await?;
 
             // Display summary
             println!("\n========================================");

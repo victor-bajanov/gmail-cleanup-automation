@@ -129,6 +129,11 @@ pub struct ProgressReporter {
 
 impl ProgressReporter {
     pub fn new() -> Self {
+        Self::with_multi_progress(MultiProgress::new())
+    }
+
+    /// Create a ProgressReporter with a shared MultiProgress (for tracing-indicatif integration)
+    pub fn with_multi_progress(multi: MultiProgress) -> Self {
         // Use {elapsed} for human-readable format (e.g., "1s", "234ms")
         let spinner_style = ProgressStyle::default_spinner()
             .template("{spinner:.green} [{elapsed:>6}] {msg}")
@@ -141,10 +146,15 @@ impl ProgressReporter {
             .progress_chars("##-");
 
         Self {
-            multi: MultiProgress::new(),
+            multi,
             spinner_style,
             bar_style,
         }
+    }
+
+    /// Get a clone of the underlying MultiProgress for reuse
+    pub fn multi_progress(&self) -> MultiProgress {
+        self.multi.clone()
     }
 
     pub fn add_spinner(&self, msg: &str) -> ProgressBar {
@@ -445,8 +455,9 @@ pub async fn run_pipeline(
     interactive: bool,
     review: bool,
     resume: bool,
+    multi_progress: MultiProgress,
 ) -> Result<Report> {
-    let mut reporter = ProgressReporter::new();
+    let mut reporter = ProgressReporter::with_multi_progress(multi_progress);
     let started_at = Utc::now();
 
     // Step 1: Load configuration
@@ -541,6 +552,8 @@ pub async fn run_pipeline(
             );
 
             if !clusters.is_empty() {
+                // Save the MultiProgress before dropping reporter (for reuse after interactive mode)
+                let multi = reporter.multi_progress();
                 // Clear MultiProgress before entering interactive mode to prevent redraw issues
                 drop(reporter);
 
@@ -552,8 +565,8 @@ pub async fn run_pipeline(
                 let mut session = ReviewSession::new(clusters);
                 let decisions = session.run()?;
 
-                // Create new reporter after interactive mode
-                reporter = ProgressReporter::new();
+                // Create new reporter after interactive mode (reuse same MultiProgress for tracing coordination)
+                reporter = ProgressReporter::with_multi_progress(multi);
 
                 // Apply user decisions to classifications
                 for decision in &decisions {
