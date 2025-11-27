@@ -154,12 +154,13 @@ static KNOWN_SERVICES: Lazy<HashMap<&'static str, ServiceInfo>> = Lazy::new(|| {
 });
 
 pub struct EmailClassifier {
-    // Configuration can be added here
+    /// Label prefix for generated labels (e.g., "auto" -> "auto/receipts/amazon")
+    label_prefix: String,
 }
 
 impl EmailClassifier {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(label_prefix: String) -> Self {
+        Self { label_prefix }
     }
 
     /// Classify an email using rule-based logic
@@ -371,7 +372,7 @@ impl EmailClassifier {
     fn generate_label(&self, message: &MessageMetadata, category: &EmailCategory) -> String {
         // Check for known services first
         if let Some(service_info) = KNOWN_SERVICES.get(message.sender_domain.as_str()) {
-            return format!("auto/{}", service_info.name);
+            return format!("{}/{}", self.label_prefix, service_info.name);
         }
 
         // Domain clustering logic
@@ -394,10 +395,10 @@ impl EmailClassifier {
 
         // Create hierarchical label
         if main_domain.is_empty() {
-            format!("auto/{}", category_prefix)
+            format!("{}/{}", self.label_prefix, category_prefix)
         } else {
             let domain_label = sanitize_label_name(&main_domain);
-            format!("auto/{}/{}", category_prefix, domain_label)
+            format!("{}/{}/{}", self.label_prefix, category_prefix, domain_label)
         }
     }
 
@@ -560,7 +561,7 @@ impl EmailClassifier {
 
 impl Default for EmailClassifier {
     fn default() -> Self {
-        Self::new()
+        Self::new("auto".to_string())
     }
 }
 
@@ -710,7 +711,7 @@ mod tests {
 
     #[test]
     fn test_automated_sender_detection() {
-        let classifier = EmailClassifier::new();
+        let classifier = EmailClassifier::new("auto".to_string());
 
         let msg1 = create_test_message("noreply@example.com", "Test");
         assert!(classifier.is_automated_sender(&msg1));
@@ -724,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_category_detection() {
-        let classifier = EmailClassifier::new();
+        let classifier = EmailClassifier::new("auto".to_string());
 
         let receipt = create_test_message("orders@amazon.com", "Your Amazon Order Receipt");
         assert_eq!(classifier.detect_category(&receipt), EmailCategory::Receipt);
@@ -738,7 +739,7 @@ mod tests {
 
     #[test]
     fn test_priority_score() {
-        let classifier = EmailClassifier::new();
+        let classifier = EmailClassifier::new("auto".to_string());
 
         let financial = create_test_message("billing@bank.com", "Important: Payment Due");
         let score = classifier.calculate_priority_score(&financial, &EmailCategory::Financial);
@@ -773,7 +774,7 @@ mod tests {
 
     #[test]
     fn test_classification() {
-        let classifier = EmailClassifier::new();
+        let classifier = EmailClassifier::new("auto".to_string());
 
         let msg = create_test_message("noreply@github.com", "Pull Request Notification");
         let classification = classifier.classify(&msg).unwrap();
@@ -785,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_domain_clustering() {
-        let classifier = EmailClassifier::new();
+        let classifier = EmailClassifier::new("auto".to_string());
 
         let messages = vec![
             create_test_message("user1@example.com", "Test 1"),

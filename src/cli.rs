@@ -506,7 +506,7 @@ pub async fn run_pipeline(
         state.save(&cli.state_file).await?;
 
         let classify_bar = reporter.add_progress_bar(messages.len() as u64, "Classifying emails...");
-        let classifier = EmailClassifier::new();
+        let classifier = EmailClassifier::new(config.labels.prefix.clone());
 
         let mut classifications = Vec::new();
         for msg in &messages {

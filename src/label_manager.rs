@@ -40,12 +40,13 @@ impl LabelManager {
     }
 
     /// Returns the list of existing labels that match the proposed labels
+    /// Note: proposed labels should already include the full path (e.g., "auto/receipts/amazon")
     pub fn find_existing_labels(&self, proposed: &[String]) -> Vec<String> {
         proposed
             .iter()
             .filter(|name| {
-                let full_name = format!("{}/{}", self.label_prefix, name);
-                let sanitized = self.sanitize_label_name(&full_name).unwrap_or_default();
+                // Labels already have full path, just sanitize for case normalization
+                let sanitized = self.sanitize_label_name(name).unwrap_or_default();
                 self.label_cache.contains_key(&sanitized)
             })
             .cloned()
@@ -53,12 +54,13 @@ impl LabelManager {
     }
 
     /// Returns labels that would be newly created (don't exist yet)
+    /// Note: proposed labels should already include the full path (e.g., "auto/receipts/amazon")
     pub fn find_new_labels(&self, proposed: &[String]) -> Vec<String> {
         proposed
             .iter()
             .filter(|name| {
-                let full_name = format!("{}/{}", self.label_prefix, name);
-                let sanitized = self.sanitize_label_name(&full_name).unwrap_or_default();
+                // Labels already have full path, just sanitize for case normalization
+                let sanitized = self.sanitize_label_name(name).unwrap_or_default();
                 !self.label_cache.contains_key(&sanitized)
             })
             .cloned()
