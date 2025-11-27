@@ -135,6 +135,39 @@ impl LabelManager {
         self.create_label(name).await
     }
 
+    /// Creates a label with the exact name provided (no prefix added)
+    /// Use this when the label name already has the full path
+    pub async fn create_label_direct(&mut self, full_name: &str) -> Result<String> {
+        // Check if label already exists in cache
+        if let Some(id) = self.label_cache.get(full_name) {
+            debug!("Label '{}' already exists in cache", full_name);
+            return Ok(id.clone());
+        }
+
+        // Create parent labels if this is a hierarchical label
+        if full_name.contains('/') {
+            self.ensure_parent_labels(full_name).await?;
+        }
+
+        info!("Creating label: {}", full_name);
+
+        // Create the label via Gmail API
+        let label_id = self
+            .client
+            .create_label(full_name)
+            .await
+            .map_err(|e| {
+                GmailError::ApiError(format!("Failed to create label '{}': {}", full_name, e))
+            })?;
+
+        // Track the created label
+        self.label_cache.insert(full_name.to_string(), label_id.clone());
+        self.created_labels.push(label_id.clone());
+
+        info!("Successfully created label '{}' with ID: {}", full_name, label_id);
+        Ok(label_id)
+    }
+
     /// Ensures all parent labels exist in the hierarchy
     ///
     /// For example, if creating "AutoManaged/Newsletters/Tech",

@@ -622,28 +622,31 @@ pub async fn run_pipeline(
         let label_spinner = reporter.add_spinner("Creating Gmail labels...");
 
         // Create labels (or collect planned labels in dry run mode)
+        // Also build a map from label name -> label ID for filter creation
         let mut labels_created = 0;
         let mut labels_skipped = 0;
         let mut planned_labels: Vec<String> = Vec::new();
         let mut existing_label_names: Vec<String> = Vec::new();
+        let mut label_name_to_id: HashMap<String, String> = HashMap::new();
 
         for label in &unique_labels {
-            // Check if label already exists
-            let full_name = format!("{}/{}", config.labels.prefix, label);
-            let sanitized = label_manager.sanitize_label_name(&full_name).unwrap_or_default();
-            let label_exists = label_manager.get_label_cache().contains_key(&sanitized);
+            // The label from suggested_label already has full path like "auto/other/domain"
+            // We need to create it directly without adding another prefix
+            let sanitized = label_manager.sanitize_label_name(label).unwrap_or_default();
 
-            if label_exists {
+            // Check if label already exists in cache
+            if let Some(existing_id) = label_manager.get_label_cache().get(&sanitized) {
                 labels_skipped += 1;
                 existing_label_names.push(label.clone());
+                label_name_to_id.insert(label.clone(), existing_id.clone());
                 continue;
             }
 
             if !dry_run {
-                // Extract the category part after the prefix for label creation
-                let label_name = label.split('/').last().unwrap_or(label);
-                let label_id = label_manager.create_label(label_name).await?;
-                state.labels_created.push(label_id);
+                // Create the label directly (it already has the full path)
+                let label_id = label_manager.create_label_direct(&sanitized).await?;
+                state.labels_created.push(label_id.clone());
+                label_name_to_id.insert(label.clone(), label_id);
                 labels_created += 1;
             } else {
                 planned_labels.push(label.clone());
@@ -690,9 +693,19 @@ pub async fn run_pipeline(
                 let gmail_query = filter_manager.build_gmail_query(filter);
 
                 if !dry_run {
+                    // Look up the actual label ID from the label name
+                    let label_id = label_name_to_id.get(&filter.target_label_id)
+                        .ok_or_else(|| GmailError::LabelError(
+                            format!("Label ID not found for label: {}", filter.target_label_id)
+                        ))?;
+
+                    // Create a modified filter with the actual label ID
+                    let mut filter_with_id = filter.clone();
+                    filter_with_id.target_label_id = label_id.clone();
+
                     // Create the filter
                     let mut fm = FilterManager::new(Box::new(client.clone()));
-                    let filter_id = fm.create_filter(filter).await?;
+                    let filter_id = fm.create_filter(&filter_with_id).await?;
                     state.filters_created.push(filter_id);
                     filters_created += 1;
 
