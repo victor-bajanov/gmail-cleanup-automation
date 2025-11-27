@@ -1,6 +1,7 @@
 //! Command-line interface
 
 use clap::{Parser, Subcommand};
+use tracing::{info, warn};
 use crate::client::{GmailClient, ProductionGmailClient};
 use std::path::PathBuf;
 
@@ -177,12 +178,17 @@ pub struct PlannedFilter {
     pub should_archive: bool,
     pub estimated_matches: usize,
     pub gmail_query: String,
+    /// Actual emails that match this filter query (from live API query)
+    pub actual_matches: usize,
 }
 
 /// Planned changes for dry run mode
 #[derive(Debug, Clone, Default)]
 pub struct PlannedChanges {
-    pub labels: Vec<String>,
+    /// Labels that would be newly created
+    pub new_labels: Vec<String>,
+    /// Labels that already exist (won't be created)
+    pub existing_labels: Vec<String>,
     pub filters: Vec<PlannedFilter>,
     pub messages_to_label: usize,
     pub messages_to_archive: usize,
@@ -243,34 +249,53 @@ impl Report {
             md.push_str("## Planned Changes\n\n");
             md.push_str("The following changes would be made when running without `--dry-run`:\n\n");
 
-            // Labels section
-            md.push_str("### Labels to Create\n\n");
-            if planned.labels.is_empty() {
-                md.push_str("_No new labels would be created._\n\n");
-            } else {
-                for label in &planned.labels {
-                    md.push_str(&format!("- `{}`\n", label));
+            // Labels section - show new vs existing
+            md.push_str("### Labels\n\n");
+
+            if !planned.existing_labels.is_empty() {
+                md.push_str("**Already exist (will be reused):**\n");
+                for label in &planned.existing_labels {
+                    md.push_str(&format!("- ✓ `{}`\n", label));
                 }
-                md.push_str(&format!("\n**Total: {} labels**\n\n", planned.labels.len()));
+                md.push_str("\n");
             }
 
-            // Filters section
+            if planned.new_labels.is_empty() {
+                md.push_str("**To create:** _No new labels needed._\n\n");
+            } else {
+                md.push_str("**To create:**\n");
+                for label in &planned.new_labels {
+                    md.push_str(&format!("- + `{}`\n", label));
+                }
+                md.push_str(&format!("\n**Total: {} new labels** ({} existing)\n\n",
+                    planned.new_labels.len(), planned.existing_labels.len()));
+            }
+
+            // Filters section - show actual match counts from live query
             md.push_str("### Filters to Create\n\n");
             if planned.filters.is_empty() {
                 md.push_str("_No filters would be created._\n\n");
             } else {
-                md.push_str("| Filter Name | Gmail Query | Archive | Matches |\n");
-                md.push_str("|-------------|-------------|---------|----------|\n");
+                md.push_str("| Filter Name | Gmail Query | Archive | Emails Matched |\n");
+                md.push_str("|-------------|-------------|---------|----------------|\n");
+                let mut total_to_archive = 0;
                 for filter in &planned.filters {
                     let archive_str = if filter.should_archive { "Yes" } else { "No" };
+                    if filter.should_archive {
+                        total_to_archive += filter.actual_matches;
+                    }
                     // Escape pipes in query
                     let escaped_query = filter.gmail_query.replace('|', "\\|");
                     md.push_str(&format!(
                         "| {} | `{}` | {} | {} |\n",
-                        filter.name, escaped_query, archive_str, filter.estimated_matches
+                        filter.name, escaped_query, archive_str, filter.actual_matches
                     ));
                 }
                 md.push_str(&format!("\n**Total: {} filters**\n\n", planned.filters.len()));
+
+                if total_to_archive > 0 {
+                    md.push_str(&format!("⚠️ **{} emails would be archived** (removed from inbox) by auto-archive filters.\n\n", total_to_archive));
+                }
             }
 
             // Actions summary
@@ -564,8 +589,12 @@ pub async fn run_pipeline(
             }
         }
 
-        let label_spinner = reporter.add_spinner("Creating Gmail labels...");
+        let label_spinner = reporter.add_spinner("Loading existing labels...");
         let mut label_manager = LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
+
+        // Always load existing labels to check for conflicts
+        let existing_label_count = label_manager.load_existing_labels().await?;
+        reporter.finish_spinner(&label_spinner, &format!("Found {} existing labels", existing_label_count));
 
         // Only collect labels from domains that meet the threshold (will have filters)
         let threshold = config.classification.minimum_emails_for_label;
@@ -585,10 +614,31 @@ pub async fn run_pipeline(
             }
         }
 
+        // Determine which labels already exist vs need to be created
+        let unique_labels_vec: Vec<String> = unique_labels.iter().cloned().collect();
+        let existing_labels = label_manager.find_existing_labels(&unique_labels_vec);
+        let new_labels = label_manager.find_new_labels(&unique_labels_vec);
+
+        let label_spinner = reporter.add_spinner("Creating Gmail labels...");
+
         // Create labels (or collect planned labels in dry run mode)
         let mut labels_created = 0;
+        let mut labels_skipped = 0;
         let mut planned_labels: Vec<String> = Vec::new();
+        let mut existing_label_names: Vec<String> = Vec::new();
+
         for label in &unique_labels {
+            // Check if label already exists
+            let full_name = format!("{}/{}", config.labels.prefix, label);
+            let sanitized = label_manager.sanitize_label_name(&full_name).unwrap_or_default();
+            let label_exists = label_manager.get_label_cache().contains_key(&sanitized);
+
+            if label_exists {
+                labels_skipped += 1;
+                existing_label_names.push(label.clone());
+                continue;
+            }
+
             if !dry_run {
                 // Extract the category part after the prefix for label creation
                 let label_name = label.split('/').last().unwrap_or(label);
@@ -602,7 +652,12 @@ pub async fn run_pipeline(
         }
 
         let label_action = if dry_run { "Would create" } else { "Created" };
-        reporter.finish_spinner(&label_spinner, &format!("{} {} labels", label_action, labels_created));
+        let skip_msg = if labels_skipped > 0 {
+            format!(" ({} already exist)", labels_skipped)
+        } else {
+            String::new()
+        };
+        reporter.finish_spinner(&label_spinner, &format!("{} {} labels{}", label_action, labels_created, skip_msg));
         state.checkpoint(&cli.state_file).await?;
 
         // Step 9: Create filters (unless labels_only)
@@ -628,15 +683,38 @@ pub async fn run_pipeline(
             // Collect planned filters for dry run report
             let mut planned_filters: Vec<PlannedFilter> = Vec::new();
             let mut filters_created = 0;
+            let mut total_archived = 0;
+
             for filter in &filters {
+                // Build the Gmail query
+                let gmail_query = filter_manager.build_gmail_query(filter);
+
                 if !dry_run {
+                    // Create the filter
                     let mut fm = FilterManager::new(Box::new(client.clone()));
                     let filter_id = fm.create_filter(filter).await?;
                     state.filters_created.push(filter_id);
                     filters_created += 1;
+
+                    // If filter has auto-archive, find and archive matching emails
+                    if filter.should_archive {
+                        let matching_ids = client.list_message_ids(&gmail_query).await?;
+                        if !matching_ids.is_empty() {
+                            info!("Archiving {} emails matching filter '{}'", matching_ids.len(), filter.name);
+                            for msg_id in &matching_ids {
+                                if let Err(e) = client.remove_label(msg_id, "INBOX").await {
+                                    warn!("Failed to archive message {}: {}", msg_id, e);
+                                } else {
+                                    total_archived += 1;
+                                }
+                            }
+                        }
+                    }
                 } else {
-                    // Build the Gmail query for display
-                    let gmail_query = filter_manager.build_gmail_query(filter);
+                    // Dry run: query the API to get actual match count (read-only)
+                    let matching_ids = client.list_message_ids(&gmail_query).await?;
+                    let actual_matches = matching_ids.len();
+
                     planned_filters.push(PlannedFilter {
                         name: filter.name.clone(),
                         from_pattern: filter.from_pattern.clone(),
@@ -645,13 +723,19 @@ pub async fn run_pipeline(
                         should_archive: filter.should_archive,
                         estimated_matches: filter.estimated_matches,
                         gmail_query,
+                        actual_matches,
                     });
                     filters_created += 1;
                 }
             }
 
             let filter_action = if dry_run { "Would create" } else { "Created" };
-            reporter.finish_spinner(&filter_spinner, &format!("{} {} filters", filter_action, filters_created));
+            let archive_msg = if !dry_run && total_archived > 0 {
+                format!(" (archived {} emails)", total_archived)
+            } else {
+                String::new()
+            };
+            reporter.finish_spinner(&filter_spinner, &format!("{} {} filters{}", filter_action, filters_created, archive_msg));
             state.checkpoint(&cli.state_file).await?;
 
             (filters_created, planned_filters)
@@ -748,7 +832,8 @@ pub async fn run_pipeline(
         // Build planned changes for dry run mode
         let planned_changes = if dry_run {
             Some(PlannedChanges {
-                labels: planned_labels.clone(),
+                new_labels: planned_labels.clone(),
+                existing_labels: existing_label_names.clone(),
                 filters: planned_filters,
                 messages_to_label: messages_modified,
                 messages_to_archive: messages_archived,

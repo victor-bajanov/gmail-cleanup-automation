@@ -839,9 +839,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -887,9 +889,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -922,9 +926,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -963,9 +969,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -1016,9 +1024,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -1073,9 +1083,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -1128,9 +1140,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -1189,9 +1203,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -1234,9 +1250,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }

@@ -16,6 +16,13 @@ use crate::models::{FilterRule, MessageMetadata};
 /// Progress callback type for batch operations
 pub type ProgressCallback = Arc<dyn Fn() + Send + Sync>;
 
+/// Label info returned from Gmail API
+#[derive(Debug, Clone)]
+pub struct LabelInfo {
+    pub id: String,
+    pub name: String,
+}
+
 /// Trait defining Gmail client operations for easier testing
 #[async_trait]
 pub trait GmailClient: Send + Sync {
@@ -25,6 +32,9 @@ pub trait GmailClient: Send + Sync {
     /// Get detailed message metadata
     async fn get_message(&self, id: &str) -> Result<MessageMetadata>;
 
+    /// List all labels in the account
+    async fn list_labels(&self) -> Result<Vec<LabelInfo>>;
+
     /// Create a new label
     async fn create_label(&self, name: &str) -> Result<String>;
 
@@ -33,6 +43,9 @@ pub trait GmailClient: Send + Sync {
 
     /// Apply a label to a message
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+
+    /// Remove a label from a message (used for archiving - removing INBOX)
+    async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
 
     /// Fetch multiple messages concurrently
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>>;
@@ -340,6 +353,30 @@ impl GmailClient for ProductionGmailClient {
         self.fetch_single_with_retry(id).await
     }
 
+    async fn list_labels(&self) -> Result<Vec<LabelInfo>> {
+        let (_, response) = self
+            .hub
+            .users()
+            .labels_list("me")
+            .add_scope("https://www.googleapis.com/auth/gmail.labels")
+            .doit()
+            .await?;
+
+        let labels = response
+            .labels
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|label| {
+                match (label.id, label.name) {
+                    (Some(id), Some(name)) => Some(LabelInfo { id, name }),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        Ok(labels)
+    }
+
     async fn create_label(&self, name: &str) -> Result<String> {
         let label = Label {
             name: Some(name.to_string()),
@@ -412,6 +449,22 @@ impl GmailClient for ProductionGmailClient {
         Ok(())
     }
 
+    async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()> {
+        let modify_request = ModifyMessageRequest {
+            add_label_ids: None,
+            remove_label_ids: Some(vec![label_id.to_string()]),
+        };
+
+        self.hub
+            .users()
+            .messages_modify(modify_request, "me", message_id)
+            .add_scope("https://www.googleapis.com/auth/gmail.modify")
+            .doit()
+            .await?;
+
+        Ok(())
+    }
+
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>> {
         // Note: fetch_single_with_retry already handles rate limiting via semaphore
         // buffer_unordered limits concurrency to 40 parallel requests
@@ -469,6 +522,10 @@ impl GmailClient for Arc<ProductionGmailClient> {
         self.as_ref().get_message(id).await
     }
 
+    async fn list_labels(&self) -> Result<Vec<LabelInfo>> {
+        self.as_ref().list_labels().await
+    }
+
     async fn create_label(&self, name: &str) -> Result<String> {
         self.as_ref().create_label(name).await
     }
@@ -479,6 +536,10 @@ impl GmailClient for Arc<ProductionGmailClient> {
 
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {
         self.as_ref().apply_label(message_id, label_id).await
+    }
+
+    async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()> {
+        self.as_ref().remove_label(message_id, label_id).await
     }
 
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>> {

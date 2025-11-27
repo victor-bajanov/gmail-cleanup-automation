@@ -25,6 +25,51 @@ impl LabelManager {
         }
     }
 
+    /// Loads all existing labels from Gmail into the cache
+    /// Call this before creating labels to avoid conflicts
+    pub async fn load_existing_labels(&mut self) -> Result<usize> {
+        let labels = self.client.list_labels().await?;
+        let count = labels.len();
+
+        for label in labels {
+            self.label_cache.insert(label.name.clone(), label.id);
+        }
+
+        info!("Loaded {} existing labels into cache", count);
+        Ok(count)
+    }
+
+    /// Returns the list of existing labels that match the proposed labels
+    pub fn find_existing_labels(&self, proposed: &[String]) -> Vec<String> {
+        proposed
+            .iter()
+            .filter(|name| {
+                let full_name = format!("{}/{}", self.label_prefix, name);
+                let sanitized = self.sanitize_label_name(&full_name).unwrap_or_default();
+                self.label_cache.contains_key(&sanitized)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Returns labels that would be newly created (don't exist yet)
+    pub fn find_new_labels(&self, proposed: &[String]) -> Vec<String> {
+        proposed
+            .iter()
+            .filter(|name| {
+                let full_name = format!("{}/{}", self.label_prefix, name);
+                let sanitized = self.sanitize_label_name(&full_name).unwrap_or_default();
+                !self.label_cache.contains_key(&sanitized)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Gets the label cache (for reporting purposes)
+    pub fn get_label_cache(&self) -> &HashMap<String, String> {
+        &self.label_cache
+    }
+
     /// Creates a label in Gmail if it doesn't already exist
     ///
     /// This function implements the pattern from lines 636-651 of the implementation spec:
@@ -545,9 +590,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -585,9 +632,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -613,9 +662,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -649,9 +700,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -689,9 +742,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
@@ -766,9 +821,11 @@ mod tests {
             impl crate::client::GmailClient for TestGmailClient {
                 async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
             }
