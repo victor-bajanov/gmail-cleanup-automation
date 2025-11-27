@@ -235,7 +235,7 @@ impl FilterManager {
         Ok(())
     }
 
-    /// Builds Gmail query syntax from filter criteria
+    /// Builds Gmail query syntax from filter criteria (static version)
     ///
     /// Creates deterministic Gmail search queries that can be used in filters.
     /// These queries work natively in Gmail without any external processing.
@@ -244,7 +244,7 @@ impl FilterManager {
     /// - `from:(*@github.com)` - All emails from github.com domain
     /// - `from:(noreply@company.com) subject:(newsletter)` - Specific sender with subject
     /// - `subject:(receipt OR invoice OR order)` - Multiple subject keywords
-    pub fn build_gmail_query(&self, filter: &FilterRule) -> String {
+    pub fn build_gmail_query_static(filter: &FilterRule) -> String {
         let mut query_parts = Vec::new();
 
         // Add from pattern
@@ -264,19 +264,32 @@ impl FilterManager {
             }
         }
 
-        // Only add subject keywords for specific sender filters
-        // Domain-wide filters should match ALL emails from that domain
-        if filter.is_specific_sender && !filter.subject_keywords.is_empty() {
-            let keywords = filter
-                .subject_keywords
-                .iter()
-                .map(|k| k.to_lowercase())
-                .collect::<Vec<_>>()
-                .join(" OR ");
+        // Add subject keywords if present
+        // Subject keywords make the filter more specific (narrow cluster)
+        if !filter.subject_keywords.is_empty() {
+            // If there's only one keyword, use it directly (for exact subject matches)
+            // If multiple, join with OR for broader matching
+            let keywords = if filter.subject_keywords.len() == 1 {
+                filter.subject_keywords[0].clone()
+            } else {
+                filter
+                    .subject_keywords
+                    .iter()
+                    .map(|k| k.to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(" OR ")
+            };
             query_parts.push(format!("subject:({})", keywords));
         }
 
         query_parts.join(" ")
+    }
+
+    /// Builds Gmail query syntax from filter criteria (instance method)
+    ///
+    /// This is a convenience wrapper around the static method.
+    pub fn build_gmail_query(&self, filter: &FilterRule) -> String {
+        Self::build_gmail_query_static(filter)
     }
 
     /// Deduplicates filters to prevent overlapping rules
@@ -850,6 +863,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -884,12 +899,31 @@ mod tests {
             from_pattern: Some("noreply@company.com".to_string()),
             is_specific_sender: true, // Specific email, not domain pattern
             subject_keywords: vec!["newsletter".to_string(), "digest".to_string()],
-            ..filter
+            ..filter.clone()
         };
 
         let query = manager.build_gmail_query(&filter_with_subject);
         assert!(query.contains("from:(noreply@company.com)"));
         assert!(query.contains("subject:(newsletter OR digest)"));
+
+        // Test with excluded senders (THIS IS THE BUG FIX TEST)
+        let filter_with_exclusions = FilterRule {
+            from_pattern: Some("*@linkedin.com".to_string()),
+            is_specific_sender: false,
+            excluded_senders: vec![
+                "messaging-digest-noreply@linkedin.com".to_string(),
+                "messages-noreply@linkedin.com".to_string(),
+                "jobs-listings@linkedin.com".to_string(),
+            ],
+            subject_keywords: vec![],
+            ..filter
+        };
+
+        let query = manager.build_gmail_query(&filter_with_exclusions);
+        assert!(query.contains("from:(*@linkedin.com)"));
+        assert!(query.contains("-from:(messaging-digest-noreply@linkedin.com)"));
+        assert!(query.contains("-from:(messages-noreply@linkedin.com)"));
+        assert!(query.contains("-from:(jobs-listings@linkedin.com)"));
     }
 
     #[test]
@@ -907,6 +941,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -948,6 +984,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -995,6 +1033,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -1056,6 +1096,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -1125,6 +1167,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -1190,6 +1234,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -1261,6 +1307,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -1314,6 +1362,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;

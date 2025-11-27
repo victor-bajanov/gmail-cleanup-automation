@@ -539,18 +539,89 @@ pub async fn run_pipeline(
         state.messages_classified = classifications.len();
         state.checkpoint(&cli.state_file).await?;
 
+        // Step 6.5: Load existing filters early (for matching against clusters)
+        let existing_filters_spinner = reporter.add_spinner("Loading existing Gmail filters...");
+        let existing_filters = client.list_filters().await.unwrap_or_else(|e| {
+            warn!("Failed to load existing filters: {}", e);
+            Vec::new()
+        });
+        reporter.finish_spinner(&existing_filters_spinner, &format!("Found {} existing filters", existing_filters.len()));
+
         // Step 7: Interactive review (if enabled)
         // Track review decisions for filter generation
         let mut review_decisions: Vec<ClusterDecision> = Vec::new();
 
         if review {
-            let clusters = create_clusters(
+            let mut clusters = create_clusters(
                 &messages,
                 &classifications,
                 config.classification.minimum_emails_for_label,
             );
 
+            // Match clusters against existing filters
+            // Note: We can only check the from pattern now; label matching happens later
+            // after labels are created and we have label IDs
+            for cluster in &mut clusters {
+                // Build a temporary from pattern to match
+                let from_pattern = if cluster.is_specific_sender {
+                    cluster.sender_email.clone()
+                } else {
+                    format!("*@{}", cluster.sender_domain)
+                };
+
+                // Try to find a matching existing filter
+                for existing in &existing_filters {
+                    // Check if the from pattern matches
+                    let pattern_matches = match &existing.query {
+                        Some(existing_query) => {
+                            let existing_normalized = existing_query.to_lowercase().trim().to_string();
+                            let new_normalized = from_pattern.to_lowercase().trim().to_string();
+
+                            // Gmail uses "from:(*@domain.com)" or "from:(email@domain.com)" format
+                            // Extract the actual pattern from the query
+                            let existing_clean = existing_normalized
+                                .replace("from:(", "")
+                                .replace(")", "")
+                                .trim()
+                                .to_string();
+
+                            existing_clean == new_normalized ||
+                            existing_normalized.contains(&format!("from:({})", new_normalized))
+                        }
+                        None => false,
+                    };
+
+                    if pattern_matches {
+                        cluster.existing_filter_id = Some(existing.id.clone());
+
+                        // Store the existing label ID (first one if multiple)
+                        cluster.existing_filter_label_id = existing.add_label_ids.first().cloned();
+
+                        // Store the existing archive setting (check if INBOX is removed)
+                        cluster.existing_filter_archive = Some(
+                            existing.remove_label_ids.iter().any(|l| l == "INBOX")
+                        );
+
+                        break; // Found a match, stop looking
+                    }
+                }
+            }
+
             if !clusters.is_empty() {
+                // Load existing labels to build label ID -> name mapping for the review UI
+                let label_load_spinner = reporter.add_spinner("Loading existing labels...");
+                let mut temp_label_manager = LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
+                let _ = temp_label_manager.load_existing_labels().await?;
+
+                // Build label ID -> name mapping (strip prefix for display)
+                let label_id_to_name: HashMap<String, String> = temp_label_manager
+                    .get_label_cache()
+                    .iter()
+                    .map(|(name, id)| (id.clone(), name.clone()))
+                    .collect();
+
+                reporter.finish_spinner(&label_load_spinner, &format!("Loaded {} existing labels", label_id_to_name.len()));
+
                 // Save the MultiProgress before dropping reporter (for reuse after interactive mode)
                 let multi = reporter.multi_progress();
                 // Clear MultiProgress before entering interactive mode to prevent redraw issues
@@ -561,7 +632,7 @@ pub async fn run_pipeline(
                     clusters.len(),
                     config.classification.minimum_emails_for_label);
 
-                let mut session = ReviewSession::new(clusters);
+                let mut session = ReviewSession::with_label_map(clusters, label_id_to_name);
                 let decisions = session.run()?;
 
                 // Create new reporter after interactive mode (reuse same MultiProgress for tracing coordination)
@@ -673,6 +744,23 @@ pub async fn run_pipeline(
         // Collect unique labels - from review decisions if available, otherwise from classifications
         let mut unique_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+        // If review mode was used, also include labels from existing filters that were matched
+        let mut existing_filter_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if review {
+            for decision in &review_decisions {
+                // Collect existing filter label IDs so we can resolve them
+                if let Some(label_id) = &decision.existing_filter_id {
+                    for existing in &existing_filters {
+                        if &existing.id == label_id {
+                            if let Some(first_label_id) = existing.add_label_ids.first() {
+                                existing_filter_labels.insert(first_label_id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if !review_decisions.is_empty() {
             // When review mode was used, only create labels for accepted clusters
             for decision in &review_decisions {
@@ -771,10 +859,20 @@ pub async fn run_pipeline(
                         Some(format!("*@{}", d.sender_domain))
                     };
 
-                    let filter_name = if d.is_specific_sender {
+                    // Build filter name including subject pattern if present
+                    let filter_name = if let Some(subject) = &d.subject_pattern {
+                        format!("{} + \"{}\" → {}", d.sender_email, subject, d.label)
+                    } else if d.is_specific_sender {
                         format!("{} → {}", d.sender_email, d.label)
                     } else {
                         format!("{} → {}", d.sender_domain, d.label)
+                    };
+
+                    // If there's a subject pattern, use it as a subject keyword
+                    let subject_keywords = if let Some(subject) = &d.subject_pattern {
+                        vec![subject.clone()]
+                    } else {
+                        vec![]
                     };
 
                     FilterRule {
@@ -783,7 +881,7 @@ pub async fn run_pipeline(
                         from_pattern,
                         is_specific_sender: d.is_specific_sender,
                         excluded_senders: d.excluded_senders.clone(),
-                        subject_keywords: vec![], // No subject keywords from decisions
+                        subject_keywords,
                         target_label_id: d.label.clone(),
                         should_archive: d.should_archive,
                         estimated_matches: d.message_ids.len(),
@@ -810,15 +908,16 @@ pub async fn run_pipeline(
             let mut total_labeled = 0;
             let mut total_archived = 0;
 
-            // Fetch existing filters once for duplicate detection
-            let existing_filters = if !dry_run {
-                client.list_filters().await.unwrap_or_else(|e| {
-                    warn!("Failed to fetch existing filters for dedup check: {}", e);
-                    Vec::new()
-                })
-            } else {
-                Vec::new()
-            };
+            // Build a map from decisions for quick lookup of existing filter info
+            let mut decision_map: HashMap<String, &ClusterDecision> = HashMap::new();
+            for decision in &review_decisions {
+                let key = if decision.is_specific_sender {
+                    decision.sender_email.clone()
+                } else {
+                    format!("*@{}", decision.sender_domain)
+                };
+                decision_map.insert(key, decision);
+            }
 
             for filter in &filters {
                 filter_bar.set_message(format!("Processing: {}", truncate_string(&filter.name, 40)));
@@ -836,21 +935,51 @@ pub async fn run_pipeline(
                     let mut filter_with_id = filter.clone();
                     filter_with_id.target_label_id = label_id.clone();
 
-                    // Check if an equivalent filter already exists
-                    let existing_match = existing_filters.iter().find(|ef| ef.matches_filter_rule(&filter_with_id));
-                    if let Some(existing) = existing_match {
-                        info!("Filter '{}' already exists (ID: {}), skipping", filter.name, existing.id);
-                        filters_skipped += 1;
-                        filter_bar.inc(1);
-                        continue;
+                    // Check if this filter came from a decision with an existing filter
+                    let decision_key = if filter.is_specific_sender {
+                        filter.from_pattern.clone().unwrap_or_default()
+                    } else {
+                        filter.from_pattern.clone().unwrap_or_default()
+                    };
+
+                    let decision = decision_map.get(&decision_key);
+                    let existing_filter_id = decision.and_then(|d| d.existing_filter_id.as_ref());
+                    let needs_update = decision.map(|d| d.needs_filter_update).unwrap_or(false);
+
+                    // Handle filter creation/update/deletion
+                    if let Some(existing_id) = existing_filter_id {
+                        // Filter already exists
+                        if matches!(decision.map(|d| &d.action), Some(DecisionAction::Reject)) {
+                            // User rejected - delete the existing filter
+                            info!("Deleting existing filter '{}' (ID: {}) - user rejected", filter.name, existing_id);
+                            match client.delete_filter(existing_id).await {
+                                Ok(_) => info!("Successfully deleted filter"),
+                                Err(e) => warn!("Failed to delete filter: {}", e),
+                            }
+                            filters_skipped += 1;
+                        } else if needs_update {
+                            // User changed settings - update the filter
+                            info!("Updating existing filter '{}' (ID: {}) with new settings", filter.name, existing_id);
+                            match client.update_filter(existing_id, &filter_with_id).await {
+                                Ok(new_id) => {
+                                    state.filters_created.push(new_id);
+                                    filters_created += 1;
+                                }
+                                Err(e) => warn!("Failed to update filter '{}': {}", filter.name, e),
+                            }
+                        } else {
+                            // Filter exists and matches - skip creation but still apply retroactively
+                            info!("Filter '{}' already exists (ID: {}), skipping creation", filter.name, existing_id);
+                            filters_skipped += 1;
+                        }
+                    } else {
+                        // No existing filter - create new one
+                        let filter_id = filter_manager.create_filter(&filter_with_id).await?;
+                        state.filters_created.push(filter_id);
+                        filters_created += 1;
                     }
 
-                    // Create the filter (reuse filter_manager instance)
-                    let filter_id = filter_manager.create_filter(&filter_with_id).await?;
-                    state.filters_created.push(filter_id);
-                    filters_created += 1;
-
-                    // Retroactively apply label (and archive if needed) to ALL matching emails
+                    // ALWAYS apply labels retroactively, even if filter already exists
                     let matching_ids = client.list_message_ids(&gmail_query).await?;
                     if !matching_ids.is_empty() {
                         let count = matching_ids.len();

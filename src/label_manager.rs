@@ -639,6 +639,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -685,6 +687,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -719,6 +723,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -761,6 +767,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -807,6 +815,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
@@ -890,6 +900,8 @@ mod tests {
                 async fn create_label(&self, name: &str) -> Result<String>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
                 async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;

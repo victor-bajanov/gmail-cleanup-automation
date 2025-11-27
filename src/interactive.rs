@@ -11,7 +11,7 @@ use crossterm::{
     execute,
     terminal::{self, ClearType},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 
 /// A cluster of emails from the same sender (specific email or domain)
@@ -24,12 +24,22 @@ pub struct EmailCluster {
     pub is_specific_sender: bool,
     /// For domain clusters, list of specific senders to exclude (they have their own clusters)
     pub excluded_senders: Vec<String>,
+    /// Subject pattern for subject-based clusters (e.g., "QNAP NAS Notification")
+    pub subject_pattern: Option<String>,
     pub message_ids: Vec<String>,
     pub suggested_category: EmailCategory,
     pub suggested_label: String,
     pub confidence: f32,
     pub sample_subjects: Vec<String>,
     pub should_archive: bool,
+    /// Existing filter ID if a matching filter already exists
+    pub existing_filter_id: Option<String>,
+    /// Original label ID from existing filter (needs to be resolved to name)
+    pub existing_filter_label_id: Option<String>,
+    /// Original label from existing filter (for detecting changes)
+    pub existing_filter_label: Option<String>,
+    /// Original archive setting from existing filter (for detecting changes)
+    pub existing_filter_archive: Option<bool>,
 }
 
 impl EmailCluster {
@@ -48,10 +58,16 @@ pub struct ClusterDecision {
     pub is_specific_sender: bool,
     /// For domain clusters, list of specific senders to exclude
     pub excluded_senders: Vec<String>,
+    /// Subject pattern for subject-based clusters
+    pub subject_pattern: Option<String>,
     pub message_ids: Vec<String>,
     pub label: String,
     pub should_archive: bool,
     pub action: DecisionAction,
+    /// Existing filter ID if this cluster had a matching filter
+    pub existing_filter_id: Option<String>,
+    /// Whether the existing filter needs to be updated (settings changed)
+    pub needs_filter_update: bool,
 }
 
 /// Type of decision action
@@ -79,11 +95,24 @@ pub struct ReviewSession {
     deferred_indices: Vec<usize>,
     history: Vec<HistoryEntry>,
     available_labels: Vec<String>,
+    label_id_to_name: HashMap<String, String>,
 }
 
 impl ReviewSession {
     /// Create a new review session with clusters to review
     pub fn new(clusters: Vec<EmailCluster>) -> Self {
+        Self::with_label_map(clusters, HashMap::new())
+    }
+
+    /// Create a new review session with label ID to name mapping
+    pub fn with_label_map(mut clusters: Vec<EmailCluster>, label_id_to_name: HashMap<String, String>) -> Self {
+        // Resolve existing filter label IDs to names
+        for cluster in &mut clusters {
+            if let Some(label_id) = &cluster.existing_filter_label_id {
+                cluster.existing_filter_label = label_id_to_name.get(label_id).cloned();
+            }
+        }
+
         // Extract unique suggested labels for the label picker
         let mut labels: Vec<String> = clusters
             .iter()
@@ -99,6 +128,7 @@ impl ReviewSession {
             deferred_indices: Vec::new(),
             history: Vec::new(),
             available_labels: labels,
+            label_id_to_name,
         }
     }
 
@@ -206,7 +236,14 @@ impl ReviewSession {
             let archive_status = if cluster.should_archive { "YES" } else { "NO" };
 
             // Build the filter query for display
-            let filter_query = if cluster.is_specific_sender {
+            let filter_query = if let Some(subject) = &cluster.subject_pattern {
+                // Subject-based cluster
+                if cluster.is_specific_sender {
+                    format!("from:({}) subject:({})", cluster.sender_email, subject)
+                } else {
+                    format!("from:(*@{}) subject:({})", cluster.sender_domain, subject)
+                }
+            } else if cluster.is_specific_sender {
                 format!("from:({})", cluster.sender_email)
             } else if cluster.excluded_senders.is_empty() {
                 format!("from:(*@{})", cluster.sender_domain)
@@ -220,7 +257,10 @@ impl ReviewSession {
             };
 
             // Show cluster name based on type
-            let cluster_name = if cluster.is_specific_sender {
+            let cluster_name = if let Some(subject) = &cluster.subject_pattern {
+                // Subject-based cluster
+                format!("{} + \"{}\"", cluster.sender_email, subject)
+            } else if cluster.is_specific_sender {
                 format!("{} (specific sender)", cluster.sender_email)
             } else if !cluster.excluded_senders.is_empty() {
                 format!("*@{} (excl. {} senders)", cluster.sender_domain, cluster.excluded_senders.len())
@@ -254,6 +294,13 @@ impl ReviewSession {
             }
 
             out!("{}", mid);
+
+            // Show existing filter status if applicable
+            if cluster.existing_filter_id.is_some() {
+                out!("{}", line("⚠ EXISTING FILTER FOUND - Changes will update the existing filter"));
+                out!("{}", mid);
+            }
+
             out!("{}", line("[Y] Create filter  [N] No filter  [S] Skip for now"));
             out!("{}", line("[A] Toggle archive [L] Change label         [?] Help"));
         }
@@ -350,10 +397,13 @@ impl ReviewSession {
                 sender_email: cluster.sender_email.clone(),
                 is_specific_sender: cluster.is_specific_sender,
                 excluded_senders: cluster.excluded_senders.clone(),
+                subject_pattern: cluster.subject_pattern.clone(),
                 message_ids: cluster.message_ids.clone(),
                 label: cluster.suggested_label.clone(),
                 should_archive: cluster.should_archive,
                 action: DecisionAction::Accept,
+                existing_filter_id: cluster.existing_filter_id.clone(),
+                needs_filter_update: false, // Accepting as-is
             };
 
             self.decisions.insert(key, decision);
@@ -376,10 +426,13 @@ impl ReviewSession {
                 sender_email: cluster.sender_email.clone(),
                 is_specific_sender: cluster.is_specific_sender,
                 excluded_senders: cluster.excluded_senders.clone(),
+                subject_pattern: cluster.subject_pattern.clone(),
                 message_ids: cluster.message_ids.clone(),
                 label: String::new(), // No label
                 should_archive: false,
                 action: DecisionAction::Reject,
+                existing_filter_id: cluster.existing_filter_id.clone(),
+                needs_filter_update: cluster.existing_filter_id.is_some(), // Need to delete if exists
             };
 
             self.decisions.insert(key, decision);
@@ -389,6 +442,19 @@ impl ReviewSession {
     fn toggle_archive(&mut self) {
         if let Some(cluster) = self.clusters.get_mut(self.current_index) {
             cluster.should_archive = !cluster.should_archive;
+
+            // If there's an existing filter and we're changing archive setting, mark for update
+            if cluster.existing_filter_id.is_some() {
+                let key = Self::cluster_key(cluster);
+                if let Some(decision) = self.decisions.get_mut(&key) {
+                    // Check if archive setting changed from original
+                    let archive_changed = cluster.existing_filter_archive
+                        .map(|orig| orig != cluster.should_archive)
+                        .unwrap_or(false);
+                    decision.needs_filter_update = archive_changed;
+                    decision.should_archive = cluster.should_archive;
+                }
+            }
         }
     }
 
@@ -432,24 +498,39 @@ impl ReviewSession {
 
                 if !label.is_empty() {
                     if let Some(cluster) = self.clusters.get(self.current_index) {
+                        let key = Self::cluster_key(cluster);
+
                         self.history.push(HistoryEntry {
                             index: self.current_index,
                             cluster: cluster.clone(),
-                            decision: self.decisions.get(&cluster.sender_domain).cloned(),
+                            decision: self.decisions.get(&key).cloned(),
                         });
+
+                        // Check if label or archive changed from original
+                        let label_changed = cluster.existing_filter_label
+                            .as_ref()
+                            .map(|orig| orig != &label)
+                            .unwrap_or(false);
+                        let archive_changed = cluster.existing_filter_archive
+                            .map(|orig| orig != cluster.should_archive)
+                            .unwrap_or(false);
+                        let needs_update = cluster.existing_filter_id.is_some() && (label_changed || archive_changed);
 
                         let decision = ClusterDecision {
                             sender_domain: cluster.sender_domain.clone(),
                             sender_email: cluster.sender_email.clone(),
                             is_specific_sender: cluster.is_specific_sender,
                             excluded_senders: cluster.excluded_senders.clone(),
+                            subject_pattern: cluster.subject_pattern.clone(),
                             message_ids: cluster.message_ids.clone(),
                             label: label.clone(),
                             should_archive: cluster.should_archive,
                             action: DecisionAction::Custom(label),
+                            existing_filter_id: cluster.existing_filter_id.clone(),
+                            needs_filter_update: needs_update,
                         };
 
-                        self.decisions.insert(cluster.sender_domain.clone(), decision);
+                        self.decisions.insert(key, decision);
                     }
                     self.advance();
                 }
@@ -467,18 +548,23 @@ impl ReviewSession {
             self.deferred_indices.push(self.current_index);
 
             if let Some(cluster) = self.clusters.get(self.current_index) {
+                let key = Self::cluster_key(cluster);
+
                 let decision = ClusterDecision {
                     sender_domain: cluster.sender_domain.clone(),
                     sender_email: cluster.sender_email.clone(),
                     is_specific_sender: cluster.is_specific_sender,
                     excluded_senders: cluster.excluded_senders.clone(),
+                    subject_pattern: cluster.subject_pattern.clone(),
                     message_ids: cluster.message_ids.clone(),
                     label: cluster.suggested_label.clone(),
                     should_archive: cluster.should_archive,
                     action: DecisionAction::Skip,
+                    existing_filter_id: cluster.existing_filter_id.clone(),
+                    needs_filter_update: false, // Skipping means no changes
                 };
 
-                self.decisions.insert(cluster.sender_domain.clone(), decision);
+                self.decisions.insert(key, decision);
             }
         }
     }
@@ -488,9 +574,10 @@ impl ReviewSession {
 
         // Skip clusters we've already decided on
         while self.current_index < self.clusters.len() {
-            let domain = &self.clusters[self.current_index].sender_domain;
-            if !self.decisions.contains_key(domain) ||
-               matches!(self.decisions.get(domain).map(|d| &d.action), Some(DecisionAction::Skip)) {
+            let cluster = &self.clusters[self.current_index];
+            let key = Self::cluster_key(cluster);
+            if !self.decisions.contains_key(&key) ||
+               matches!(self.decisions.get(&key).map(|d| &d.action), Some(DecisionAction::Skip)) {
                 break;
             }
             self.current_index += 1;
@@ -504,11 +591,13 @@ impl ReviewSession {
                 self.clusters[entry.index] = entry.cluster.clone();
             }
 
+            let key = Self::cluster_key(&entry.cluster);
+
             // Restore or remove decision
             if let Some(prev_decision) = entry.decision {
-                self.decisions.insert(entry.cluster.sender_domain.clone(), prev_decision);
+                self.decisions.insert(key, prev_decision);
             } else {
-                self.decisions.remove(&entry.cluster.sender_domain);
+                self.decisions.remove(&key);
             }
 
             // Go back to that index
@@ -608,9 +697,11 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 
 /// Create email clusters from messages and classifications
 ///
-/// Uses smart clustering: starts granular (specific senders first), then widens to domain.
-/// If a specific sender meets the threshold, it gets its own cluster.
-/// Remaining emails from that domain get a domain cluster with exclusions.
+/// Uses hierarchical clustering with subject pattern detection:
+/// 1. First, create narrow clusters for repeated subject + sender combinations
+/// 2. Then create specific sender clusters (for senders with enough emails)
+/// 3. Finally, create domain-wide clusters for remaining emails
+/// This ensures automated emails with consistent subjects get their own granular filters.
 pub fn create_clusters(
     _messages: &[MessageMetadata],
     classifications: &[(MessageMetadata, Classification)],
@@ -627,7 +718,7 @@ pub fn create_clusters(
             .push((msg, class));
     }
 
-    // Step 2: For each domain, do granular clustering
+    // Step 2: For each domain, do hierarchical clustering
     for (domain, domain_msgs) in domain_map {
         // Group by specific sender email within this domain
         let mut sender_map: HashMap<String, Vec<(&MessageMetadata, &Classification)>> = HashMap::new();
@@ -638,14 +729,40 @@ pub fn create_clusters(
                 .push((*msg, *class));
         }
 
-        // Track which senders get their own clusters
+        // Track which senders/subject patterns get their own clusters
         let mut specific_senders: Vec<String> = Vec::new();
         let mut remaining_msgs: Vec<(&MessageMetadata, &Classification)> = Vec::new();
 
-        // Step 3: Create specific sender clusters for those meeting threshold
+        // Step 3: For each sender, detect subject patterns and create clusters
         for (sender_email, sender_msgs) in sender_map {
-            if sender_msgs.len() >= min_emails {
-                // This sender gets its own cluster
+            // Step 3a: Try to detect repeated subject patterns within this sender
+            let subject_patterns = detect_subject_patterns(&sender_msgs, min_emails);
+
+            let mut sender_remaining: Vec<(&MessageMetadata, &Classification)> = sender_msgs.clone();
+
+            // Create clusters for subject patterns that meet threshold
+            for (pattern, pattern_msgs) in subject_patterns {
+                if pattern_msgs.len() >= min_emails {
+                    // Create a subject-specific cluster
+                    let cluster = build_cluster_with_subject(
+                        &domain,
+                        &sender_email,
+                        true, // is_specific_sender
+                        vec![], // no exclusions
+                        Some(pattern.clone()),
+                        &pattern_msgs,
+                    );
+                    clusters.push(cluster);
+
+                    // Remove these messages from sender_remaining
+                    let pattern_ids: HashSet<String> = pattern_msgs.iter().map(|(m, _)| m.id.clone()).collect();
+                    sender_remaining.retain(|(m, _)| !pattern_ids.contains(&m.id));
+                }
+            }
+
+            // Step 3b: If this sender still has enough remaining emails (without subject patterns),
+            // create a sender-wide cluster
+            if sender_remaining.len() >= min_emails {
                 specific_senders.push(sender_email.clone());
 
                 let cluster = build_cluster(
@@ -653,12 +770,12 @@ pub fn create_clusters(
                     &sender_email,
                     true, // is_specific_sender
                     vec![], // no exclusions for specific sender clusters
-                    &sender_msgs,
+                    &sender_remaining,
                 );
                 clusters.push(cluster);
             } else {
-                // Add to remaining for potential domain cluster
-                remaining_msgs.extend(sender_msgs);
+                // Not enough for a sender cluster, add to remaining for domain cluster
+                remaining_msgs.extend(sender_remaining);
             }
         }
 
@@ -675,18 +792,84 @@ pub fn create_clusters(
         }
     }
 
-    // Sort by email count (largest first)
-    clusters.sort_by(|a, b| b.email_count().cmp(&a.email_count()));
+    // Sort by specificity first (narrow clusters before broad), then by email count
+    clusters.sort_by(|a, b| {
+        // Subject-based clusters first (most specific)
+        match (&a.subject_pattern, &b.subject_pattern) {
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            _ => {
+                // Then by sender specificity
+                match (a.is_specific_sender, b.is_specific_sender) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => b.email_count().cmp(&a.email_count()), // Finally by count
+                }
+            }
+        }
+    });
 
     clusters
 }
 
-/// Build a single email cluster from a set of messages
+/// Detect repeated subject patterns within a set of messages
+/// Returns a map from subject pattern to matching messages
+fn detect_subject_patterns<'a>(
+    msgs: &[(&'a MessageMetadata, &'a Classification)],
+    min_threshold: usize,
+) -> HashMap<String, Vec<(&'a MessageMetadata, &'a Classification)>> {
+    let mut pattern_map: HashMap<String, Vec<(&'a MessageMetadata, &'a Classification)>> = HashMap::new();
+
+    // Group by exact subject match first
+    let mut subject_groups: HashMap<String, Vec<(&'a MessageMetadata, &'a Classification)>> = HashMap::new();
+    for item in msgs {
+        let subject = normalize_subject(&item.0.subject);
+        subject_groups
+            .entry(subject)
+            .or_default()
+            .push(*item);
+    }
+
+    // Only keep subjects that appear frequently enough
+    for (subject, group) in subject_groups {
+        if group.len() >= min_threshold {
+            pattern_map.insert(subject, group);
+        }
+    }
+
+    pattern_map
+}
+
+/// Normalize subject for pattern matching (remove Re:, Fwd:, etc.)
+fn normalize_subject(subject: &str) -> String {
+    subject
+        .trim()
+        .replace("Re: ", "")
+        .replace("RE: ", "")
+        .replace("Fwd: ", "")
+        .replace("FWD: ", "")
+        .trim()
+        .to_string()
+}
+
+/// Build a single email cluster from a set of messages (without subject pattern)
 fn build_cluster(
     domain: &str,
     sender_email: &str,
     is_specific_sender: bool,
     excluded_senders: Vec<String>,
+    msgs: &[(&MessageMetadata, &Classification)],
+) -> EmailCluster {
+    build_cluster_with_subject(domain, sender_email, is_specific_sender, excluded_senders, None, msgs)
+}
+
+/// Build a single email cluster from a set of messages (with optional subject pattern)
+fn build_cluster_with_subject(
+    domain: &str,
+    sender_email: &str,
+    is_specific_sender: bool,
+    excluded_senders: Vec<String>,
+    subject_pattern: Option<String>,
     msgs: &[(&MessageMetadata, &Classification)],
 ) -> EmailCluster {
     let first = msgs.first().unwrap();
@@ -733,12 +916,17 @@ fn build_cluster(
         sender_email: sender_email.to_string(),
         is_specific_sender,
         excluded_senders,
+        subject_pattern,
         message_ids,
         suggested_category,
         suggested_label,
         confidence: avg_confidence,
         sample_subjects,
         should_archive,
+        existing_filter_id: None, // Will be set by caller after matching against existing filters
+        existing_filter_label_id: None, // Will be set by caller after matching against existing filters
+        existing_filter_label: None, // Will be set by caller after matching against existing filters
+        existing_filter_archive: None, // Will be set by caller after matching against existing filters
     }
 }
 
@@ -776,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_clusters() {
+    fn test_create_clusters_basic() {
         let messages = vec![
             create_test_message("1", "news@example.com", "Subject 1"),
             create_test_message("2", "news@example.com", "Subject 2"),
@@ -794,6 +982,98 @@ mod tests {
         assert_eq!(clusters.len(), 1); // Only example.com has >= 2 emails
         assert_eq!(clusters[0].sender_domain, "example.com");
         assert_eq!(clusters[0].email_count(), 3);
+        assert!(clusters[0].subject_pattern.is_none()); // No repeated subjects
+    }
+
+    #[test]
+    fn test_create_clusters_with_subject_patterns() {
+        // Test hierarchical clustering: subject patterns should create narrow clusters first
+        let messages = vec![
+            // Automated emails with same subject from me@example.com
+            create_test_message("1", "me@example.com", "QNAP NAS Notification"),
+            create_test_message("2", "me@example.com", "QNAP NAS Notification"),
+            create_test_message("3", "me@example.com", "QNAP NAS Notification"),
+            // Different subject from same sender
+            create_test_message("4", "me@example.com", "Daily Backup Report"),
+            create_test_message("5", "me@example.com", "Daily Backup Report"),
+            create_test_message("6", "me@example.com", "Daily Backup Report"),
+            // Regular emails from same sender
+            create_test_message("7", "me@example.com", "Meeting notes"),
+            create_test_message("8", "me@example.com", "Project update"),
+        ];
+
+        let classifications: Vec<(MessageMetadata, Classification)> = messages
+            .iter()
+            .map(|m| (m.clone(), create_test_classification(m)))
+            .collect();
+
+        let clusters = create_clusters(&messages, &classifications, 3);
+
+        // Should create 2 narrow subject-based clusters (for automated emails)
+        // The remaining 2 regular emails don't meet threshold, so no sender cluster
+        assert_eq!(clusters.len(), 2);
+
+        // Subject-based clusters should come first (sorted by specificity)
+        assert!(clusters[0].subject_pattern.is_some());
+        assert!(clusters[1].subject_pattern.is_some());
+
+        // Verify one cluster is for QNAP notifications
+        let qnap_cluster = clusters.iter().find(|c| {
+            c.subject_pattern.as_ref().map(|s| s.contains("QNAP")).unwrap_or(false)
+        });
+        assert!(qnap_cluster.is_some());
+        assert_eq!(qnap_cluster.unwrap().email_count(), 3);
+
+        // Verify one cluster is for backup reports
+        let backup_cluster = clusters.iter().find(|c| {
+            c.subject_pattern.as_ref().map(|s| s.contains("Backup")).unwrap_or(false)
+        });
+        assert!(backup_cluster.is_some());
+        assert_eq!(backup_cluster.unwrap().email_count(), 3);
+    }
+
+    #[test]
+    fn test_create_clusters_hierarchical_fallback() {
+        // Test that emails without patterns fall back to sender clustering
+        let messages = vec![
+            // Subject pattern cluster (meets threshold)
+            create_test_message("1", "alerts@service.com", "System Alert"),
+            create_test_message("2", "alerts@service.com", "System Alert"),
+            create_test_message("3", "alerts@service.com", "System Alert"),
+            // Different subjects from same sender (should form sender cluster)
+            create_test_message("4", "alerts@service.com", "Weekly Summary"),
+            create_test_message("5", "alerts@service.com", "Monthly Report"),
+            create_test_message("6", "alerts@service.com", "Status Update"),
+        ];
+
+        let classifications: Vec<(MessageMetadata, Classification)> = messages
+            .iter()
+            .map(|m| (m.clone(), create_test_classification(m)))
+            .collect();
+
+        let clusters = create_clusters(&messages, &classifications, 3);
+
+        // Should create 2 clusters: one subject-based, one sender-based
+        assert_eq!(clusters.len(), 2);
+
+        // First should be subject-based (more specific)
+        assert!(clusters[0].subject_pattern.is_some());
+        assert_eq!(clusters[0].subject_pattern.as_ref().unwrap(), "System Alert");
+        assert_eq!(clusters[0].email_count(), 3);
+
+        // Second should be sender-based (no subject pattern)
+        assert!(clusters[1].subject_pattern.is_none());
+        assert!(clusters[1].is_specific_sender);
+        assert_eq!(clusters[1].email_count(), 3);
+    }
+
+    #[test]
+    fn test_normalize_subject() {
+        assert_eq!(normalize_subject("Re: Test"), "Test");
+        assert_eq!(normalize_subject("Fwd: Important"), "Important");
+        assert_eq!(normalize_subject("RE: Test"), "Test");
+        assert_eq!(normalize_subject("  Test  "), "Test");
+        assert_eq!(normalize_subject("FWD: Urgent"), "Urgent");
     }
 
     #[test]
@@ -809,12 +1089,17 @@ mod tests {
             sender_email: "test@example.com".to_string(),
             is_specific_sender: false,
             excluded_senders: vec![],
+            subject_pattern: None,
             message_ids: vec!["1".to_string(), "2".to_string()],
             suggested_category: EmailCategory::Newsletter,
             suggested_label: "auto/newsletters".to_string(),
             confidence: 0.9,
             sample_subjects: vec!["Subject 1".to_string()],
             should_archive: true,
+            existing_filter_id: None,
+            existing_filter_label_id: None,
+            existing_filter_label: None,
+            existing_filter_archive: None,
         };
 
         assert_eq!(cluster.email_count(), 2);

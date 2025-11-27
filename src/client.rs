@@ -101,6 +101,12 @@ pub trait GmailClient: Send + Sync {
     /// List all existing filters
     async fn list_filters(&self) -> Result<Vec<ExistingFilterInfo>>;
 
+    /// Delete an existing filter by ID
+    async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+
+    /// Update an existing filter (delete and recreate with new settings)
+    async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
+
     /// Apply a label to a message
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
 
@@ -473,10 +479,13 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn create_filter(&self, filter: &FilterRule) -> Result<String> {
+        // Build the full Gmail query including from pattern, exclusions, and subject keywords
+        let full_query = crate::filter_manager::FilterManager::build_gmail_query_static(filter);
+
         // Build the filter criteria
         let criteria = FilterCriteria {
-            // Use the from_pattern as a query (e.g., "from:(*@domain.com)")
-            query: filter.from_pattern.clone(),
+            // Use the full query with all criteria (from, exclusions, subjects)
+            query: Some(full_query),
             exclude_chats: Some(true),
             ..Default::default()
         };
@@ -542,6 +551,25 @@ impl GmailClient for ProductionGmailClient {
             .collect();
 
         Ok(filters)
+    }
+
+    async fn delete_filter(&self, filter_id: &str) -> Result<()> {
+        self.hub
+            .users()
+            .settings_filters_delete("me", filter_id)
+            .add_scope("https://www.googleapis.com/auth/gmail.settings.basic")
+            .doit()
+            .await?;
+
+        Ok(())
+    }
+
+    async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String> {
+        // Delete the old filter
+        self.delete_filter(filter_id).await?;
+
+        // Create a new one with updated settings
+        self.create_filter(filter).await
     }
 
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {
@@ -749,6 +777,14 @@ impl GmailClient for Arc<ProductionGmailClient> {
 
     async fn list_filters(&self) -> Result<Vec<ExistingFilterInfo>> {
         self.as_ref().list_filters().await
+    }
+
+    async fn delete_filter(&self, filter_id: &str) -> Result<()> {
+        self.as_ref().delete_filter(filter_id).await
+    }
+
+    async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String> {
+        self.as_ref().update_filter(filter_id, filter).await
     }
 
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {
