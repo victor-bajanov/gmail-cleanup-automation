@@ -246,24 +246,27 @@ impl FilterManager {
     /// - `subject:(receipt OR invoice OR order)` - Multiple subject keywords
     pub fn build_gmail_query(&self, filter: &FilterRule) -> String {
         let mut query_parts = Vec::new();
-        let mut is_domain_wide = false;
 
         // Add from pattern
         if let Some(from_pattern) = &filter.from_pattern {
-            if from_pattern.contains('*') || from_pattern.starts_with('@') {
+            if filter.is_specific_sender {
+                // Specific email address
+                query_parts.push(format!("from:({})", from_pattern));
+            } else {
                 // Domain-wide pattern: *@domain.com or @domain.com
                 let domain = from_pattern.trim_start_matches('*');
                 query_parts.push(format!("from:(*{})", domain));
-                is_domain_wide = true;
-            } else {
-                // Specific email address
-                query_parts.push(format!("from:({})", from_pattern));
+
+                // Add exclusions for specific senders that have their own filters
+                for excluded in &filter.excluded_senders {
+                    query_parts.push(format!("-from:({})", excluded));
+                }
             }
         }
 
-        // Only add subject keywords for non-domain-wide filters
+        // Only add subject keywords for specific sender filters
         // Domain-wide filters should match ALL emails from that domain
-        if !is_domain_wide && !filter.subject_keywords.is_empty() {
+        if filter.is_specific_sender && !filter.subject_keywords.is_empty() {
             let keywords = filter
                 .subject_keywords
                 .iter()
@@ -764,6 +767,8 @@ impl FilterManager {
             id: None,
             name: filter_name,
             from_pattern,
+            is_specific_sender: false,
+            excluded_senders: vec![],
             subject_keywords: analysis.subject_keywords,
             target_label_id: target_label,
             should_archive,
@@ -860,6 +865,8 @@ mod tests {
             id: None,
             name: "Test Filter".to_string(),
             from_pattern: Some("*@github.com".to_string()),
+            is_specific_sender: false,
+            excluded_senders: vec![],
             subject_keywords: vec![],
             target_label_id: "label-id".to_string(),
             should_archive: false,
@@ -869,9 +876,10 @@ mod tests {
         let query = manager.build_gmail_query(&filter);
         assert_eq!(query, "from:(*@github.com)");
 
-        // Test with subject keywords
+        // Test with subject keywords for specific sender
         let filter_with_subject = FilterRule {
             from_pattern: Some("noreply@company.com".to_string()),
+            is_specific_sender: true, // Specific email, not domain pattern
             subject_keywords: vec!["newsletter".to_string(), "digest".to_string()],
             ..filter
         };
@@ -990,6 +998,8 @@ mod tests {
             id: None,
             name: "Test".to_string(),
             from_pattern: Some("test@example.com".to_string()),
+            is_specific_sender: false,
+            excluded_senders: vec![],
             subject_keywords: vec![],
             target_label_id: "label-123".to_string(),
             should_archive: false,
@@ -1045,6 +1055,8 @@ mod tests {
                 id: None,
                 name: "Filter 1".to_string(),
                 from_pattern: Some("*@github.com".to_string()),
+                is_specific_sender: false,
+                excluded_senders: vec![],
                 subject_keywords: vec![],
                 target_label_id: "label-1".to_string(),
                 should_archive: false,
@@ -1054,6 +1066,8 @@ mod tests {
                 id: None,
                 name: "Filter 2".to_string(),
                 from_pattern: Some("*@github.com".to_string()), // Duplicate
+                is_specific_sender: false,
+                excluded_senders: vec![],
                 subject_keywords: vec![],
                 target_label_id: "label-1".to_string(),
                 should_archive: false,
@@ -1063,6 +1077,8 @@ mod tests {
                 id: None,
                 name: "Filter 3".to_string(),
                 from_pattern: Some("*@gitlab.com".to_string()),
+                is_specific_sender: false,
+                excluded_senders: vec![],
                 subject_keywords: vec![],
                 target_label_id: "label-2".to_string(),
                 should_archive: false,
@@ -1105,6 +1121,8 @@ mod tests {
                 id: None,
                 name: "GitHub Filter".to_string(),
                 from_pattern: Some("*@github.com".to_string()),
+                is_specific_sender: false,
+                excluded_senders: vec![],
                 subject_keywords: vec![],
                 target_label_id: "label-123".to_string(),
                 should_archive: true,
@@ -1114,6 +1132,8 @@ mod tests {
                 id: None,
                 name: "Amazon Filter".to_string(),
                 from_pattern: Some("*@amazon.com".to_string()),
+                is_specific_sender: false,
+                excluded_senders: vec![],
                 subject_keywords: vec!["receipt".to_string()],
                 target_label_id: "label-456".to_string(),
                 should_archive: false,
@@ -1162,6 +1182,8 @@ mod tests {
                 id: None,
                 name: "Valid Filter".to_string(),
                 from_pattern: Some("*@test.com".to_string()),
+                is_specific_sender: false,
+                excluded_senders: vec![],
                 subject_keywords: vec![],
                 target_label_id: "label-123".to_string(),
                 should_archive: false,
@@ -1172,6 +1194,8 @@ mod tests {
                 id: None,
                 name: "Invalid Filter".to_string(),
                 from_pattern: None,
+                is_specific_sender: false,
+                excluded_senders: vec![],
                 subject_keywords: vec![],
                 target_label_id: "label-456".to_string(),
                 should_archive: false,
@@ -1231,6 +1255,8 @@ mod tests {
             id: None,
             name: "GitHub Filter".to_string(),
             from_pattern: Some("*@github.com".to_string()),
+            is_specific_sender: false,
+            excluded_senders: vec![],
             subject_keywords: vec![],
             target_label_id: "label-123".to_string(),
             should_archive: false,
@@ -1271,6 +1297,8 @@ mod tests {
                 id: None,
                 name: "Test Filter 1".to_string(),
                 from_pattern: Some("*@test.com".to_string()),
+                is_specific_sender: false,
+                excluded_senders: vec![],
                 subject_keywords: vec![],
                 target_label_id: "label-1".to_string(),
                 should_archive: false,

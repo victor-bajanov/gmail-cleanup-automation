@@ -44,6 +44,10 @@ pub struct FilterRule {
     pub id: Option<String>,
     pub name: String,
     pub from_pattern: Option<String>,
+    /// If true, this filter matches a specific sender; if false, matches entire domain
+    pub is_specific_sender: bool,
+    /// For domain filters, list of specific senders to exclude (they have their own filters)
+    pub excluded_senders: Vec<String>,
     pub subject_keywords: Vec<String>,
     pub target_label_id: String,
     pub should_archive: bool,
