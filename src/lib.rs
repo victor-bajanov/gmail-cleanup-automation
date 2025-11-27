@@ -60,6 +60,7 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod filter_manager;
+pub mod interactive;
 pub mod label_manager;
 pub mod models;
 pub mod scanner;
@@ -96,3 +97,6 @@ pub use state::{ProcessingPhase, ProcessingState};
 
 // CLI types (for binary usage)
 pub use cli::{Cli, Commands, ProgressReporter, Report};
+
+// Interactive review types
+pub use interactive::{create_clusters, ClusterDecision, DecisionAction, EmailCluster, ReviewSession};

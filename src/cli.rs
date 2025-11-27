@@ -60,6 +60,10 @@ pub enum Commands {
         #[arg(long)]
         interactive: bool,
 
+        /// Interactive review mode - review clusters with keyboard shortcuts
+        #[arg(long)]
+        review: bool,
+
         /// Resume from previous interrupted run
         #[arg(long)]
         resume: bool,
@@ -274,6 +278,7 @@ use crate::classifier::EmailClassifier;
 use crate::config::Config;
 use crate::error::{GmailError, Result};
 use crate::filter_manager::FilterManager;
+use crate::interactive::{create_clusters, DecisionAction, ReviewSession};
 use crate::label_manager::LabelManager;
 use crate::models::MessageMetadata;
 use crate::state::{ProcessingPhase, ProcessingState};
@@ -288,16 +293,18 @@ use std::sync::Arc;
 /// This function coordinates all modules to:
 /// 1. Scan historical emails
 /// 2. Classify them using rules or ML
-/// 3. Create labels with hierarchy
-/// 4. Generate and create filter rules
-/// 5. Apply labels to existing messages
-/// 6. Generate summary report
+/// 3. (Optional) Interactive review of clusters
+/// 4. Create labels with hierarchy
+/// 5. Generate and create filter rules
+/// 6. Apply labels to existing messages
+/// 7. Generate summary report
 ///
 /// # Arguments
 /// * `cli` - CLI arguments containing configuration paths
 /// * `dry_run` - If true, don't make any changes (read-only mode)
 /// * `labels_only` - If true, only create labels, skip filters
 /// * `interactive` - If true, prompt user before major actions
+/// * `review` - If true, enter interactive cluster review mode
 /// * `resume` - If true, resume from previous state
 ///
 /// # Returns
@@ -308,6 +315,7 @@ pub async fn run_pipeline(
     dry_run: bool,
     labels_only: bool,
     interactive: bool,
+    review: bool,
     resume: bool,
 ) -> Result<Report> {
     let reporter = ProgressReporter::new();
@@ -393,7 +401,45 @@ pub async fn run_pipeline(
         state.messages_classified = classifications.len();
         state.checkpoint(&cli.state_file).await?;
 
-        // Step 7: Analyze classifications
+        // Step 7: Interactive review (if enabled)
+        if review {
+            let clusters = create_clusters(
+                &messages,
+                &classifications,
+                config.classification.minimum_emails_for_label,
+            );
+
+            if !clusters.is_empty() {
+                println!("\nEntering interactive review mode...");
+                println!("Found {} clusters to review (minimum {} emails each)\n",
+                    clusters.len(),
+                    config.classification.minimum_emails_for_label);
+
+                let mut session = ReviewSession::new(clusters);
+                let decisions = session.run()?;
+
+                // Apply user decisions to classifications
+                for decision in &decisions {
+                    if matches!(decision.action, DecisionAction::Skip) {
+                        continue;
+                    }
+
+                    // Update classifications for messages in this cluster
+                    for (msg, class) in &mut classifications {
+                        if decision.message_ids.contains(&msg.id) {
+                            class.suggested_label = decision.label.clone();
+                            class.should_archive = decision.should_archive;
+                        }
+                    }
+                }
+
+                println!("\nReview complete. Applied {} decisions.", decisions.len());
+            } else {
+                println!("\nNo clusters meet minimum size threshold for review.");
+            }
+        }
+
+        // Step 8: Analyze classifications
         let analysis_spinner = reporter.add_spinner("Analyzing email patterns...");
         let mut category_counts: HashMap<String, usize> = HashMap::new();
         let mut domain_counts: HashMap<String, Vec<&MessageMetadata>> = HashMap::new();

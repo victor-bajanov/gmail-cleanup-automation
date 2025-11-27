@@ -87,6 +87,7 @@ async fn run() -> Result<()> {
             dry_run,
             labels_only,
             interactive,
+            review,
             resume,
         } => {
             tracing::info!("Starting full pipeline run");
@@ -96,10 +97,13 @@ async fn run() -> Result<()> {
             if labels_only {
                 println!("Running in LABELS ONLY mode - filters will not be created");
             }
+            if review {
+                println!("Running with INTERACTIVE REVIEW mode enabled");
+            }
 
             // Run the complete pipeline
             let report =
-                cli::run_pipeline(&cli, dry_run, labels_only, interactive, resume).await?;
+                cli::run_pipeline(&cli, dry_run, labels_only, interactive, review, resume).await?;
 
             // Display summary
             println!("\n========================================");
