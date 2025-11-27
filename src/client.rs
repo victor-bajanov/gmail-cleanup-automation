@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use google_gmail1::{
-    api::{Label, Message, ModifyMessageRequest},
+    api::{Filter, FilterAction, FilterCriteria, Label, Message, ModifyMessageRequest},
     hyper_rustls, hyper_util, Gmail,
 };
 use std::sync::Arc;
@@ -357,12 +357,43 @@ impl GmailClient for ProductionGmailClient {
             .ok_or_else(|| GmailError::LabelError("Created label has no ID".to_string()))
     }
 
-    async fn create_filter(&self, _filter: &FilterRule) -> Result<String> {
-        // Note: Gmail API filters require the settings.filters API
-        // This is a placeholder implementation
-        Err(GmailError::FilterError(
-            "Filter creation not yet implemented".to_string(),
-        ))
+    async fn create_filter(&self, filter: &FilterRule) -> Result<String> {
+        // Build the filter criteria
+        let criteria = FilterCriteria {
+            // Use the from_pattern as a query (e.g., "from:(*@domain.com)")
+            query: filter.from_pattern.clone(),
+            exclude_chats: Some(true),
+            ..Default::default()
+        };
+
+        // Build the filter action
+        let mut action = FilterAction {
+            add_label_ids: Some(vec![filter.target_label_id.clone()]),
+            ..Default::default()
+        };
+
+        // If should_archive, remove the INBOX label
+        if filter.should_archive {
+            action.remove_label_ids = Some(vec!["INBOX".to_string()]);
+        }
+
+        let gmail_filter = Filter {
+            criteria: Some(criteria),
+            action: Some(action),
+            ..Default::default()
+        };
+
+        let (_, created_filter) = self
+            .hub
+            .users()
+            .settings_filters_create(gmail_filter, "me")
+            .add_scope("https://www.googleapis.com/auth/gmail.settings.basic")
+            .doit()
+            .await?;
+
+        created_filter
+            .id
+            .ok_or_else(|| GmailError::FilterError("Created filter has no ID".to_string()))
     }
 
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {
