@@ -745,13 +745,13 @@ You may choose either license for your use.
 
 ## Roadmap
 
-### Version 0.2.0
+### Version 0.4.0
 - [ ] Rollback functionality
 - [ ] ML-based classification (OpenAI, Anthropic)
 - [ ] Advanced pattern learning from user behavior
 - [ ] Web UI for configuration and monitoring
 
-### Version 0.3.0
+### Version 0.5.0
 - [ ] Multi-account support
 - [ ] Custom rule definitions via config
 - [ ] Email statistics and analytics
@@ -791,6 +791,36 @@ A: The system automatically handles rate limits with backoff and retry. You can 
 ---
 
 ## Changelog
+
+### [0.3.0] - 2025-11-28
+
+**Resume & Retry Improvements**
+- Save review decisions to JSON file for resume capability
+- Add retry with exponential backoff for all Gmail API filter/label operations
+- Enable resume from CreatingLabels and CreatingFilters phases
+- Idempotent filter creation - skip duplicates on resume by checking Gmail
+- Comprehensive tests for new resume/retry functionality
+
+**Data Integrity Fixes**
+- Fix decision_map key to include subject_pattern (prevents cluster collisions)
+- Fix existing filter matching to check subject pattern
+- Fix deduplication key to include excluded_senders, should_archive, target_label_id
+- Fix matches_filter_rule() to compare subject keywords
+- Fix normalize_subject() for case-insensitive prefix removal
+- Fix cluster_key() to include subject pattern (prevents HashMap collisions)
+
+**UX Improvements**
+- Make interactive review mode the default (use `--no-review` to skip)
+- Better error messages for resume failures showing resumable phases
+- Progress bars coordinate with tracing logs
+
+### [0.2.0] - 2025-11-27
+
+**Performance & Reliability**
+- Batch API optimization for labels and filters
+- Skip creating duplicate Gmail filters with deep predicate comparison
+- Batch archive emails using Gmail batchModify API
+- Coordinate tracing logs with progress bars
 
 ### [0.1.0] - 2025-11-24
 

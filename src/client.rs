@@ -8,7 +8,9 @@ use google_gmail1::{
     hyper_rustls, hyper_util, Gmail,
 };
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Semaphore;
+use tracing::warn;
 
 use crate::error::{GmailError, Result};
 use crate::models::{FilterRule, MessageMetadata};
@@ -288,6 +290,46 @@ impl ProductionGmailClient {
             }
         }
     }
+
+    /// Check if an error is retryable
+    fn should_retry(error: &GmailError) -> bool {
+        matches!(
+            error,
+            GmailError::ServerError { .. }
+                | GmailError::RateLimitExceeded { .. }
+                | GmailError::NetworkError(_)
+        )
+    }
+
+    /// Execute an async operation with exponential backoff retry
+    async fn with_retry<T, F, Fut>(
+        operation_name: &str,
+        max_retries: u32,
+        mut operation: F,
+    ) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let mut delay = Duration::from_secs(1);
+        let mut attempts = 0;
+
+        loop {
+            attempts += 1;
+            match operation().await {
+                Ok(result) => return Ok(result),
+                Err(e) if Self::should_retry(&e) && attempts <= max_retries => {
+                    warn!(
+                        "{} failed (attempt {}/{}): {}. Retrying in {:?}...",
+                        operation_name, attempts, max_retries + 1, e, delay
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = std::cmp::min(delay * 2, Duration::from_secs(30));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
 }
 
 /// Parse Gmail API Message into our MessageMetadata structure
@@ -488,20 +530,23 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn create_label(&self, name: &str) -> Result<String> {
-        let label = Label {
-            name: Some(name.to_string()),
-            message_list_visibility: Some("show".to_string()),
-            label_list_visibility: Some("labelShow".to_string()),
-            ..Default::default()
-        };
+        let name = name.to_string();
+        Self::with_retry("create_label", 3, || async {
+            let label = Label {
+                name: Some(name.clone()),
+                message_list_visibility: Some("show".to_string()),
+                label_list_visibility: Some("labelShow".to_string()),
+                ..Default::default()
+            };
 
-        let (_, created_label) = self.hub.users().labels_create(label, "me")
-            .add_scope("https://www.googleapis.com/auth/gmail.labels")
-            .doit().await?;
+            let (_, created_label) = self.hub.users().labels_create(label, "me")
+                .add_scope("https://www.googleapis.com/auth/gmail.labels")
+                .doit().await?;
 
-        created_label
-            .id
-            .ok_or_else(|| GmailError::LabelError("Created label has no ID".to_string()))
+            created_label
+                .id
+                .ok_or_else(|| GmailError::LabelError("Created label has no ID".to_string()))
+        }).await
     }
 
     async fn delete_label(&self, label_id: &str) -> Result<()> {
@@ -516,45 +561,48 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn create_filter(&self, filter: &FilterRule) -> Result<String> {
-        // Build the full Gmail query including from pattern, exclusions, and subject keywords
-        let full_query = crate::filter_manager::FilterManager::build_gmail_query_static(filter);
+        let filter = filter.clone();
+        Self::with_retry("create_filter", 3, || async {
+            // Build the full Gmail query including from pattern, exclusions, and subject keywords
+            let full_query = crate::filter_manager::FilterManager::build_gmail_query_static(&filter);
 
-        // Build the filter criteria
-        let criteria = FilterCriteria {
-            // Use the full query with all criteria (from, exclusions, subjects)
-            query: Some(full_query),
-            exclude_chats: Some(true),
-            ..Default::default()
-        };
+            // Build the filter criteria
+            let criteria = FilterCriteria {
+                // Use the full query with all criteria (from, exclusions, subjects)
+                query: Some(full_query),
+                exclude_chats: Some(true),
+                ..Default::default()
+            };
 
-        // Build the filter action
-        let mut action = FilterAction {
-            add_label_ids: Some(vec![filter.target_label_id.clone()]),
-            ..Default::default()
-        };
+            // Build the filter action
+            let mut action = FilterAction {
+                add_label_ids: Some(vec![filter.target_label_id.clone()]),
+                ..Default::default()
+            };
 
-        // If should_archive, remove the INBOX label
-        if filter.should_archive {
-            action.remove_label_ids = Some(vec!["INBOX".to_string()]);
-        }
+            // If should_archive, remove the INBOX label
+            if filter.should_archive {
+                action.remove_label_ids = Some(vec!["INBOX".to_string()]);
+            }
 
-        let gmail_filter = Filter {
-            criteria: Some(criteria),
-            action: Some(action),
-            ..Default::default()
-        };
+            let gmail_filter = Filter {
+                criteria: Some(criteria),
+                action: Some(action),
+                ..Default::default()
+            };
 
-        let (_, created_filter) = self
-            .hub
-            .users()
-            .settings_filters_create(gmail_filter, "me")
-            .add_scope("https://www.googleapis.com/auth/gmail.settings.basic")
-            .doit()
-            .await?;
+            let (_, created_filter) = self
+                .hub
+                .users()
+                .settings_filters_create(gmail_filter, "me")
+                .add_scope("https://www.googleapis.com/auth/gmail.settings.basic")
+                .doit()
+                .await?;
 
-        created_filter
-            .id
-            .ok_or_else(|| GmailError::FilterError("Created filter has no ID".to_string()))
+            created_filter
+                .id
+                .ok_or_else(|| GmailError::FilterError("Created filter has no ID".to_string()))
+        }).await
     }
 
     async fn list_filters(&self) -> Result<Vec<ExistingFilterInfo>> {
@@ -591,22 +639,29 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn delete_filter(&self, filter_id: &str) -> Result<()> {
-        self.hub
-            .users()
-            .settings_filters_delete("me", filter_id)
-            .add_scope("https://www.googleapis.com/auth/gmail.settings.basic")
-            .doit()
-            .await?;
+        let filter_id = filter_id.to_string();
+        Self::with_retry("delete_filter", 3, || async {
+            self.hub
+                .users()
+                .settings_filters_delete("me", &filter_id)
+                .add_scope("https://www.googleapis.com/auth/gmail.settings.basic")
+                .doit()
+                .await?;
 
-        Ok(())
+            Ok(())
+        }).await
     }
 
     async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String> {
-        // Delete the old filter
-        self.delete_filter(filter_id).await?;
+        let filter_id = filter_id.to_string();
+        let filter = filter.clone();
+        Self::with_retry("update_filter", 3, || async {
+            // Delete the old filter
+            self.delete_filter(&filter_id).await?;
 
-        // Create a new one with updated settings
-        self.create_filter(filter).await
+            // Create a new one with updated settings
+            self.create_filter(&filter).await
+        }).await
     }
 
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {
@@ -649,20 +704,28 @@ impl GmailClient for ProductionGmailClient {
         // Gmail API allows up to 1000 messages per batch request
         const BATCH_SIZE: usize = 1000;
         let mut total_modified = 0;
+        let label_id = label_id.to_string();
 
         for chunk in message_ids.chunks(BATCH_SIZE) {
-            let request = BatchModifyMessagesRequest {
-                ids: Some(chunk.to_vec()),
-                add_label_ids: None,
-                remove_label_ids: Some(vec![label_id.to_string()]),
-            };
+            let chunk_vec = chunk.to_vec();
+            let label_id_clone = label_id.clone();
 
-            self.hub
-                .users()
-                .messages_batch_modify(request, "me")
-                .add_scope("https://www.googleapis.com/auth/gmail.modify")
-                .doit()
-                .await?;
+            Self::with_retry("batch_remove_label", 3, || async {
+                let request = BatchModifyMessagesRequest {
+                    ids: Some(chunk_vec.clone()),
+                    add_label_ids: None,
+                    remove_label_ids: Some(vec![label_id_clone.clone()]),
+                };
+
+                self.hub
+                    .users()
+                    .messages_batch_modify(request, "me")
+                    .add_scope("https://www.googleapis.com/auth/gmail.modify")
+                    .doit()
+                    .await?;
+
+                Ok(())
+            }).await?;
 
             total_modified += chunk.len();
         }
@@ -677,20 +740,28 @@ impl GmailClient for ProductionGmailClient {
 
         const BATCH_SIZE: usize = 1000;
         let mut total_modified = 0;
+        let label_id = label_id.to_string();
 
         for chunk in message_ids.chunks(BATCH_SIZE) {
-            let request = BatchModifyMessagesRequest {
-                ids: Some(chunk.to_vec()),
-                add_label_ids: Some(vec![label_id.to_string()]),
-                remove_label_ids: None,
-            };
+            let chunk_vec = chunk.to_vec();
+            let label_id_clone = label_id.clone();
 
-            self.hub
-                .users()
-                .messages_batch_modify(request, "me")
-                .add_scope("https://www.googleapis.com/auth/gmail.modify")
-                .doit()
-                .await?;
+            Self::with_retry("batch_add_label", 3, || async {
+                let request = BatchModifyMessagesRequest {
+                    ids: Some(chunk_vec.clone()),
+                    add_label_ids: Some(vec![label_id_clone.clone()]),
+                    remove_label_ids: None,
+                };
+
+                self.hub
+                    .users()
+                    .messages_batch_modify(request, "me")
+                    .add_scope("https://www.googleapis.com/auth/gmail.modify")
+                    .doit()
+                    .await?;
+
+                Ok(())
+            }).await?;
 
             total_modified += chunk.len();
         }
@@ -724,18 +795,26 @@ impl GmailClient for ProductionGmailClient {
         };
 
         for chunk in message_ids.chunks(BATCH_SIZE) {
-            let request = BatchModifyMessagesRequest {
-                ids: Some(chunk.to_vec()),
-                add_label_ids: add_labels.clone(),
-                remove_label_ids: remove_labels.clone(),
-            };
+            let chunk_vec = chunk.to_vec();
+            let add_labels_clone = add_labels.clone();
+            let remove_labels_clone = remove_labels.clone();
 
-            self.hub
-                .users()
-                .messages_batch_modify(request, "me")
-                .add_scope("https://www.googleapis.com/auth/gmail.modify")
-                .doit()
-                .await?;
+            Self::with_retry("batch_modify_labels", 3, || async {
+                let request = BatchModifyMessagesRequest {
+                    ids: Some(chunk_vec.clone()),
+                    add_label_ids: add_labels_clone.clone(),
+                    remove_label_ids: remove_labels_clone.clone(),
+                };
+
+                self.hub
+                    .users()
+                    .messages_batch_modify(request, "me")
+                    .add_scope("https://www.googleapis.com/auth/gmail.modify")
+                    .doit()
+                    .await?;
+
+                Ok(())
+            }).await?;
 
             total_modified += chunk.len();
         }
@@ -871,10 +950,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_should_retry() {
-        // This test would require mocking google_gmail1::Error
-        // For now, just test the logic structure
-        assert!(true); // Placeholder
+    fn test_should_retry_server_error() {
+        let error = GmailError::ServerError {
+            status: 500,
+            message: "Internal error".to_string(),
+        };
+        assert!(ProductionGmailClient::should_retry(&error));
+    }
+
+    #[test]
+    fn test_should_retry_rate_limit() {
+        let error = GmailError::RateLimitExceeded { retry_after: 5 };
+        assert!(ProductionGmailClient::should_retry(&error));
+    }
+
+    #[test]
+    fn test_should_retry_network_error() {
+        let error = GmailError::NetworkError("connection reset".to_string());
+        assert!(ProductionGmailClient::should_retry(&error));
+    }
+
+    #[test]
+    fn test_should_not_retry_auth_error() {
+        let error = GmailError::AuthError("invalid token".to_string());
+        assert!(!ProductionGmailClient::should_retry(&error));
+    }
+
+    #[test]
+    fn test_should_not_retry_filter_error() {
+        let error = GmailError::FilterError("invalid filter".to_string());
+        assert!(!ProductionGmailClient::should_retry(&error));
     }
 
     #[test]

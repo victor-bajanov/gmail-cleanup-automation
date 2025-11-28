@@ -139,6 +139,8 @@ impl ProcessingState {
             self.phase,
             ProcessingPhase::Scanning
                 | ProcessingPhase::Classifying
+                | ProcessingPhase::CreatingLabels
+                | ProcessingPhase::CreatingFilters
                 | ProcessingPhase::ApplyingLabels
         )
     }
@@ -430,17 +432,18 @@ mod tests {
         state.phase = ProcessingPhase::Classifying;
         assert!(state.can_resume());
 
+        // Can resume in creating labels phase (NEW)
+        state.phase = ProcessingPhase::CreatingLabels;
+        state.completed = false;
+        assert!(state.can_resume());
+
+        // Can resume in creating filters phase (NEW)
+        state.phase = ProcessingPhase::CreatingFilters;
+        assert!(state.can_resume());
+
         // Can resume in applying labels phase
         state.phase = ProcessingPhase::ApplyingLabels;
         assert!(state.can_resume());
-
-        // Cannot resume in creating labels phase
-        state.phase = ProcessingPhase::CreatingLabels;
-        assert!(!state.can_resume());
-
-        // Cannot resume in creating filters phase
-        state.phase = ProcessingPhase::CreatingFilters;
-        assert!(!state.can_resume());
 
         // Cannot resume when completed
         state.phase = ProcessingPhase::Scanning;

@@ -428,17 +428,31 @@ impl Report {
 
 use crate::auth;
 use crate::classifier::EmailClassifier;
+use crate::client::ExistingFilterInfo;
 use crate::config::Config;
 use crate::error::{GmailError, Result};
 use crate::filter_manager::FilterManager;
 use crate::interactive::{create_clusters, ClusterDecision, DecisionAction, ReviewSession};
 use crate::label_manager::LabelManager;
-use crate::models::{FilterRule, MessageMetadata};
+use crate::models::{Classification, FilterRule, MessageMetadata};
 use crate::state::{ProcessingPhase, ProcessingState};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::path::Path;
 use std::sync::Arc;
+
+/// Load review decisions from a JSON file
+async fn load_decisions(path: &Path) -> Result<Vec<ClusterDecision>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let json = tokio::fs::read_to_string(path).await?;
+    let decisions: Vec<ClusterDecision> = serde_json::from_str(&json)
+        .map_err(|e| GmailError::Unknown(format!("Failed to parse decisions file: {}", e)))?;
+    info!("Loaded {} saved decisions from {:?}", decisions.len(), path);
+    Ok(decisions)
+}
 
 /// Main orchestration function that runs the complete email management pipeline
 ///
@@ -500,8 +514,56 @@ pub async fn run_pipeline(
     let run_id = state.run_id.clone();
     tracing::info!("Starting pipeline run: {}", run_id);
 
-    // Step 5: Scan emails
-    if !resume || matches!(state.phase, ProcessingPhase::Scanning) {
+    if state.can_resume() {
+        // Declare variables early for proper scoping across resume paths
+        let mut review_decisions: Vec<ClusterDecision> = Vec::new();
+        let mut classifications: Vec<(MessageMetadata, Classification)> = Vec::new();
+        let mut existing_filters: Vec<ExistingFilterInfo> = Vec::new();
+        let mut category_counts: HashMap<String, usize> = HashMap::new();
+        let mut domain_counts: HashMap<String, Vec<MessageMetadata>> = HashMap::new();
+        let mut label_name_to_id: HashMap<String, String> = HashMap::new();
+        let mut planned_labels: Vec<String> = Vec::new();
+        let mut existing_label_names: Vec<String> = Vec::new();
+        let mut labels_created = 0;
+        let mut filters_created = 0;
+
+        // Handle resume from CreatingFilters or CreatingLabels phase
+    if resume && matches!(state.phase, ProcessingPhase::CreatingFilters | ProcessingPhase::CreatingLabels) {
+        // Load saved decisions
+        let decisions_file = cli.state_file.with_file_name("decisions.json");
+        review_decisions = load_decisions(&decisions_file).await?;
+
+        if review_decisions.is_empty() {
+            return Err(GmailError::StateError(
+                "Cannot resume: no saved decisions found. Please start a new run.".to_string()
+            ));
+        }
+
+        // Load existing filters from Gmail for deduplication
+        let existing_filters_spinner = reporter.add_spinner("Loading existing Gmail filters for resume...");
+        existing_filters = client.list_filters().await.unwrap_or_else(|e| {
+            warn!("Failed to load existing filters: {}", e);
+            Vec::new()
+        });
+        reporter.finish_spinner(&existing_filters_spinner, &format!("Found {} existing filters", existing_filters.len()));
+
+        // Load existing labels to build label name -> ID mapping
+        let label_spinner = reporter.add_spinner("Loading existing labels for resume...");
+        let mut label_manager = LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
+        let existing_label_count = label_manager.load_existing_labels().await?;
+
+        // Build label name -> ID mapping from the label cache
+        for (name, id) in label_manager.get_label_cache() {
+            label_name_to_id.insert(name.clone(), id.clone());
+        }
+
+        reporter.finish_spinner(&label_spinner, &format!("Loaded {} existing labels", existing_label_count));
+
+        info!("Resuming from {:?} phase with {} decisions", state.phase, review_decisions.len());
+    }
+
+    // Step 5 & 6: Scan and classify emails (skip if resuming from later phases)
+    if !resume || matches!(state.phase, ProcessingPhase::Scanning | ProcessingPhase::Classifying) {
         state.phase = ProcessingPhase::Scanning;
         state.save(&cli.state_file).await?;
 
@@ -542,7 +604,6 @@ pub async fn run_pipeline(
         let classify_bar = reporter.add_progress_bar(messages.len() as u64, "Classifying emails...");
         let classifier = EmailClassifier::new(config.labels.prefix.clone());
 
-        let mut classifications = Vec::new();
         for msg in &messages {
             let classification = classifier.classify(msg)?;
             classifications.push((msg.clone(), classification));
@@ -556,16 +617,13 @@ pub async fn run_pipeline(
 
         // Step 6.5: Load existing filters early (for matching against clusters)
         let existing_filters_spinner = reporter.add_spinner("Loading existing Gmail filters...");
-        let existing_filters = client.list_filters().await.unwrap_or_else(|e| {
+        existing_filters = client.list_filters().await.unwrap_or_else(|e| {
             warn!("Failed to load existing filters: {}", e);
             Vec::new()
         });
         reporter.finish_spinner(&existing_filters_spinner, &format!("Found {} existing filters", existing_filters.len()));
 
         // Step 7: Interactive review (if enabled)
-        // Track review decisions for filter generation
-        let mut review_decisions: Vec<ClusterDecision> = Vec::new();
-
         if review {
             let mut clusters = create_clusters(
                 &messages,
@@ -735,6 +793,13 @@ pub async fn run_pipeline(
                     .filter(|d| matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_)))
                     .collect();
 
+                // Save decisions for resume capability
+                let decisions_file = cli.state_file.with_file_name("decisions.json");
+                let decisions_json = serde_json::to_string_pretty(&review_decisions)
+                    .map_err(|e| GmailError::Unknown(format!("Failed to serialize decisions: {}", e)))?;
+                tokio::fs::write(&decisions_file, decisions_json).await?;
+                info!("Saved {} review decisions to {:?}", review_decisions.len(), decisions_file);
+
                 println!("\nReview complete. {} filters will be created.", review_decisions.len());
             } else {
                 println!("\nNo clusters meet minimum size threshold for review.");
@@ -743,8 +808,6 @@ pub async fn run_pipeline(
 
         // Step 8: Analyze classifications
         let analysis_spinner = reporter.add_spinner("Analyzing email patterns...");
-        let mut category_counts: HashMap<String, usize> = HashMap::new();
-        let mut domain_counts: HashMap<String, Vec<&MessageMetadata>> = HashMap::new();
 
         for (msg, classification) in &classifications {
             let category = format!("{:?}", classification.category);
@@ -753,12 +816,14 @@ pub async fn run_pipeline(
             domain_counts
                 .entry(msg.sender_domain.clone())
                 .or_insert_with(Vec::new)
-                .push(msg);
+                .push(msg.clone());
         }
 
         reporter.finish_spinner(&analysis_spinner, "Email pattern analysis complete");
+    }
 
-        // Step 8: Create labels
+    // Step 8: Create labels (skip if resuming from CreatingFilters phase)
+    if !resume || !matches!(state.phase, ProcessingPhase::CreatingFilters) {
         state.phase = ProcessingPhase::CreatingLabels;
         state.save(&cli.state_file).await?;
 
@@ -833,11 +898,8 @@ pub async fn run_pipeline(
 
         // Create labels (or collect planned labels in dry run mode)
         // Also build a map from label name -> label ID for filter creation
-        let mut labels_created = 0;
+        labels_created = 0; // Reset for this run
         let mut labels_skipped = 0;
-        let mut planned_labels: Vec<String> = Vec::new();
-        let mut existing_label_names: Vec<String> = Vec::new();
-        let mut label_name_to_id: HashMap<String, String> = HashMap::new();
 
         for label in &unique_labels {
             // The label from suggested_label already has full path like "auto/other/domain"
@@ -872,9 +934,10 @@ pub async fn run_pipeline(
         };
         reporter.finish_spinner(&label_spinner, &format!("{} {} labels{}", label_action, labels_created, skip_msg));
         state.checkpoint(&cli.state_file).await?;
+    }
 
-        // Step 9: Create filters (unless labels_only)
-        let (filters_created, planned_filters, total_labeled_count): (usize, Vec<PlannedFilter>, usize) = if !labels_only {
+    // Step 9: Create filters (unless labels_only)
+    let (filters_created, planned_filters, total_labeled_count): (usize, Vec<PlannedFilter>, usize) = if !labels_only {
             state.phase = ProcessingPhase::CreatingFilters;
             state.save(&cli.state_file).await?;
 
@@ -941,7 +1004,7 @@ pub async fn run_pipeline(
 
             // Collect planned filters for dry run report
             let mut planned_filters: Vec<PlannedFilter> = Vec::new();
-            let mut filters_created = 0;
+            filters_created = 0; // Reset for this run
             let mut filters_skipped = 0;
             let mut total_labeled = 0;
             let mut total_archived = 0;
@@ -1025,10 +1088,21 @@ pub async fn run_pipeline(
                             filters_skipped += 1;
                         }
                     } else {
-                        // No existing filter - create new one
-                        let filter_id = filter_manager.create_filter(&filter_with_id).await?;
-                        state.filters_created.push(filter_id);
-                        filters_created += 1;
+                        // No existing filter from decision - check Gmail for duplicates before creating
+                        // This handles the resume case where filter may have been created before crash
+                        let already_exists = existing_filters.iter().any(|ef| {
+                            ef.matches_filter_rule(&filter_with_id)
+                        });
+
+                        if already_exists {
+                            info!("Filter '{}' already exists in Gmail, skipping creation", filter.name);
+                            filters_skipped += 1;
+                        } else {
+                            // Create new filter
+                            let filter_id = filter_manager.create_filter(&filter_with_id).await?;
+                            state.filters_created.push(filter_id);
+                            filters_created += 1;
+                        }
                     }
 
                     // ALWAYS apply labels retroactively, even if filter already exists
@@ -1208,7 +1282,10 @@ pub async fn run_pipeline(
         Ok(report)
     } else {
         Err(GmailError::StateError(
-            "Cannot resume from this state. Start a new run instead.".to_string(),
+            format!(
+                "Cannot resume from {:?} phase. Resumable phases: Scanning, Classifying, CreatingLabels, CreatingFilters, ApplyingLabels. Start a new run instead.",
+                state.phase
+            )
         ))
     }
 }

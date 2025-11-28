@@ -11,6 +11,7 @@ use crossterm::{
     execute,
     terminal::{self, ClearType},
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 
@@ -49,7 +50,7 @@ impl EmailCluster {
 }
 
 /// Decision made by user for a cluster
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterDecision {
     pub sender_domain: String,
     /// For specific sender clusters, the email address
@@ -71,7 +72,7 @@ pub struct ClusterDecision {
 }
 
 /// Type of decision action
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DecisionAction {
     Accept,
     Reject,
@@ -1146,5 +1147,50 @@ mod tests {
         };
 
         assert_eq!(cluster.email_count(), 2);
+    }
+
+    #[test]
+    fn test_cluster_decision_serialization() {
+        let decision = ClusterDecision {
+            sender_email: "test@example.com".to_string(),
+            sender_domain: "example.com".to_string(),
+            is_specific_sender: true,
+            subject_pattern: Some("Newsletter".to_string()),
+            message_ids: vec!["msg1".to_string(), "msg2".to_string()],
+            label: "AutoManaged/newsletters".to_string(),
+            action: DecisionAction::Accept,
+            should_archive: true,
+            existing_filter_id: None,
+            needs_filter_update: false,
+            excluded_senders: vec![],
+        };
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&decision).unwrap();
+        assert!(json.contains("test@example.com"));
+        assert!(json.contains("Newsletter"));
+
+        // Deserialize back
+        let restored: ClusterDecision = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.sender_email, "test@example.com");
+        assert_eq!(restored.subject_pattern, Some("Newsletter".to_string()));
+        assert!(matches!(restored.action, DecisionAction::Accept));
+    }
+
+    #[test]
+    fn test_decision_action_serialization() {
+        let actions = vec![
+            DecisionAction::Accept,
+            DecisionAction::Reject,
+            DecisionAction::Skip,
+            DecisionAction::Custom("MyLabel".to_string()),
+        ];
+
+        for action in actions {
+            let json = serde_json::to_string(&action).unwrap();
+            let restored: DecisionAction = serde_json::from_str(&json).unwrap();
+            // Verify round-trip works (comparing debug strings since action has PartialEq)
+            assert_eq!(format!("{:?}", action), format!("{:?}", restored));
+        }
     }
 }
