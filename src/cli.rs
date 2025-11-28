@@ -1004,7 +1004,6 @@ pub async fn run_pipeline(
 
             // Collect planned filters for dry run report
             let mut planned_filters: Vec<PlannedFilter> = Vec::new();
-            filters_created = 0; // Reset for this run
             let mut filters_skipped = 0;
             let mut total_labeled = 0;
             let mut total_archived = 0;
