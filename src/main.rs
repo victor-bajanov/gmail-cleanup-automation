@@ -162,7 +162,7 @@ async fn run() -> Result<()> {
             dry_run,
             labels_only,
             interactive,
-            review,
+            no_review,
             resume,
         } => {
             tracing::info!("Starting full pipeline run");
@@ -172,13 +172,14 @@ async fn run() -> Result<()> {
             if labels_only {
                 println!("Running in LABELS ONLY mode - filters will not be created");
             }
-            if review {
-                println!("Running with INTERACTIVE REVIEW mode enabled");
+            if no_review {
+                println!("Running with review mode DISABLED");
             }
 
             // Run the complete pipeline (clone the inner MultiProgress, not the Arc)
+            // Review mode is enabled by default; pass !no_review
             let report =
-                cli::run_pipeline(&cli, dry_run, labels_only, interactive, review, resume, (*multi_progress).clone()).await?;
+                cli::run_pipeline(&cli, dry_run, labels_only, interactive, !no_review, resume, (*multi_progress).clone()).await?;
 
             // Display summary
             println!("\n========================================");

@@ -304,10 +304,14 @@ impl FilterManager {
         let mut seen_patterns: HashSet<String> = HashSet::new();
 
         for filter in &filters {
+            // Key must include all differentiating fields to avoid incorrectly dropping filters
             let pattern_key = format!(
-                "{}:{}",
+                "{}:{}:{}:{}:{}",
                 filter.from_pattern.as_deref().unwrap_or(""),
-                filter.subject_keywords.join(",")
+                filter.subject_keywords.join(","),
+                filter.excluded_senders.join(","),
+                filter.should_archive,
+                filter.target_label_id
             );
 
             // Check if we've seen this exact pattern

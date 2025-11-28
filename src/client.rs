@@ -45,7 +45,9 @@ impl ExistingFilterInfo {
                 // Normalize for comparison
                 let existing_normalized = existing_query.to_lowercase().trim().to_string();
                 let new_normalized = new_pattern.to_lowercase().trim().to_string();
-                existing_normalized == new_normalized
+                // Check if the from pattern is contained in the query
+                existing_normalized.contains(&format!("from:({})", new_normalized)) ||
+                existing_normalized == format!("from:({})", new_normalized)
             }
             (None, None) => true,
             _ => false,
@@ -63,6 +65,27 @@ impl ExistingFilterInfo {
 
         // If neither query nor from matches, filters are different
         if !query_matches && !from_matches {
+            return false;
+        }
+
+        // Compare subject keywords
+        // Extract subject from existing query if present
+        let existing_query_lower = self.query.as_deref().unwrap_or("").to_lowercase();
+        let existing_has_subject = existing_query_lower.contains("subject:(");
+
+        let subject_matches = if new_filter.subject_keywords.is_empty() {
+            // New filter has no subject - existing should also have no subject
+            !existing_has_subject
+        } else {
+            // New filter has subject keywords - check if existing query contains them
+            new_filter.subject_keywords.iter().all(|keyword| {
+                let keyword_lower = keyword.to_lowercase();
+                existing_query_lower.contains(&format!("subject:({})", keyword_lower)) ||
+                existing_query_lower.contains(&format!("subject:(\"{}\")", keyword_lower))
+            })
+        };
+
+        if !subject_matches {
             return false;
         }
 

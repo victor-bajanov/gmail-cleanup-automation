@@ -61,9 +61,9 @@ pub enum Commands {
         #[arg(long)]
         interactive: bool,
 
-        /// Interactive review mode - review clusters with keyboard shortcuts
+        /// Skip interactive review mode (review is enabled by default)
         #[arg(long)]
-        review: bool,
+        no_review: bool,
 
         /// Resume from previous interrupted run
         #[arg(long)]
@@ -586,27 +586,50 @@ pub async fn run_pipeline(
 
                 // Try to find a matching existing filter
                 for existing in &existing_filters {
-                    // Check if the from pattern matches
-                    let pattern_matches = match &existing.query {
-                        Some(existing_query) => {
-                            let existing_normalized = existing_query.to_lowercase().trim().to_string();
-                            let new_normalized = from_pattern.to_lowercase().trim().to_string();
-
-                            // Gmail uses "from:(*@domain.com)" or "from:(email@domain.com)" format
-                            // Extract the actual pattern from the query
-                            let existing_clean = existing_normalized
-                                .replace("from:(", "")
-                                .replace(")", "")
-                                .trim()
-                                .to_string();
-
-                            existing_clean == new_normalized ||
-                            existing_normalized.contains(&format!("from:({})", new_normalized))
-                        }
-                        None => false,
+                    let existing_query = match &existing.query {
+                        Some(q) => q.to_lowercase(),
+                        None => continue,
                     };
 
-                    if pattern_matches {
+                    // Check if the from pattern matches
+                    let new_normalized = from_pattern.to_lowercase();
+
+                    // Gmail uses "from:(*@domain.com)" or "from:(email@domain.com)" format
+                    // Extract the actual pattern from the query
+                    let existing_clean = existing_query
+                        .replace("from:(", "")
+                        .replace(")", "")
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+
+                    let from_matches = existing_clean == new_normalized ||
+                        existing_query.contains(&format!("from:({})", new_normalized));
+
+                    if !from_matches {
+                        continue;
+                    }
+
+                    // Check if subject pattern matches
+                    // Extract subject clause from existing query if present
+                    let existing_has_subject = existing_query.contains("subject:(");
+                    let subject_matches = match &cluster.subject_pattern {
+                        Some(pattern) => {
+                            // Cluster has subject pattern - existing filter must have matching subject
+                            let pattern_lower = pattern.to_lowercase();
+                            existing_query.contains(&format!("subject:({})", pattern_lower)) ||
+                            existing_query.contains(&format!("subject:(\"{}\")", pattern_lower))
+                        }
+                        None => {
+                            // Cluster has no subject pattern - existing filter should not have subject
+                            // (to avoid matching domain-wide cluster to subject-specific filter)
+                            !existing_has_subject
+                        }
+                    };
+
+                    if from_matches && subject_matches {
                         cluster.existing_filter_id = Some(existing.id.clone());
 
                         // Store the existing label ID (first one if multiple)
@@ -924,12 +947,18 @@ pub async fn run_pipeline(
             let mut total_archived = 0;
 
             // Build a map from decisions for quick lookup of existing filter info
+            // Key must include subject_pattern to avoid collisions between subject-based clusters
             let mut decision_map: HashMap<String, &ClusterDecision> = HashMap::new();
             for decision in &review_decisions {
-                let key = if decision.is_specific_sender {
+                let base = if decision.is_specific_sender {
                     decision.sender_email.clone()
                 } else {
                     format!("*@{}", decision.sender_domain)
+                };
+                let key = if let Some(subject) = &decision.subject_pattern {
+                    format!("{}|subject:{}", base, subject)
+                } else {
+                    base
                 };
                 decision_map.insert(key, decision);
             }
@@ -951,10 +980,18 @@ pub async fn run_pipeline(
                     filter_with_id.target_label_id = label_id.clone();
 
                     // Check if this filter came from a decision with an existing filter
-                    let decision_key = if filter.is_specific_sender {
-                        filter.from_pattern.clone().unwrap_or_default()
-                    } else {
-                        filter.from_pattern.clone().unwrap_or_default()
+                    // Key must match the format used when building decision_map
+                    let decision_key = {
+                        let base = if filter.is_specific_sender {
+                            filter.from_pattern.clone().unwrap_or_default()
+                        } else {
+                            format!("*@{}", filter.from_pattern.as_deref().unwrap_or("").trim_start_matches("*@"))
+                        };
+                        if !filter.subject_keywords.is_empty() {
+                            format!("{}|subject:{}", base, filter.subject_keywords.join(" "))
+                        } else {
+                            base
+                        }
                     };
 
                     let decision = decision_map.get(&decision_key);

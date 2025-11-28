@@ -373,12 +373,19 @@ impl ReviewSession {
         }
     }
 
-    /// Get a unique key for a cluster (specific sender email or domain)
+    /// Get a unique key for a cluster (specific sender email or domain, plus subject pattern if any)
     fn cluster_key(cluster: &EmailCluster) -> String {
-        if cluster.is_specific_sender {
+        let base = if cluster.is_specific_sender {
             cluster.sender_email.clone()
         } else {
             format!("*@{}", cluster.sender_domain)
+        };
+
+        // Include subject pattern in key to differentiate subject-based clusters
+        if let Some(subject) = &cluster.subject_pattern {
+            format!("{}|subject:{}", base, subject)
+        } else {
+            base
         }
     }
 
@@ -841,16 +848,32 @@ fn detect_subject_patterns<'a>(
     pattern_map
 }
 
-/// Normalize subject for pattern matching (remove Re:, Fwd:, etc.)
+/// Normalize subject for pattern matching
+/// Removes Re:, Fwd:, Fw: prefixes (case-insensitive, with or without space)
 fn normalize_subject(subject: &str) -> String {
-    subject
-        .trim()
-        .replace("Re: ", "")
-        .replace("RE: ", "")
-        .replace("Fwd: ", "")
-        .replace("FWD: ", "")
-        .trim()
-        .to_string()
+    let prefixes = ["re:", "fwd:", "fw:"];
+    let mut result = subject.trim().to_string();
+
+    // Keep removing prefixes until none match (handles "Re: Fwd: Re: Subject")
+    loop {
+        let lower = result.to_lowercase();
+        let mut matched = false;
+
+        for prefix in &prefixes {
+            if lower.starts_with(prefix) {
+                // Remove the prefix (preserving original casing in result)
+                result = result[prefix.len()..].trim_start().to_string();
+                matched = true;
+                break;
+            }
+        }
+
+        if !matched {
+            break;
+        }
+    }
+
+    result
 }
 
 /// Build a single email cluster from a set of messages (without subject pattern)
@@ -1070,11 +1093,30 @@ mod tests {
 
     #[test]
     fn test_normalize_subject() {
+        // Basic cases
         assert_eq!(normalize_subject("Re: Test"), "Test");
         assert_eq!(normalize_subject("Fwd: Important"), "Important");
         assert_eq!(normalize_subject("RE: Test"), "Test");
         assert_eq!(normalize_subject("  Test  "), "Test");
         assert_eq!(normalize_subject("FWD: Urgent"), "Urgent");
+
+        // Case insensitive (new behavior)
+        assert_eq!(normalize_subject("re: test"), "test");
+        assert_eq!(normalize_subject("fwd: test"), "test");
+        assert_eq!(normalize_subject("fw: test"), "test");
+
+        // Without space after colon (new behavior)
+        assert_eq!(normalize_subject("Re:Test"), "Test");
+        assert_eq!(normalize_subject("RE:Alert"), "Alert");
+        assert_eq!(normalize_subject("fwd:message"), "message");
+
+        // Chained prefixes (new behavior)
+        assert_eq!(normalize_subject("Re: Fwd: Re: Original"), "Original");
+        assert_eq!(normalize_subject("FW: RE: FWD: Test"), "Test");
+
+        // No prefix
+        assert_eq!(normalize_subject("Normal Subject"), "Normal Subject");
+        assert_eq!(normalize_subject("Reply to your message"), "Reply to your message");
     }
 
     #[test]
