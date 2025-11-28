@@ -267,24 +267,47 @@ cargo run -- run
 By default, the tool enters an interactive review mode where you review each email cluster:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Cluster 1/57: messages-noreply@linkedin.com                    │
-│  20 emails | Suggested: AutoManaged/LinkedIn                    │
-├─────────────────────────────────────────────────────────────────┤
-│  Subject: "Victor, I'm still waiting for your response"         │
-│  Archive: Yes                                                   │
-├─────────────────────────────────────────────────────────────────┤
-│  [A] Accept  [R] Reject  [C] Custom  [S] Skip  [D] Defer  [Q] Quit
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Progress: [█████████████████████████████████████████░░░░░░░░]  53/60 clusters│
+├──────────────────────────────────────────────────────────────────────────────┤
+│ CLUSTER: no-reply@spotify.com (specific sender) (5 emails)                   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Proposed filter rule:                                                        │
+│   Query:   from:(no-reply@spotify.com)                                       │
+│   Label:   AutoManaged/other/spotify-com                                     │
+│   Archive: YES                                                               │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Sample subjects:                                                             │
+│   • 🎫 AC/DC recently announced a show near you! 🎫                           │
+│   • The Tiger Lillies, Amber Run live: personalized concert recommendations  │
+│   • Start exploring venues on Spotify                                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [Y] Create filter  [N] No filter  [S] Skip for now                           │
+│ [A] Toggle archive [L] Change label         [?] Help                         │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Actions:**
-- **Accept (A)**: Use the suggested label and archive setting
-- **Reject (R)**: Skip this sender entirely (no filter created)
-- **Custom (C)**: Change the target label or archive setting
-- **Skip (S)**: Skip for now (no filter created)
-- **Defer (D)**: Save for later review
-- **Quit (Q)**: Exit review (decisions so far are saved)
+**Keyboard Shortcuts:**
+
+| Key | Action | Description |
+|-----|--------|-------------|
+| **Decisions** |||
+| `Y` / `Enter` | Create filter | Accept with shown label & archive setting |
+| `N` | No filter | Leave these emails alone (no filter created) |
+| `S` | Skip | Don't decide now, come back later |
+| **Edit before accepting** |||
+| `A` | Toggle archive | Switch auto-archive ON/OFF |
+| `L` | Change label | Enter a different target label |
+| **Navigation** |||
+| `U` | Undo | Go back to previous decision |
+| `?` | Help | Show keyboard shortcuts |
+| `Q` | Quit | Exit without saving changes |
+| `W` | Write | Save all changes (shown at end) |
+| `Ctrl+C` | Force quit | Exit immediately |
+
+**What happens:**
+- **Y** creates a Gmail filter matching `from:(sender@domain)` → applies your label, optionally archives
+- **N** ignores the sender entirely - no filter or label created
 
 **Skip the review** (auto-accept all suggestions):
 
