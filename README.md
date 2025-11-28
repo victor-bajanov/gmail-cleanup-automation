@@ -256,10 +256,41 @@ cargo run -- run
 **What it does:**
 1. Scans emails from the last 90 days (configurable)
 2. Classifies each email into categories
-3. Creates hierarchical labels in Gmail
-4. Generates and creates filter rules
-5. Applies labels to existing messages
-6. Generates a summary report
+3. **Interactive Review** - Review each sender cluster and decide: Accept, Reject, or Custom label
+4. Creates hierarchical labels in Gmail
+5. Generates and creates filter rules
+6. Applies labels to existing messages
+7. Generates a summary report
+
+### Interactive Review Mode (Default)
+
+By default, the tool enters an interactive review mode where you review each email cluster:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Cluster 1/57: messages-noreply@linkedin.com                    │
+│  20 emails | Suggested: AutoManaged/LinkedIn                    │
+├─────────────────────────────────────────────────────────────────┤
+│  Subject: "Victor, I'm still waiting for your response"         │
+│  Archive: Yes                                                   │
+├─────────────────────────────────────────────────────────────────┤
+│  [A] Accept  [R] Reject  [C] Custom  [S] Skip  [D] Defer  [Q] Quit
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Actions:**
+- **Accept (A)**: Use the suggested label and archive setting
+- **Reject (R)**: Skip this sender entirely (no filter created)
+- **Custom (C)**: Change the target label or archive setting
+- **Skip (S)**: Skip for now (no filter created)
+- **Defer (D)**: Save for later review
+- **Quit (Q)**: Exit review (decisions so far are saved)
+
+**Skip the review** (auto-accept all suggestions):
+
+```bash
+cargo run -- run --no-review
+```
 
 ### Dry-Run Mode (Recommended First Run)
 
@@ -271,9 +302,9 @@ cargo run -- run --dry-run
 
 This shows exactly what would happen without making any actual changes.
 
-### Interactive Mode
+### Confirmation Mode
 
-Confirm each major action before execution:
+Add Y/N confirmation prompts before each major phase:
 
 ```bash
 cargo run -- run --interactive
@@ -282,7 +313,13 @@ cargo run -- run --interactive
 You'll be prompted before:
 - Creating labels
 - Creating filters
-- Applying labels to messages
+
+Note: This is different from the review mode. You can combine both:
+
+```bash
+cargo run -- run --interactive  # Review + confirmations
+cargo run -- run --no-review --interactive  # No review, but confirmations
+```
 
 ### Labels Only Mode
 
@@ -302,7 +339,12 @@ If processing is interrupted, resume from the last checkpoint:
 cargo run -- run --resume
 ```
 
-The system checkpoints state every 100 messages, so you won't lose progress.
+The system saves state including:
+- Scan progress (every 100 messages)
+- Review decisions (saved to `decisions.json`)
+- Created labels and filters
+
+You can resume from any phase including label and filter creation.
 
 ### Check Status
 
@@ -320,7 +362,7 @@ cargo run -- status --detailed
 
 ### Command-Line Options
 
-All commands support these global options:
+**Global options** (all commands):
 
 ```bash
 --config <PATH>        # Path to config file (default: config.toml)
@@ -330,10 +372,33 @@ All commands support these global options:
 --verbose              # Enable debug logging
 ```
 
+**Run command options** (`gmail-automation run`):
+
+```bash
+--dry-run              # Preview changes without modifying Gmail
+--no-review            # Skip interactive review, auto-accept all suggestions
+--interactive          # Add Y/N confirmation prompts before each phase
+--labels-only          # Only create labels, skip filter creation
+--resume               # Resume from previous interrupted run
+```
+
 **Example with custom paths:**
 
 ```bash
 cargo run -- --config my-config.toml --credentials auth/creds.json run --dry-run
+```
+
+**Example workflow:**
+
+```bash
+# First: dry run to see what would happen
+cargo run -- run --dry-run
+
+# Then: full run with review (default)
+cargo run -- run
+
+# Or: skip review and auto-accept all
+cargo run -- run --no-review
 ```
 
 ---
@@ -357,27 +422,28 @@ cargo run -- --config my-config.toml --credentials auth/creds.json run --dry-run
    ├─ Fetch message metadata (concurrent batches)
    └─ Extract sender, subject, headers
 
-4. Classification
+4. Classification & Clustering
    ├─ Apply rule-based pattern matching
    ├─ Identify email category
-   ├─ Determine confidence score
-   └─ Decide if should archive
+   ├─ Group emails by sender (with subject patterns)
+   └─ Suggest labels and archive settings
 
-5. Label Creation
+5. Interactive Review (default, skip with --no-review)
+   ├─ Present each cluster for review
+   ├─ Accept/Reject/Custom decisions
+   ├─ Save decisions to decisions.json
+   └─ Resume-safe: decisions persist across crashes
+
+6. Label Creation
    ├─ Generate hierarchical label structure
    ├─ Create labels in Gmail (if not exists)
    └─ Track created label IDs
 
-6. Filter Generation
-   ├─ Analyze classification patterns
-   ├─ Group by sender domain
-   ├─ Create filter rules for future emails
-   └─ Apply filters in Gmail
-
-7. Message Processing
-   ├─ Apply labels to existing messages
-   ├─ Archive messages (if configured)
-   └─ Checkpoint every 100 messages
+7. Filter Generation
+   ├─ Convert review decisions to filter rules
+   ├─ Check for existing filters (idempotent)
+   ├─ Create filter rules with retry logic
+   └─ Apply labels retroactively to matching emails
 
 8. Report Generation
    ├─ Calculate statistics
