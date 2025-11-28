@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use gmail_automation::cli::{self, Cli, Commands};
+use gmail_automation::client::GmailClient;
 use gmail_automation::config::Config;
 use gmail_automation::error::GmailError;
 use indicatif::MultiProgress;
@@ -280,6 +281,180 @@ async fn run() -> Result<()> {
             println!("  - classification.mode: 'rules', 'ml', or 'hybrid'");
             println!("  - labels.prefix: Prefix for all created labels");
             println!("  - labels.auto_archive_categories: Categories to auto-archive");
+
+            Ok(())
+        }
+
+        Commands::Unmanage {
+            dry_run,
+            delete_labels,
+            force,
+        } => {
+            tracing::info!("Starting unmanage operation");
+            if dry_run {
+                println!("Running in DRY RUN mode - no changes will be made");
+            }
+
+            // Load configuration to get the label prefix
+            let config = Config::load(&cli.config).await?;
+            let label_prefix = &config.labels.prefix;
+
+            println!("Looking for auto-managed filters with label prefix: {}", label_prefix);
+
+            // Initialize Gmail API
+            let hub = gmail_automation::auth::initialize_gmail_hub(
+                &cli.credentials,
+                &cli.token_cache,
+            )
+            .await?;
+
+            let client = gmail_automation::client::ProductionGmailClient::new(
+                hub,
+                config.scan.max_concurrent_requests,
+            );
+
+            // List all existing filters
+            println!("\nFetching existing Gmail filters...");
+            let existing_filters = client.list_filters().await?;
+            println!("Found {} total filters", existing_filters.len());
+
+            // List all labels to build ID -> name mapping
+            println!("Fetching existing Gmail labels...");
+            let existing_labels = client.list_labels().await?;
+            let label_id_to_name: std::collections::HashMap<String, String> = existing_labels
+                .iter()
+                .map(|l| (l.id.clone(), l.name.clone()))
+                .collect();
+            println!("Found {} total labels", existing_labels.len());
+
+            // Find filters that add labels with the configured prefix
+            let mut filters_to_delete = Vec::new();
+            for filter in &existing_filters {
+                // Check if any of the filter's add_label_ids have names starting with our prefix
+                for label_id in &filter.add_label_ids {
+                    if let Some(label_name) = label_id_to_name.get(label_id) {
+                        if label_name.starts_with(label_prefix) {
+                            filters_to_delete.push((filter.id.clone(), filter.query.clone(), label_name.clone()));
+                            break; // Only add filter once even if it has multiple matching labels
+                        }
+                    }
+                }
+            }
+
+            // Find labels that start with the configured prefix
+            let labels_to_delete: Vec<_> = existing_labels
+                .iter()
+                .filter(|l| l.name.starts_with(label_prefix))
+                .collect();
+
+            // Display what will be deleted
+            println!("\n========================================");
+            println!("Auto-managed items found");
+            println!("========================================");
+
+            if filters_to_delete.is_empty() {
+                println!("\nNo auto-managed filters found.");
+            } else {
+                println!("\nFilters to delete ({}):", filters_to_delete.len());
+                for (id, query, label_name) in &filters_to_delete {
+                    let query_display = query.as_ref().map(|q| q.as_str()).unwrap_or("<no query>");
+                    println!("  - {} -> {} (ID: {})", query_display, label_name, id);
+                }
+            }
+
+            if delete_labels {
+                if labels_to_delete.is_empty() {
+                    println!("\nNo auto-managed labels found.");
+                } else {
+                    println!("\nLabels to delete ({}):", labels_to_delete.len());
+                    for label in &labels_to_delete {
+                        println!("  - {} (ID: {})", label.name, label.id);
+                    }
+                }
+            }
+
+            // If nothing to delete, exit early
+            if filters_to_delete.is_empty() && (!delete_labels || labels_to_delete.is_empty()) {
+                println!("\nNothing to delete. Exiting.");
+                return Ok(());
+            }
+
+            // Confirm deletion (unless --force or --dry-run)
+            if !dry_run && !force {
+                println!("\n⚠️  This action will permanently delete the items listed above!");
+                print!("Are you sure you want to proceed? [y/N]: ");
+                std::io::Write::flush(&mut std::io::stdout())?;
+
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+
+                if input.trim().to_lowercase() != "y" {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+
+            // Delete filters
+            if !filters_to_delete.is_empty() {
+                println!("\n{} {} filters...",
+                    if dry_run { "Would delete" } else { "Deleting" },
+                    filters_to_delete.len()
+                );
+
+                if !dry_run {
+                    let mut deleted = 0;
+                    let mut failed = 0;
+                    for (filter_id, query, _) in &filters_to_delete {
+                        match client.delete_filter(filter_id).await {
+                            Ok(_) => {
+                                deleted += 1;
+                                let query_display = query.as_ref().map(|q| q.as_str()).unwrap_or("<no query>");
+                                tracing::debug!("Deleted filter: {}", query_display);
+                            }
+                            Err(e) => {
+                                failed += 1;
+                                tracing::warn!("Failed to delete filter {}: {}", filter_id, e);
+                            }
+                        }
+                    }
+                    println!("  ✓ Deleted {} filters ({} failed)", deleted, failed);
+                }
+            }
+
+            // Delete labels (if requested)
+            if delete_labels && !labels_to_delete.is_empty() {
+                println!("\n{} {} labels...",
+                    if dry_run { "Would delete" } else { "Deleting" },
+                    labels_to_delete.len()
+                );
+
+                if !dry_run {
+                    let mut deleted = 0;
+                    let mut failed = 0;
+                    for label in &labels_to_delete {
+                        match client.delete_label(&label.id).await {
+                            Ok(_) => {
+                                deleted += 1;
+                                tracing::debug!("Deleted label: {}", label.name);
+                            }
+                            Err(e) => {
+                                failed += 1;
+                                tracing::warn!("Failed to delete label {}: {}", label.name, e);
+                            }
+                        }
+                    }
+                    println!("  ✓ Deleted {} labels ({} failed)", deleted, failed);
+                }
+            }
+
+            println!("\n========================================");
+            if dry_run {
+                println!("Dry run complete. No changes were made.");
+                println!("Run without --dry-run to apply changes.");
+            } else {
+                println!("Unmanage operation complete!");
+            }
+            println!("========================================");
 
             Ok(())
         }

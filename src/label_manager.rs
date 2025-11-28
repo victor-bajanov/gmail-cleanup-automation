@@ -637,6 +637,7 @@ mod tests {
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
+                async fn delete_label(&self, label_id: &str) -> Result<()>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn delete_filter(&self, filter_id: &str) -> Result<()>;
@@ -685,6 +686,7 @@ mod tests {
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
+                async fn delete_label(&self, label_id: &str) -> Result<()>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn delete_filter(&self, filter_id: &str) -> Result<()>;
@@ -721,6 +723,7 @@ mod tests {
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
+                async fn delete_label(&self, label_id: &str) -> Result<()>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn delete_filter(&self, filter_id: &str) -> Result<()>;
@@ -765,6 +768,7 @@ mod tests {
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
+                async fn delete_label(&self, label_id: &str) -> Result<()>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn delete_filter(&self, filter_id: &str) -> Result<()>;
@@ -813,6 +817,7 @@ mod tests {
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
+                async fn delete_label(&self, label_id: &str) -> Result<()>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn delete_filter(&self, filter_id: &str) -> Result<()>;
@@ -898,6 +903,7 @@ mod tests {
                 async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
                 async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
                 async fn create_label(&self, name: &str) -> Result<String>;
+                async fn delete_label(&self, label_id: &str) -> Result<()>;
                 async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
                 async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
                 async fn delete_filter(&self, filter_id: &str) -> Result<()>;

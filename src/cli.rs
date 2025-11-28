@@ -106,6 +106,21 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+
+    /// Remove all auto-managed filters (and optionally labels) from Gmail
+    Unmanage {
+        /// Dry run mode (don't make any changes, just show what would be deleted)
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Also delete the auto-managed labels (not just filters)
+        #[arg(long)]
+        delete_labels: bool,
+
+        /// Force deletion without confirmation prompt
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};

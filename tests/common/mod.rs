@@ -100,6 +100,8 @@ pub fn create_test_filter(name: &str, from_pattern: &str, label_id: &str) -> Fil
         id: None,
         name: name.to_string(),
         from_pattern: Some(from_pattern.to_string()),
+        is_specific_sender: false,
+        excluded_senders: vec![],
         subject_keywords: vec![],
         target_label_id: label_id.to_string(),
         should_archive: true,
@@ -212,10 +214,29 @@ mock! {
     impl GmailClient for GmailClient {
         async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
         async fn get_message(&self, id: &str) -> Result<MessageMetadata>;
+        async fn list_labels(&self) -> Result<Vec<gmail_automation::client::LabelInfo>>;
         async fn create_label(&self, name: &str) -> Result<String>;
+        async fn delete_label(&self, label_id: &str) -> Result<()>;
         async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+        async fn list_filters(&self) -> Result<Vec<gmail_automation::client::ExistingFilterInfo>>;
+        async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+        async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
         async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+        async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+        async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+        async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+        async fn batch_modify_labels(
+            &self,
+            message_ids: &[String],
+            add_label_ids: &[String],
+            remove_label_ids: &[String],
+        ) -> Result<usize>;
         async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>>;
+        async fn fetch_messages_with_progress(
+            &self,
+            message_ids: Vec<String>,
+            on_progress: gmail_automation::client::ProgressCallback,
+        ) -> Result<Vec<MessageMetadata>>;
     }
 }
 

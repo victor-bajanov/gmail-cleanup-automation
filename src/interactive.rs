@@ -95,6 +95,7 @@ pub struct ReviewSession {
     deferred_indices: Vec<usize>,
     history: Vec<HistoryEntry>,
     available_labels: Vec<String>,
+    #[allow(dead_code)] // Stored for potential future use
     label_id_to_name: HashMap<String, String>,
 }
 

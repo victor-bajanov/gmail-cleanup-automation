@@ -95,6 +95,9 @@ pub trait GmailClient: Send + Sync {
     /// Create a new label
     async fn create_label(&self, name: &str) -> Result<String>;
 
+    /// Delete a label by ID
+    async fn delete_label(&self, label_id: &str) -> Result<()>;
+
     /// Create a new filter rule
     async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
 
@@ -478,6 +481,17 @@ impl GmailClient for ProductionGmailClient {
             .ok_or_else(|| GmailError::LabelError("Created label has no ID".to_string()))
     }
 
+    async fn delete_label(&self, label_id: &str) -> Result<()> {
+        self.hub
+            .users()
+            .labels_delete("me", label_id)
+            .add_scope("https://www.googleapis.com/auth/gmail.labels")
+            .doit()
+            .await?;
+
+        Ok(())
+    }
+
     async fn create_filter(&self, filter: &FilterRule) -> Result<String> {
         // Build the full Gmail query including from pattern, exclusions, and subject keywords
         let full_query = crate::filter_manager::FilterManager::build_gmail_query_static(filter);
@@ -769,6 +783,10 @@ impl GmailClient for Arc<ProductionGmailClient> {
 
     async fn create_label(&self, name: &str) -> Result<String> {
         self.as_ref().create_label(name).await
+    }
+
+    async fn delete_label(&self, label_id: &str) -> Result<()> {
+        self.as_ref().delete_label(label_id).await
     }
 
     async fn create_filter(&self, filter: &FilterRule) -> Result<String> {
