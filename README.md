@@ -3,7 +3,7 @@
 A high-performance, production-ready email organization system that automatically classifies, labels, and filters your Gmail inbox using rule-based pattern matching and optional machine learning.
 
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Overview
 
@@ -783,12 +783,7 @@ Contributions are welcome! Please:
 
 ## License
 
-This project is dual-licensed under:
-
-- [MIT License](LICENSE-MIT)
-- [Apache License 2.0](LICENSE-APACHE)
-
-You may choose either license for your use.
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 

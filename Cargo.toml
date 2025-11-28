@@ -3,6 +3,7 @@ name = "gmail-automation"
 version = "0.3.0"
 edition = "2021"
 rust-version = "1.70"
+license = "MIT"
 
 [dependencies]
 # Gmail API
