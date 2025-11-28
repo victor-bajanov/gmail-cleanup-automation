@@ -206,6 +206,31 @@ pub fn mock_gmail_error_response(code: u16, message: &str) -> serde_json::Value 
     })
 }
 
+/// Create a test LabelInfo
+pub fn create_test_label_info(id: &str, name: &str) -> gmail_automation::client::LabelInfo {
+    gmail_automation::client::LabelInfo {
+        id: id.to_string(),
+        name: name.to_string(),
+    }
+}
+
+/// Create a test ExistingFilterInfo
+pub fn create_test_existing_filter(
+    id: &str,
+    query: Option<&str>,
+    add_label_ids: Vec<&str>,
+) -> gmail_automation::client::ExistingFilterInfo {
+    gmail_automation::client::ExistingFilterInfo {
+        id: id.to_string(),
+        query: query.map(|s| s.to_string()),
+        from: None,
+        to: None,
+        subject: None,
+        add_label_ids: add_label_ids.into_iter().map(|s| s.to_string()).collect(),
+        remove_label_ids: vec![],
+    }
+}
+
 /// Mock implementation of GmailClient for testing
 mock! {
     pub GmailClient {}
