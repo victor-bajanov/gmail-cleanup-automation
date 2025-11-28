@@ -291,22 +291,29 @@ async fn run() -> Result<()> {
             force,
         } => {
             tracing::info!("Starting unmanage operation");
+
+            // Set up progress reporting
+            let multi = MultiProgress::new();
+            let reporter = cli::ProgressReporter::with_multi_progress(multi);
+
             if dry_run {
-                println!("Running in DRY RUN mode - no changes will be made");
+                let _ = reporter.multi_progress().println("Running in DRY RUN mode - no changes will be made");
             }
 
-            // Load configuration to get the label prefix
+            // Load configuration
+            let config_spinner = reporter.add_spinner("Loading configuration...");
             let config = Config::load(&cli.config).await?;
             let label_prefix = &config.labels.prefix;
-
-            println!("Looking for auto-managed filters with label prefix: {}", label_prefix);
+            reporter.finish_spinner(&config_spinner, &format!("Configuration loaded (prefix: {})", label_prefix));
 
             // Initialize Gmail API
+            let auth_spinner = reporter.add_spinner("Authenticating with Gmail API...");
             let hub = gmail_automation::auth::initialize_gmail_hub(
                 &cli.credentials,
                 &cli.token_cache,
             )
             .await?;
+            reporter.finish_spinner(&auth_spinner, "Gmail API authenticated");
 
             let client = gmail_automation::client::ProductionGmailClient::new(
                 hub,
@@ -314,18 +321,18 @@ async fn run() -> Result<()> {
             );
 
             // List all existing filters
-            println!("\nFetching existing Gmail filters...");
+            let filters_spinner = reporter.add_spinner("Fetching existing Gmail filters...");
             let existing_filters = client.list_filters().await?;
-            println!("Found {} total filters", existing_filters.len());
+            reporter.finish_spinner(&filters_spinner, &format!("Found {} total filters", existing_filters.len()));
 
             // List all labels to build ID -> name mapping
-            println!("Fetching existing Gmail labels...");
+            let labels_spinner = reporter.add_spinner("Fetching existing Gmail labels...");
             let existing_labels = client.list_labels().await?;
             let label_id_to_name: std::collections::HashMap<String, String> = existing_labels
                 .iter()
                 .map(|l| (l.id.clone(), l.name.clone()))
                 .collect();
-            println!("Found {} total labels", existing_labels.len());
+            reporter.finish_spinner(&labels_spinner, &format!("Found {} total labels", existing_labels.len()));
 
             // Find filters that add labels with the configured prefix (case-insensitive)
             let prefix_lower = label_prefix.to_lowercase();
@@ -349,60 +356,62 @@ async fn run() -> Result<()> {
                 .collect();
 
             // Display what will be deleted
-            println!("\n========================================");
-            println!("Auto-managed items found");
-            println!("========================================");
+            let _ = reporter.multi_progress().println("\n========================================");
+            let _ = reporter.multi_progress().println("Auto-managed items found");
+            let _ = reporter.multi_progress().println("========================================");
 
             if filters_to_delete.is_empty() {
-                println!("\nNo auto-managed filters found.");
+                let _ = reporter.multi_progress().println("\nNo auto-managed filters found.");
             } else {
-                println!("\nFilters to delete ({}):", filters_to_delete.len());
+                let _ = reporter.multi_progress().println(format!("\nFilters to delete ({}):", filters_to_delete.len()));
                 for (id, query, label_name) in &filters_to_delete {
                     let query_display = query.as_ref().map(|q| q.as_str()).unwrap_or("<no query>");
-                    println!("  - {} -> {} (ID: {})", query_display, label_name, id);
+                    let _ = reporter.multi_progress().println(format!("  - {} -> {} (ID: {})", query_display, label_name, id));
                 }
             }
 
             if delete_labels {
                 if labels_to_delete.is_empty() {
-                    println!("\nNo auto-managed labels found.");
+                    let _ = reporter.multi_progress().println("\nNo auto-managed labels found.");
                 } else {
-                    println!("\nLabels to delete ({}):", labels_to_delete.len());
+                    let _ = reporter.multi_progress().println(format!("\nLabels to delete ({}):", labels_to_delete.len()));
                     for label in &labels_to_delete {
-                        println!("  - {} (ID: {})", label.name, label.id);
+                        let _ = reporter.multi_progress().println(format!("  - {} (ID: {})", label.name, label.id));
                     }
                 }
             }
 
             // If nothing to delete, exit early
             if filters_to_delete.is_empty() && (!delete_labels || labels_to_delete.is_empty()) {
-                println!("\nNothing to delete. Exiting.");
+                let _ = reporter.multi_progress().println("\nNothing to delete. Exiting.");
                 return Ok(());
             }
 
             // Confirm deletion (unless --force or --dry-run)
             if !dry_run && !force {
-                println!("\n⚠️  This action will permanently delete the items listed above!");
-                print!("Are you sure you want to proceed? [y/N]: ");
-                std::io::Write::flush(&mut std::io::stdout())?;
+                // Suspend progress bars for user input
+                let _ = reporter.multi_progress().println("\n⚠️  This action will permanently delete the items listed above!");
+                reporter.multi_progress().suspend(|| {
+                    print!("Are you sure you want to proceed? [y/N]: ");
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                });
 
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)?;
 
                 if input.trim().to_lowercase() != "y" {
-                    println!("Aborted.");
+                    let _ = reporter.multi_progress().println("Aborted.");
                     return Ok(());
                 }
             }
 
             // Delete filters
             if !filters_to_delete.is_empty() {
-                println!("\n{} {} filters...",
-                    if dry_run { "Would delete" } else { "Deleting" },
-                    filters_to_delete.len()
-                );
+                if dry_run {
+                    let _ = reporter.multi_progress().println(format!("\nWould delete {} filters", filters_to_delete.len()));
+                } else {
+                    let pb = reporter.add_progress_bar(filters_to_delete.len() as u64, "Deleting filters...");
 
-                if !dry_run {
                     let mut deleted = 0;
                     let mut failed = 0;
                     for (filter_id, query, _) in &filters_to_delete {
@@ -417,19 +426,19 @@ async fn run() -> Result<()> {
                                 tracing::warn!("Failed to delete filter {}: {}", filter_id, e);
                             }
                         }
+                        pb.inc(1);
                     }
-                    println!("  ✓ Deleted {} filters ({} failed)", deleted, failed);
+                    pb.finish_with_message(format!("Deleted {} filters ({} failed)", deleted, failed));
                 }
             }
 
             // Delete labels (if requested)
             if delete_labels && !labels_to_delete.is_empty() {
-                println!("\n{} {} labels...",
-                    if dry_run { "Would delete" } else { "Deleting" },
-                    labels_to_delete.len()
-                );
+                if dry_run {
+                    let _ = reporter.multi_progress().println(format!("\nWould delete {} labels", labels_to_delete.len()));
+                } else {
+                    let pb = reporter.add_progress_bar(labels_to_delete.len() as u64, "Deleting labels...");
 
-                if !dry_run {
                     let mut deleted = 0;
                     let mut failed = 0;
                     for label in &labels_to_delete {
@@ -443,19 +452,20 @@ async fn run() -> Result<()> {
                                 tracing::warn!("Failed to delete label {}: {}", label.name, e);
                             }
                         }
+                        pb.inc(1);
                     }
-                    println!("  ✓ Deleted {} labels ({} failed)", deleted, failed);
+                    pb.finish_with_message(format!("Deleted {} labels ({} failed)", deleted, failed));
                 }
             }
 
-            println!("\n========================================");
+            let _ = reporter.multi_progress().println("\n========================================");
             if dry_run {
-                println!("Dry run complete. No changes were made.");
-                println!("Run without --dry-run to apply changes.");
+                let _ = reporter.multi_progress().println("Dry run complete. No changes were made.");
+                let _ = reporter.multi_progress().println("Run without --dry-run to apply changes.");
             } else {
-                println!("Unmanage operation complete!");
+                let _ = reporter.multi_progress().println("Unmanage operation complete!");
             }
-            println!("========================================");
+            let _ = reporter.multi_progress().println("========================================");
 
             Ok(())
         }
