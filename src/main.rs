@@ -327,13 +327,14 @@ async fn run() -> Result<()> {
                 .collect();
             println!("Found {} total labels", existing_labels.len());
 
-            // Find filters that add labels with the configured prefix
+            // Find filters that add labels with the configured prefix (case-insensitive)
+            let prefix_lower = label_prefix.to_lowercase();
             let mut filters_to_delete = Vec::new();
             for filter in &existing_filters {
                 // Check if any of the filter's add_label_ids have names starting with our prefix
                 for label_id in &filter.add_label_ids {
                     if let Some(label_name) = label_id_to_name.get(label_id) {
-                        if label_name.starts_with(label_prefix) {
+                        if label_name.to_lowercase().starts_with(&prefix_lower) {
                             filters_to_delete.push((filter.id.clone(), filter.query.clone(), label_name.clone()));
                             break; // Only add filter once even if it has multiple matching labels
                         }
@@ -341,10 +342,10 @@ async fn run() -> Result<()> {
                 }
             }
 
-            // Find labels that start with the configured prefix
+            // Find labels that start with the configured prefix (case-insensitive)
             let labels_to_delete: Vec<_> = existing_labels
                 .iter()
-                .filter(|l| l.name.starts_with(label_prefix))
+                .filter(|l| l.name.to_lowercase().starts_with(&prefix_lower))
                 .collect();
 
             // Display what will be deleted
