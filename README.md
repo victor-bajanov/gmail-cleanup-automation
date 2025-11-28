@@ -305,9 +305,34 @@ By default, the tool enters an interactive review mode where you review each ema
 | `W` | Write | Save all changes (shown at end) |
 | `Ctrl+C` | Force quit | Exit immediately |
 
-**What happens:**
-- **Y** creates a Gmail filter matching `from:(sender@domain)` → applies your label, optionally archives
-- **N** ignores the sender entirely - no filter or label created
+**How Clusters Are Created:**
+
+The system uses hierarchical clustering to group emails, from most specific to broadest:
+
+```
+1. Subject-based clusters (most specific)
+   └─ Same sender + same subject pattern
+   └─ Example: "QNAP NAS Notification" emails from victor@gmail.com
+
+2. Sender-based clusters
+   └─ Same sender email, any subject
+   └─ Example: All emails from no-reply@spotify.com
+
+3. Domain-based clusters (broadest)
+   └─ Same domain, excludes senders with their own clusters
+   └─ Example: *@linkedin.com (excluding specific senders above)
+```
+
+**Resulting Filter Patterns:**
+
+| Cluster Type | Gmail Filter Query | Example |
+|--------------|-------------------|---------|
+| Subject + Sender | `from:(sender@domain) subject:(pattern)` | `from:(victor@gmail.com) subject:(QNAP NAS Notification)` |
+| Specific Sender | `from:(sender@domain)` | `from:(no-reply@spotify.com)` |
+| Domain (with exclusions) | `from:(*@domain) -from:(excluded1) -from:(excluded2)` | `from:(*@linkedin.com) -from:(jobs@linkedin.com)` |
+| Domain (no exclusions) | `from:(*@domain)` | `from:(*@airbnb.com)` |
+
+Clusters are presented in order of specificity (narrowest first), so you review the most targeted filters before broader domain-wide ones.
 
 **Skip the review** (auto-accept all suggestions):
 
