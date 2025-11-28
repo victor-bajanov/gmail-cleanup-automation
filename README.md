@@ -117,13 +117,35 @@ cargo build --release
 
 The binary will be available at `target/release/gmail-automation`.
 
-### 3. Optional: Install System-Wide
+### 3. Install System-Wide (Recommended)
 
 ```bash
 cargo install --path .
 ```
 
 This makes the `gmail-automation` command available globally.
+
+### Running the Tool
+
+After installation, you can run the tool in two ways:
+
+| Method | Command | When to use |
+|--------|---------|-------------|
+| **Installed binary** | `gmail-automation <command>` | Recommended for regular use |
+| **Via Cargo** | `cargo run --release -- <command>` | For development/testing |
+
+**Examples:**
+```bash
+# Using installed binary (recommended)
+gmail-automation auth
+gmail-automation run --dry-run
+
+# Using cargo (for developers)
+cargo run --release -- auth
+cargo run --release -- run --dry-run
+```
+
+> **Note for non-Rust users:** You only need Rust installed to build the project once. After running `cargo install --path .`, you can use `gmail-automation` directly without any Rust knowledge.
 
 ---
 
@@ -170,7 +192,7 @@ This makes the `gmail-automation` command available globally.
 ### Generate Example Configuration
 
 ```bash
-cargo run -- init-config
+gmail-automation init-config
 ```
 
 This creates a `config.toml` file with sensible defaults.
@@ -234,7 +256,7 @@ dry_run = false
 First, authenticate with Gmail API:
 
 ```bash
-cargo run -- auth
+gmail-automation auth
 ```
 
 This opens your browser for OAuth consent. After authorization, a token is cached at `.gmail-automation/token.json`.
@@ -242,7 +264,7 @@ This opens your browser for OAuth consent. After authorization, a token is cache
 **Force re-authentication** (if token expires):
 
 ```bash
-cargo run -- auth --force
+gmail-automation auth --force
 ```
 
 ### Run the Full Pipeline
@@ -250,7 +272,7 @@ cargo run -- auth --force
 Execute the complete email management workflow:
 
 ```bash
-cargo run -- run
+gmail-automation run
 ```
 
 **What it does:**
@@ -337,7 +359,7 @@ Clusters are presented in order of specificity (narrowest first), so you review 
 **Skip the review** (auto-accept all suggestions):
 
 ```bash
-cargo run -- run --no-review
+gmail-automation run --no-review
 ```
 
 ### Dry-Run Mode (Recommended First Run)
@@ -345,7 +367,7 @@ cargo run -- run --no-review
 Preview changes without modifying your inbox:
 
 ```bash
-cargo run -- run --dry-run
+gmail-automation run --dry-run
 ```
 
 This shows exactly what would happen without making any actual changes.
@@ -355,7 +377,7 @@ This shows exactly what would happen without making any actual changes.
 Add Y/N confirmation prompts before each major phase:
 
 ```bash
-cargo run -- run --interactive
+gmail-automation run --interactive
 ```
 
 You'll be prompted before:
@@ -365,8 +387,8 @@ You'll be prompted before:
 Note: This is different from the review mode. You can combine both:
 
 ```bash
-cargo run -- run --interactive  # Review + confirmations
-cargo run -- run --no-review --interactive  # No review, but confirmations
+gmail-automation run --interactive  # Review + confirmations
+gmail-automation run --no-review --interactive  # No review, but confirmations
 ```
 
 ### Labels Only Mode
@@ -374,7 +396,7 @@ cargo run -- run --no-review --interactive  # No review, but confirmations
 Create labels without setting up filters:
 
 ```bash
-cargo run -- run --labels-only
+gmail-automation run --labels-only
 ```
 
 Useful if you want manual control over filter creation.
@@ -384,7 +406,7 @@ Useful if you want manual control over filter creation.
 If processing is interrupted, resume from the last checkpoint:
 
 ```bash
-cargo run -- run --resume
+gmail-automation run --resume
 ```
 
 The system saves state including:
@@ -399,13 +421,13 @@ You can resume from any phase including label and filter creation.
 View the status of current or previous runs:
 
 ```bash
-cargo run -- status
+gmail-automation status
 ```
 
 **Detailed status** (shows failed messages):
 
 ```bash
-cargo run -- status --detailed
+gmail-automation status --detailed
 ```
 
 ### Command-Line Options
@@ -433,20 +455,20 @@ cargo run -- status --detailed
 **Example with custom paths:**
 
 ```bash
-cargo run -- --config my-config.toml --credentials auth/creds.json run --dry-run
+gmail-automation --config my-config.toml --credentials auth/creds.json run --dry-run
 ```
 
 **Example workflow:**
 
 ```bash
 # First: dry run to see what would happen
-cargo run -- run --dry-run
+gmail-automation run --dry-run
 
 # Then: full run with review (default)
-cargo run -- run
+gmail-automation run
 
 # Or: skip review and auto-accept all
-cargo run -- run --no-review
+gmail-automation run --no-review
 ```
 
 ---
@@ -646,7 +668,7 @@ State is automatically saved:
 The safest way to preview changes:
 
 ```bash
-cargo run -- run --dry-run
+gmail-automation run --dry-run
 ```
 
 **What it does:**
@@ -661,7 +683,7 @@ cargo run -- run --dry-run
 Get prompted before each major action:
 
 ```bash
-cargo run -- run --interactive
+gmail-automation run --interactive
 ```
 
 You can review and approve:
@@ -688,10 +710,10 @@ All operations are tracked in state files:
 ### Rollback Support (Coming Soon)
 
 Future releases will support:
-- `cargo run -- rollback` - Undo last run
-- `cargo run -- rollback --run-id <ID>` - Undo specific run
-- `cargo run -- rollback --labels-only` - Only remove labels
-- `cargo run -- rollback --filters-only` - Only remove filters
+- `gmail-automation rollback` - Undo last run
+- `gmail-automation rollback --run-id <ID>` - Undo specific run
+- `gmail-automation rollback --labels-only` - Only remove labels
+- `gmail-automation rollback --filters-only` - Only remove filters
 
 ---
 
@@ -704,7 +726,7 @@ Future releases will support:
 **Solutions:**
 1. Ensure `credentials.json` is in the project root
 2. Check credentials are for "Desktop app" type
-3. Try force re-authentication: `cargo run -- auth --force`
+3. Try force re-authentication: `gmail-automation auth --force`
 4. Verify Gmail API is enabled in Google Cloud Console
 
 ---
@@ -714,7 +736,7 @@ Future releases will support:
 **Solution:**
 ```bash
 # Force re-authentication
-cargo run -- auth --force
+gmail-automation auth --force
 ```
 
 The token automatically refreshes, but force re-auth helps if refresh fails.
@@ -741,7 +763,7 @@ The token automatically refreshes, but force re-auth helps if refresh fails.
 **Problem**: `Error: Failed to parse config file`
 
 **Solutions:**
-1. Regenerate config: `cargo run -- init-config --force`
+1. Regenerate config: `gmail-automation init-config --force`
 2. Check TOML syntax (use a validator)
 3. Ensure all values are in valid ranges:
    - `period_days`: 1-365
@@ -757,7 +779,7 @@ The token automatically refreshes, but force re-auth helps if refresh fails.
 **Solution:**
 ```bash
 # Resume from last checkpoint
-cargo run -- run --resume
+gmail-automation run --resume
 ```
 
 The system automatically saves state every 100 messages.
