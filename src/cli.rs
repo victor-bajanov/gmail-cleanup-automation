@@ -553,6 +553,7 @@ pub async fn run_pipeline(
         let existing_label_count = label_manager.load_existing_labels().await?;
 
         // Build label name -> ID mapping from the label cache
+        // Cache keys are already lowercase for case-insensitive lookup
         for (name, id) in label_manager.get_label_cache() {
             label_name_to_id.insert(name.clone(), id.clone());
         }
@@ -925,7 +926,8 @@ pub async fn run_pipeline(
             if let Some(existing_id) = label_manager.get_label_id(&sanitized) {
                 labels_skipped += 1;
                 existing_label_names.push(label.clone());
-                label_name_to_id.insert(label.clone(), existing_id);
+                // Store with lowercase key for case-insensitive lookup later
+                label_name_to_id.insert(label.to_lowercase(), existing_id);
                 continue;
             }
 
@@ -933,7 +935,8 @@ pub async fn run_pipeline(
                 // Create the label directly (it already has the full path)
                 let label_id = label_manager.create_label_direct(&sanitized).await?;
                 state.labels_created.push(label_id.clone());
-                label_name_to_id.insert(label.clone(), label_id);
+                // Store with lowercase key for case-insensitive lookup later
+                label_name_to_id.insert(label.to_lowercase(), label_id);
                 labels_created += 1;
             } else {
                 planned_labels.push(label.clone());
@@ -1046,8 +1049,8 @@ pub async fn run_pipeline(
                 let gmail_query = filter_manager.build_gmail_query(filter);
 
                 if !dry_run {
-                    // Look up the actual label ID from the label name
-                    let label_id = label_name_to_id.get(&filter.target_label_id)
+                    // Look up the actual label ID from the label name (case-insensitive)
+                    let label_id = label_name_to_id.get(&filter.target_label_id.to_lowercase())
                         .ok_or_else(|| GmailError::LabelError(
                             format!("Label ID not found for label: {}", filter.target_label_id)
                         ))?;
