@@ -970,8 +970,13 @@ pub async fn run_pipeline(
 
             // Generate filters: from review decisions if available, otherwise from classifications
             let filters: Vec<FilterRule> = if !review_decisions.is_empty() {
-                // Convert user decisions directly to filter rules (respects Accept/Reject choices)
-                review_decisions.iter().map(|d| {
+                // Convert user decisions directly to filter rules
+                // Filter out Reject/Delete decisions without existing filters (they don't need new filters)
+                // Keep Accept and Custom decisions for filter creation
+                // Keep Reject/Delete with existing_filter_id for filter deletion (handled separately)
+                review_decisions.iter()
+                    .filter(|d| matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_)))
+                    .map(|d| {
                     let from_pattern = if d.is_specific_sender {
                         Some(d.sender_email.clone())
                     } else {
