@@ -1,7 +1,7 @@
 //! Common test utilities and fixtures
 
 use chrono::Utc;
-use gmail_automation::models::{Classification, EmailCategory, FilterRule, MessageMetadata};
+use gmail_automation::models::{EmailCategory, FilterRule, MessageMetadata};
 use gmail_automation::client::GmailClient;
 use gmail_automation::error::Result;
 use mockall::predicate::*;
@@ -49,37 +49,6 @@ pub fn create_receipt_message(id: &str) -> MessageMetadata {
     create_automated_message(id, "noreply@payments.com", "Your Receipt #12345")
 }
 
-/// Create a personal message
-pub fn create_personal_message(id: &str) -> MessageMetadata {
-    create_test_message(id, "friend@personal.com", "Hey, how are you?")
-}
-
-/// Create a shipping notification message
-pub fn create_shipping_message(id: &str) -> MessageMetadata {
-    create_automated_message(id, "shipping@logistics.com", "Your package is on its way!")
-}
-
-/// Create a financial message
-pub fn create_financial_message(id: &str) -> MessageMetadata {
-    create_automated_message(id, "alerts@bank.com", "Account Statement Available")
-}
-
-/// Create a test classification
-pub fn create_test_classification(
-    message_id: &str,
-    category: EmailCategory,
-    confidence: f32,
-) -> Classification {
-    Classification {
-        message_id: message_id.to_string(),
-        category: category.clone(),
-        confidence,
-        suggested_label: format!("AutoSort/{}", category_to_label(&category)),
-        should_archive: confidence > 0.8,
-        reasoning: Some(format!("Classified as {:?} with high confidence", category)),
-    }
-}
-
 /// Convert category to label name
 pub fn category_to_label(category: &EmailCategory) -> String {
     match category {
@@ -91,21 +60,6 @@ pub fn category_to_label(category: &EmailCategory) -> String {
         EmailCategory::Financial => "Financial".to_string(),
         EmailCategory::Personal => "Personal".to_string(),
         EmailCategory::Other => "Other".to_string(),
-    }
-}
-
-/// Create a test filter rule
-pub fn create_test_filter(name: &str, from_pattern: &str, label_id: &str) -> FilterRule {
-    FilterRule {
-        id: None,
-        name: name.to_string(),
-        from_pattern: Some(from_pattern.to_string()),
-        is_specific_sender: false,
-        excluded_senders: vec![],
-        subject_keywords: vec![],
-        target_label_id: label_id.to_string(),
-        should_archive: true,
-        estimated_matches: 10,
     }
 }
 
@@ -162,50 +116,6 @@ pub fn mock_gmail_list_response(
     response
 }
 
-/// Create mock Gmail label response (JSON)
-pub fn mock_gmail_label_response(id: &str, name: &str) -> serde_json::Value {
-    json!({
-        "id": id,
-        "name": name,
-        "messageListVisibility": "show",
-        "labelListVisibility": "labelShow",
-        "type": "user"
-    })
-}
-
-/// Create mock Gmail filter response (JSON)
-pub fn mock_gmail_filter_response(id: &str, from: &str, label_id: &str) -> serde_json::Value {
-    json!({
-        "id": id,
-        "criteria": {
-            "from": from
-        },
-        "action": {
-            "addLabelIds": [label_id],
-            "removeLabelIds": ["INBOX"]
-        }
-    })
-}
-
-/// Create a mock Gmail error response (JSON)
-pub fn mock_gmail_error_response(code: u16, message: &str) -> serde_json::Value {
-    json!({
-        "error": {
-            "code": code,
-            "message": message,
-            "status": match code {
-                400 => "INVALID_ARGUMENT",
-                401 => "UNAUTHENTICATED",
-                403 => "PERMISSION_DENIED",
-                404 => "NOT_FOUND",
-                429 => "RESOURCE_EXHAUSTED",
-                500 => "INTERNAL",
-                _ => "UNKNOWN"
-            }
-        }
-    })
-}
-
 /// Create a test LabelInfo
 pub fn create_test_label_info(id: &str, name: &str) -> gmail_automation::client::LabelInfo {
     gmail_automation::client::LabelInfo {
@@ -231,7 +141,7 @@ pub fn create_test_existing_filter(
     }
 }
 
-/// Mock implementation of GmailClient for testing
+// Mock implementation of GmailClient for testing
 mock! {
     pub GmailClient {}
 

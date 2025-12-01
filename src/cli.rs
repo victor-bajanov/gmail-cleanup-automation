@@ -757,6 +757,7 @@ pub async fn run_pipeline(
                         DecisionAction::Reject => "Reject",
                         DecisionAction::Custom(_) => "Custom",
                         DecisionAction::Skip => "Skip",
+                        DecisionAction::Delete => "Delete",
                     };
 
                     let sender_pattern = if decision.is_specific_sender {
@@ -788,9 +789,12 @@ pub async fn run_pipeline(
                         archive_info);
                 }
 
-                // Store decisions for filter generation (only accepted ones)
+                // Store decisions for filter generation
+                // Include Accept/Custom for creation, Reject/Delete for deletion
                 review_decisions = decisions.into_iter()
-                    .filter(|d| matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_)))
+                    .filter(|d| matches!(d.action,
+                        DecisionAction::Accept | DecisionAction::Custom(_) |
+                        DecisionAction::Reject | DecisionAction::Delete))
                     .collect();
 
                 // Save decisions for resume capability
@@ -800,7 +804,18 @@ pub async fn run_pipeline(
                 tokio::fs::write(&decisions_file, decisions_json).await?;
                 info!("Saved {} review decisions to {:?}", review_decisions.len(), decisions_file);
 
-                println!("\nReview complete. {} filters will be created.", review_decisions.len());
+                let create_count = review_decisions.iter()
+                    .filter(|d| matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_)))
+                    .count();
+                let delete_count = review_decisions.iter()
+                    .filter(|d| matches!(d.action, DecisionAction::Reject | DecisionAction::Delete))
+                    .count();
+                if delete_count > 0 {
+                    println!("\nReview complete. {} filters will be created, {} will be deleted.",
+                        create_count, delete_count);
+                } else {
+                    println!("\nReview complete. {} filters will be created.", create_count);
+                }
             } else {
                 println!("\nNo clusters meet minimum size threshold for review.");
             }
@@ -1063,9 +1078,9 @@ pub async fn run_pipeline(
                     // Handle filter creation/update/deletion
                     if let Some(existing_id) = existing_filter_id {
                         // Filter already exists
-                        if matches!(decision.map(|d| &d.action), Some(DecisionAction::Reject)) {
-                            // User rejected - delete the existing filter
-                            info!("Deleting existing filter '{}' (ID: {}) - user rejected", filter.name, existing_id);
+                        if matches!(decision.map(|d| &d.action), Some(DecisionAction::Reject) | Some(DecisionAction::Delete)) {
+                            // User rejected or explicitly deleted - delete the existing filter
+                            info!("Deleting existing filter '{}' (ID: {}) - user requested deletion", filter.name, existing_id);
                             match client.delete_filter(existing_id).await {
                                 Ok(_) => info!("Successfully deleted filter"),
                                 Err(e) => warn!("Failed to delete filter: {}", e),

@@ -78,6 +78,7 @@ pub enum DecisionAction {
     Reject,
     Custom(String),
     Skip,
+    Delete,
 }
 
 /// Entry in the undo history
@@ -98,6 +99,8 @@ pub struct ReviewSession {
     available_labels: Vec<String>,
     #[allow(dead_code)] // Stored for potential future use
     label_id_to_name: HashMap<String, String>,
+    /// Number of clusters that have existing filters (shown first)
+    existing_filter_count: usize,
 }
 
 impl ReviewSession {
@@ -115,6 +118,14 @@ impl ReviewSession {
             }
         }
 
+        // Sort clusters: existing filters first, then new clusters
+        clusters.sort_by_key(|c| if c.existing_filter_id.is_some() { 0 } else { 1 });
+
+        // Count existing filters for Shift+S navigation
+        let existing_filter_count = clusters.iter()
+            .filter(|c| c.existing_filter_id.is_some())
+            .count();
+
         // Extract unique suggested labels for the label picker
         let mut labels: Vec<String> = clusters
             .iter()
@@ -131,6 +142,7 @@ impl ReviewSession {
             history: Vec::new(),
             available_labels: labels,
             label_id_to_name,
+            existing_filter_count,
         }
     }
 
@@ -220,7 +232,14 @@ impl ReviewSession {
         let bottom = format!("└{}┘", "─".repeat(w + 2));
 
         out!("{}", top);
-        out!("{}", line(&format!("Progress: [{}] {:>3}/{:<3} clusters", bar, reviewed, total)));
+        let new_count = total - self.existing_filter_count;
+        let progress_text = if self.existing_filter_count > 0 {
+            format!("Progress: [{}] {:>3}/{:<3} clusters ({} existing, {} new)",
+                bar, reviewed, total, self.existing_filter_count, new_count)
+        } else {
+            format!("Progress: [{}] {:>3}/{:<3} clusters", bar, reviewed, total)
+        };
+        out!("{}", line(&progress_text));
         out!("{}", mid);
 
         if self.current_index >= self.clusters.len() {
@@ -297,14 +316,30 @@ impl ReviewSession {
 
             out!("{}", mid);
 
-            // Show existing filter status if applicable
+            // Show existing filter comparison if applicable
             if cluster.existing_filter_id.is_some() {
-                out!("{}", line("⚠ EXISTING FILTER FOUND - Changes will update the existing filter"));
-                out!("{}", mid);
-            }
+                let current_label = cluster.existing_filter_label.as_deref().unwrap_or("(none)");
+                let current_archive = if cluster.existing_filter_archive.unwrap_or(false) { "YES" } else { "NO" };
 
-            out!("{}", line("[Y] Create filter  [N] No filter  [S] Skip for now"));
-            out!("{}", line("[A] Toggle archive [L] Change label         [?] Help"));
+                // Format with colors based on differences
+                let (cur_label, prop_label) = format_field_pair(current_label, &cluster.suggested_label, colors::RED);
+                let (cur_archive, prop_archive) = format_field_pair(current_archive, archive_status, colors::BLUE);
+
+                out!("{}", line("⚠ EXISTING FILTER - [S] keeps current, [Y] updates to proposed"));
+                out!("{}", mid);
+                // Note: line() doesn't account for ANSI codes in length, so we format manually
+                let cur_line = format!("  Current:  Label: {:30}  Archive: {}", cur_label, cur_archive);
+                let prop_line = format!("  Proposed: Label: {:30}  Archive: {}", prop_label, prop_archive);
+                out!("{}", line(&cur_line));
+                out!("{}", line(&prop_line));
+                out!("{}", mid);
+                out!("{}", line("[Y] Update filter  [N] Keep as-is  [S] Skip (keep current)"));
+                out!("{}", line("[D] DELETE filter  [A] Toggle archive  [L] Change label"));
+                out!("{}", line("[Shift+S] Skip all existing filters            [?] Help"));
+            } else {
+                out!("{}", line("[Y] Create filter  [N] No filter  [S] Skip for now"));
+                out!("{}", line("[A] Toggle archive [L] Change label         [?] Help"));
+            }
         }
 
         out!("{}", bottom);
@@ -345,10 +380,29 @@ impl ReviewSession {
                 }
                 Ok(SessionAction::Continue)
             }
-            KeyCode::Char('s') => {
-                if self.current_index < self.clusters.len() {
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    // Shift+S: Skip all remaining existing filter clusters
+                    while self.current_index < self.existing_filter_count
+                        && self.current_index < self.clusters.len()
+                    {
+                        self.skip_current();
+                        self.current_index += 1;
+                    }
+                } else if self.current_index < self.clusters.len() {
                     self.skip_current();
                     self.advance();
+                }
+                Ok(SessionAction::Continue)
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                // Delete only works for existing filters
+                if self.current_index < self.clusters.len() {
+                    let cluster = &self.clusters[self.current_index];
+                    if cluster.existing_filter_id.is_some() {
+                        self.delete_current();
+                        self.advance();
+                    }
                 }
                 Ok(SessionAction::Continue)
             }
@@ -442,6 +496,35 @@ impl ReviewSession {
                 action: DecisionAction::Reject,
                 existing_filter_id: cluster.existing_filter_id.clone(),
                 needs_filter_update: cluster.existing_filter_id.is_some(), // Need to delete if exists
+            };
+
+            self.decisions.insert(key, decision);
+        }
+    }
+
+    fn delete_current(&mut self) {
+        if let Some(cluster) = self.clusters.get(self.current_index) {
+            let key = Self::cluster_key(cluster);
+
+            self.history.push(HistoryEntry {
+                index: self.current_index,
+                cluster: cluster.clone(),
+                decision: self.decisions.get(&key).cloned(),
+            });
+
+            // Delete = remove the existing filter from Gmail
+            let decision = ClusterDecision {
+                sender_domain: cluster.sender_domain.clone(),
+                sender_email: cluster.sender_email.clone(),
+                is_specific_sender: cluster.is_specific_sender,
+                excluded_senders: cluster.excluded_senders.clone(),
+                subject_pattern: cluster.subject_pattern.clone(),
+                message_ids: cluster.message_ids.clone(),
+                label: String::new(),
+                should_archive: false,
+                action: DecisionAction::Delete,
+                existing_filter_id: cluster.existing_filter_id.clone(),
+                needs_filter_update: false, // Not updating, deleting
             };
 
             self.decisions.insert(key, decision);
@@ -640,10 +723,17 @@ impl ReviewSession {
         println!("╔{}╗", "═".repeat(w + 2));
         line(&centered_title);
         sep();
-        line("DECISIONS:");
+        line("DECISIONS (new clusters):");
         line("  Y / Enter  CREATE FILTER with shown label & archive setting");
         line("  N          NO FILTER - leave these emails alone");
         line("  S          SKIP - don't decide now, come back later");
+        sep();
+        line("DECISIONS (existing filters):");
+        line("  Y / Enter  UPDATE filter to proposed label & archive setting");
+        line("  N          KEEP AS-IS - leave existing filter unchanged");
+        line("  S          SKIP - don't decide now (keeps current filter)");
+        line("  D          DELETE - remove the existing filter from Gmail");
+        line("  Shift+S    Skip all remaining existing filters, jump to new clusters");
         sep();
         line("EDIT BEFORE ACCEPTING:");
         line("  A          Toggle auto-archive ON/OFF");
@@ -661,6 +751,7 @@ impl ReviewSession {
         line("             → applies your chosen label");
         line("             → optionally archives matching emails");
         line("  N ignores: No filter or label created for this sender/domain");
+        line("  D deletes: Removes the existing Gmail filter entirely");
         println!("╚{}╝", "═".repeat(w + 2));
         println!();
         println!("Press any key to continue...");
@@ -701,6 +792,32 @@ fn truncate_str(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", s.chars().take(max_len.saturating_sub(3)).collect::<String>())
+    }
+}
+
+/// ANSI color codes for field comparison display
+mod colors {
+    pub const GREY: &str = "\x1b[90m";
+    pub const RED: &str = "\x1b[31m";
+    pub const BLUE: &str = "\x1b[34m";
+    pub const RESET: &str = "\x1b[0m";
+}
+
+/// Format two field values with color based on whether they differ
+/// Returns (current_colored, proposed_colored)
+fn format_field_pair(current: &str, proposed: &str, differ_color: &str) -> (String, String) {
+    if current == proposed {
+        // Same - both grey
+        (
+            format!("{}{}{}", colors::GREY, current, colors::RESET),
+            format!("{}{}{}", colors::GREY, proposed, colors::RESET),
+        )
+    } else {
+        // Different - both colored
+        (
+            format!("{}{}{}", differ_color, current, colors::RESET),
+            format!("{}{}{}", differ_color, proposed, colors::RESET),
+        )
     }
 }
 
