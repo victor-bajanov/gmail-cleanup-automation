@@ -60,19 +60,19 @@ The system follows a modular architecture with clear separation of concerns:
 │   CLI/Main  │  Command-line interface and orchestration
 └──────┬──────┘
        │
-       ├─────────────────────┬──────────────────┬──────────────────┐
-       ▼                     ▼                  ▼                  ▼
-┌─────────────┐      ┌─────────────┐    ┌──────────────┐  ┌─────────────┐
-│   Scanner   │      │ Classifier  │    │ Label Mgr    │  │ Filter Mgr  │
-│ (Email List)│      │ (Rules/ML)  │    │ (Hierarchy)  │  │ (Auto Rules)│
-└─────────────┘      └─────────────┘    └──────────────┘  └─────────────┘
-       │                     │                   │                 │
-       └──────────────┬──────┴───────────────────┴─────────────────┘
-                      ▼
-               ┌──────────────┐
-               │ Gmail Client │  Rate limiting, retries, API calls
-               │  (with Auth) │
-               └──────────────┘
+       ├────────────┬────────────┬────────────┬────────────┬────────────┐
+       ▼            ▼            ▼            ▼            ▼            ▼
+┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+│ Scanner  │ │Classifier│ │Interactive│ │Exclusions│ │Label Mgr │ │Filter Mgr│
+│(Messages)│ │(Rules/ML)│ │ (Review) │ │(Persist) │ │(Hierarchy)│ │(AutoRule)│
+└──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘
+       │            │            │            │            │            │
+       └────────────┴────────────┴─────┬──────┴────────────┴────────────┘
+                                       ▼
+                                ┌──────────────┐
+                                │ Gmail Client │  Rate limiting, retries, API calls
+                                │  (with Auth) │
+                                └──────────────┘
 ```
 
 **Module Responsibilities:**
