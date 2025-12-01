@@ -78,6 +78,8 @@ The system follows a modular architecture with clear separation of concerns:
 **Module Responsibilities:**
 - **Scanner**: Queries Gmail for messages matching time periods and criteria
 - **Classifier**: Applies pattern matching rules to categorize emails
+- **Interactive Review**: Clusters emails by sender, presents review UI, saves decisions
+- **Exclusions**: Manages permanently excluded clusters (persisted to JSON)
 - **Label Manager**: Creates/updates hierarchical labels in Gmail
 - **Filter Manager**: Generates and creates Gmail filter rules
 - **Client**: Handles all Gmail API communication with rate limiting
@@ -313,13 +315,21 @@ By default, the tool enters an interactive review mode where you review each ema
 
 | Key | Action | Description |
 |-----|--------|-------------|
-| **Decisions** |||
+| **Decisions (new clusters)** |||
 | `Y` / `Enter` | Create filter | Accept with shown label & archive setting |
 | `N` | No filter | Leave these emails alone (no filter created) |
 | `S` | Skip | Don't decide now, come back later |
+| **Decisions (existing filters)** |||
+| `Y` / `Enter` | Update filter | Update to proposed label & archive setting |
+| `N` | Keep as-is | Leave existing filter unchanged |
+| `S` | Skip | Don't decide now (keeps current filter) |
+| `D` | Delete filter | Remove the existing filter from Gmail |
+| `Shift+S` | Skip all existing | Jump past all existing filters to new clusters |
 | **Edit before accepting** |||
 | `A` | Toggle archive | Switch auto-archive ON/OFF |
 | `L` | Change label | Enter a different target label |
+| **Permanent exclusion** |||
+| `E` | Exclude permanently | Never show this cluster again (saved to file) |
 | **Navigation** |||
 | `U` | Undo | Go back to previous decision |
 | `?` | Help | Show keyboard shortcuts |
@@ -355,6 +365,51 @@ The system uses hierarchical clustering to group emails, from most specific to b
 | Domain (no exclusions) | `from:(*@domain)` | `from:(*@airbnb.com)` |
 
 Clusters are presented in order of specificity (narrowest first), so you review the most targeted filters before broader domain-wide ones.
+
+**Existing Filter Detection:**
+
+When you run the tool, it automatically detects existing Gmail filters that match your email clusters. These are shown **first** in the review queue with a color-coded comparison:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Progress: [████████░░░░░░░░░░░░]  5/20 clusters (3 existing, 17 new)         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ CLUSTER: *@linkedin.com (12 emails)                                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ⚠ EXISTING FILTER - [S] keeps current, [Y] updates to proposed               │
+├──────────────────────────────────────────────────────────────────────────────┤
+│   Current:  Label: AutoManaged/notifications    Archive: NO                  │
+│   Proposed: Label: AutoManaged/marketing        Archive: YES                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [Y] Update filter  [N] Keep as-is  [S] Skip (keep current)                   │
+│ [D] DELETE filter  [E] Exclude permanently  [?] Help                         │
+│ [A] Toggle archive [L] Change label  [Shift+S] Skip all existing             │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Color coding** (in terminal):
+- **Grey**: Same value in current and proposed
+- **Red**: Label differs between current and proposed
+- **Blue**: Archive setting differs
+
+Use `Shift+S` to skip all remaining existing filter clusters and jump directly to reviewing new clusters.
+
+**Permanent Exclusions:**
+
+Press `E` to permanently exclude a cluster from future reviews. This is useful for senders you know you'll never want to filter (e.g., personal contacts, important services).
+
+- Exclusions are saved to `.gmail-automation/exclusions.json`
+- Excluded clusters won't appear in future runs
+- If you exclude a cluster with an existing filter, that filter will be deleted
+- Use `--ignore-exclusions` to see all clusters again (useful for reconsidering)
+
+```bash
+# Normal run - excluded clusters are hidden
+gmail-automation run
+
+# See all clusters, including previously excluded ones
+gmail-automation run --ignore-exclusions
+```
 
 **Skip the review** (auto-accept all suggestions):
 
@@ -450,6 +505,7 @@ gmail-automation status --detailed
 --interactive          # Add Y/N confirmation prompts before each phase
 --labels-only          # Only create labels, skip filter creation
 --resume               # Resume from previous interrupted run
+--ignore-exclusions    # Show all clusters, including permanently excluded ones
 ```
 
 **Example with custom paths:**
@@ -548,6 +604,8 @@ gmail-automation/
 │   ├── client.rs            # Gmail API client with rate limiting
 │   ├── scanner.rs           # Email scanning and querying
 │   ├── classifier.rs        # Rule-based classification engine
+│   ├── interactive.rs       # Interactive review UI and cluster decisions
+│   ├── exclusions.rs        # Persistent exclusion management
 │   ├── label_manager.rs     # Label creation and hierarchy
 │   ├── filter_manager.rs    # Filter rule generation and creation
 │   ├── state.rs             # State management and checkpointing
@@ -563,6 +621,8 @@ gmail-automation/
 └── .gmail-automation/       # Runtime data directory
     ├── token.json           # Cached OAuth token
     ├── state.json           # Processing state
+    ├── decisions.json       # Saved review decisions (for resume)
+    ├── exclusions.json      # Permanently excluded clusters
     └── report-*.md          # Execution reports
 ```
 
@@ -876,13 +936,13 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## Roadmap
 
-### Version 0.4.0
+### Version 0.5.0
 - [ ] Rollback functionality
 - [ ] ML-based classification (OpenAI, Anthropic)
 - [ ] Advanced pattern learning from user behavior
 - [ ] Web UI for configuration and monitoring
 
-### Version 0.5.0
+### Version 0.6.0
 - [ ] Multi-account support
 - [ ] Custom rule definitions via config
 - [ ] Email statistics and analytics
@@ -922,6 +982,27 @@ A: The system automatically handles rate limits with backoff and retry. You can 
 ---
 
 ## Changelog
+
+### [0.4.0] - 2025-12-01
+
+**Existing Filter Management**
+- Detect and display existing Gmail filters that match email clusters
+- Show existing filters first in review queue with comparison display
+- Color-coded diff: grey (same), red (label differs), blue (archive differs)
+- Add `D` key to delete existing filters from Gmail
+- Add `Shift+S` to skip all remaining existing filters and jump to new clusters
+- Progress indicator shows existing/new cluster breakdown
+
+**Permanent Exclusions**
+- Add `E` key to permanently exclude clusters from future reviews
+- Exclusions saved to `.gmail-automation/exclusions.json`
+- Excluded clusters automatically filtered on subsequent runs
+- Add `--ignore-exclusions` flag to see all clusters (including excluded)
+- If excluded cluster has existing filter, it gets deleted
+
+**Bug Fixes**
+- Fix case-insensitive label lookups (409 conflict on existing labels)
+- Fix Reject decisions incorrectly generating filters on resume
 
 ### [0.3.0] - 2025-11-28
 
