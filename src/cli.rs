@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "gmail-filters")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(about = "Automated Gmail email management system", long_about = None)]
 pub struct Cli {
     /// Path to configuration file
