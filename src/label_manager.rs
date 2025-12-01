@@ -27,16 +27,33 @@ impl LabelManager {
 
     /// Loads all existing labels from Gmail into the cache
     /// Call this before creating labels to avoid conflicts
+    /// Note: Cache keys are stored lowercase for case-insensitive lookups
     pub async fn load_existing_labels(&mut self) -> Result<usize> {
         let labels = self.client.list_labels().await?;
         let count = labels.len();
 
         for label in labels {
-            self.label_cache.insert(label.name.clone(), label.id);
+            // Store with lowercase key for case-insensitive lookup
+            self.label_cache.insert(label.name.to_lowercase(), label.id);
         }
 
         info!("Loaded {} existing labels into cache", count);
         Ok(count)
+    }
+
+    /// Case-insensitive cache lookup helper
+    fn cache_get(&self, name: &str) -> Option<&String> {
+        self.label_cache.get(&name.to_lowercase())
+    }
+
+    /// Case-insensitive cache contains check
+    fn cache_contains(&self, name: &str) -> bool {
+        self.label_cache.contains_key(&name.to_lowercase())
+    }
+
+    /// Insert into cache with lowercase key
+    fn cache_insert(&mut self, name: String, id: String) {
+        self.label_cache.insert(name.to_lowercase(), id);
     }
 
     /// Returns the list of existing labels that match the proposed labels
@@ -47,7 +64,7 @@ impl LabelManager {
             .filter(|name| {
                 // Labels already have full path, just sanitize for case normalization
                 let sanitized = self.sanitize_label_name(name).unwrap_or_default();
-                self.label_cache.contains_key(&sanitized)
+                self.cache_contains(&sanitized)
             })
             .cloned()
             .collect()
@@ -61,7 +78,7 @@ impl LabelManager {
             .filter(|name| {
                 // Labels already have full path, just sanitize for case normalization
                 let sanitized = self.sanitize_label_name(name).unwrap_or_default();
-                !self.label_cache.contains_key(&sanitized)
+                !self.cache_contains(&sanitized)
             })
             .cloned()
             .collect()
@@ -95,8 +112,8 @@ impl LabelManager {
         let full_name = format!("{}/{}", self.label_prefix, name);
         let sanitized_name = self.sanitize_label_name(&full_name)?;
 
-        // Check if label already exists in cache
-        if let Some(id) = self.label_cache.get(&sanitized_name) {
+        // Check if label already exists in cache (case-insensitive)
+        if let Some(id) = self.cache_get(&sanitized_name) {
             debug!("Label '{}' already exists in cache", sanitized_name);
             return Ok(id.clone());
         }
@@ -117,8 +134,8 @@ impl LabelManager {
                 GmailError::ApiError(format!("Failed to create label '{}': {}", sanitized_name, e))
             })?;
 
-        // Track the created label
-        self.label_cache.insert(sanitized_name.clone(), label_id.clone());
+        // Track the created label (cache uses lowercase key)
+        self.cache_insert(sanitized_name.clone(), label_id.clone());
         self.created_labels.push(label_id.clone());
 
         info!("Successfully created label '{}' with ID: {}", sanitized_name, label_id);
@@ -130,7 +147,7 @@ impl LabelManager {
         let full_name = format!("{}/{}", self.label_prefix, name);
         let sanitized_name = self.sanitize_label_name(&full_name)?;
 
-        if let Some(id) = self.label_cache.get(&sanitized_name) {
+        if let Some(id) = self.cache_get(&sanitized_name) {
             return Ok(id.clone());
         }
 
@@ -140,8 +157,8 @@ impl LabelManager {
     /// Creates a label with the exact name provided (no prefix added)
     /// Use this when the label name already has the full path
     pub async fn create_label_direct(&mut self, full_name: &str) -> Result<String> {
-        // Check if label already exists in cache
-        if let Some(id) = self.label_cache.get(full_name) {
+        // Check if label already exists in cache (case-insensitive)
+        if let Some(id) = self.cache_get(full_name) {
             debug!("Label '{}' already exists in cache", full_name);
             return Ok(id.clone());
         }
@@ -162,8 +179,8 @@ impl LabelManager {
                 GmailError::ApiError(format!("Failed to create label '{}': {}", full_name, e))
             })?;
 
-        // Track the created label
-        self.label_cache.insert(full_name.to_string(), label_id.clone());
+        // Track the created label (cache uses lowercase key)
+        self.cache_insert(full_name.to_string(), label_id.clone());
         self.created_labels.push(label_id.clone());
 
         info!("Successfully created label '{}' with ID: {}", full_name, label_id);
@@ -184,8 +201,8 @@ impl LabelManager {
         for i in 1..parts.len() {
             let parent_path = parts[..i].join("/");
 
-            // Check if parent already exists
-            if !self.label_cache.contains_key(&parent_path) {
+            // Check if parent already exists (case-insensitive)
+            if !self.cache_contains(&parent_path) {
                 debug!("Creating parent label: {}", parent_path);
 
                 // Create parent directly (without prefix, as it's already full path)
@@ -200,7 +217,7 @@ impl LabelManager {
                         ))
                     })?;
 
-                self.label_cache.insert(parent_path.clone(), label_id.clone());
+                self.cache_insert(parent_path.clone(), label_id.clone());
                 self.created_labels.push(label_id);
             }
         }
@@ -421,9 +438,9 @@ impl LabelManager {
         &self.created_labels
     }
 
-    /// Gets label ID from cache by name
+    /// Gets label ID from cache by name (case-insensitive)
     pub fn get_label_id(&self, label_name: &str) -> Option<String> {
-        self.label_cache.get(label_name).cloned()
+        self.cache_get(label_name).cloned()
     }
 
     /// Extracts domain from a label name (heuristic)
@@ -496,9 +513,11 @@ impl LabelManager {
     /// Builds a hierarchical label structure for reporting
     pub fn build_label_hierarchy(&self) -> HashMap<String, Vec<String>> {
         let mut hierarchy: HashMap<String, Vec<String>> = HashMap::new();
+        let prefix_lower = self.label_prefix.to_lowercase();
 
         for label_name in self.label_cache.keys() {
-            if !label_name.starts_with(&self.label_prefix) {
+            // Cache keys are lowercase, so compare with lowercase prefix
+            if !label_name.starts_with(&prefix_lower) {
                 continue;
             }
 

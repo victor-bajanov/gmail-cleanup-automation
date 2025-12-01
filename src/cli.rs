@@ -921,11 +921,11 @@ pub async fn run_pipeline(
             // We need to create it directly without adding another prefix
             let sanitized = label_manager.sanitize_label_name(label).unwrap_or_default();
 
-            // Check if label already exists in cache
-            if let Some(existing_id) = label_manager.get_label_cache().get(&sanitized) {
+            // Check if label already exists in cache (case-insensitive)
+            if let Some(existing_id) = label_manager.get_label_id(&sanitized) {
                 labels_skipped += 1;
                 existing_label_names.push(label.clone());
-                label_name_to_id.insert(label.clone(), existing_id.clone());
+                label_name_to_id.insert(label.clone(), existing_id);
                 continue;
             }
 
