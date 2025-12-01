@@ -4,6 +4,7 @@
 //! email classifications with minimal keystrokes.
 
 use crate::error::{GmailError, Result};
+use crate::exclusions::ExclusionManager;
 use crate::models::{Classification, EmailCategory, MessageMetadata};
 use crossterm::{
     cursor,
@@ -14,6 +15,7 @@ use crossterm::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
+use std::path::PathBuf;
 
 /// A cluster of emails from the same sender (specific email or domain)
 #[derive(Debug, Clone)]
@@ -79,6 +81,8 @@ pub enum DecisionAction {
     Custom(String),
     Skip,
     Delete,
+    /// Permanently exclude this cluster from future reviews (saved to exclusions file)
+    Exclude,
 }
 
 /// Entry in the undo history
@@ -101,6 +105,10 @@ pub struct ReviewSession {
     label_id_to_name: HashMap<String, String>,
     /// Number of clusters that have existing filters (shown first)
     existing_filter_count: usize,
+    /// Exclusion manager for persistent exclusions
+    exclusion_manager: ExclusionManager,
+    /// Path to save exclusions file
+    exclusions_path: PathBuf,
 }
 
 impl ReviewSession {
@@ -110,7 +118,12 @@ impl ReviewSession {
     }
 
     /// Create a new review session with label ID to name mapping
-    pub fn with_label_map(mut clusters: Vec<EmailCluster>, label_id_to_name: HashMap<String, String>) -> Self {
+    pub fn with_label_map(clusters: Vec<EmailCluster>, label_id_to_name: HashMap<String, String>) -> Self {
+        Self::with_exclusions(clusters, label_id_to_name, PathBuf::from(".gmail-automation/exclusions.json"))
+    }
+
+    /// Create a new review session with custom exclusions path
+    pub fn with_exclusions(mut clusters: Vec<EmailCluster>, label_id_to_name: HashMap<String, String>, exclusions_path: PathBuf) -> Self {
         // Resolve existing filter label IDs to names
         for cluster in &mut clusters {
             if let Some(label_id) = &cluster.existing_filter_label_id {
@@ -134,6 +147,10 @@ impl ReviewSession {
         labels.sort();
         labels.dedup();
 
+        // Load existing exclusions (ignore errors - file may not exist)
+        let exclusion_manager = ExclusionManager::load_sync(&exclusions_path)
+            .unwrap_or_else(|_| ExclusionManager::new());
+
         Self {
             clusters,
             decisions: HashMap::new(),
@@ -143,6 +160,8 @@ impl ReviewSession {
             available_labels: labels,
             label_id_to_name,
             existing_filter_count,
+            exclusion_manager,
+            exclusions_path,
         }
     }
 
@@ -334,11 +353,12 @@ impl ReviewSession {
                 out!("{}", line(&prop_line));
                 out!("{}", mid);
                 out!("{}", line("[Y] Update filter  [N] Keep as-is  [S] Skip (keep current)"));
-                out!("{}", line("[D] DELETE filter  [A] Toggle archive  [L] Change label"));
-                out!("{}", line("[Shift+S] Skip all existing filters            [?] Help"));
+                out!("{}", line("[D] DELETE filter  [E] Exclude permanently  [?] Help"));
+                out!("{}", line("[A] Toggle archive [L] Change label  [Shift+S] Skip all existing"));
             } else {
                 out!("{}", line("[Y] Create filter  [N] No filter  [S] Skip for now"));
-                out!("{}", line("[A] Toggle archive [L] Change label         [?] Help"));
+                out!("{}", line("[E] Exclude permanently  [A] Toggle archive  [L] Label"));
+                out!("{}", line("[?] Help"));
             }
         }
 
@@ -403,6 +423,14 @@ impl ReviewSession {
                         self.delete_current();
                         self.advance();
                     }
+                }
+                Ok(SessionAction::Continue)
+            }
+            KeyCode::Char('e') | KeyCode::Char('E') => {
+                // Exclude permanently - saves to exclusions file and treats as reject for this run
+                if self.current_index < self.clusters.len() {
+                    self.exclude_current()?;
+                    self.advance();
                 }
                 Ok(SessionAction::Continue)
             }
@@ -529,6 +557,42 @@ impl ReviewSession {
 
             self.decisions.insert(key, decision);
         }
+    }
+
+    fn exclude_current(&mut self) -> Result<()> {
+        if let Some(cluster) = self.clusters.get(self.current_index) {
+            let key = Self::cluster_key(cluster);
+
+            self.history.push(HistoryEntry {
+                index: self.current_index,
+                cluster: cluster.clone(),
+                decision: self.decisions.get(&key).cloned(),
+            });
+
+            // Add to persistent exclusions
+            self.exclusion_manager.add(key.clone(), None);
+
+            // Save exclusions immediately
+            self.exclusion_manager.save_sync(&self.exclusions_path)?;
+
+            // Exclude = treated as reject for this run, but also saved persistently
+            let decision = ClusterDecision {
+                sender_domain: cluster.sender_domain.clone(),
+                sender_email: cluster.sender_email.clone(),
+                is_specific_sender: cluster.is_specific_sender,
+                excluded_senders: cluster.excluded_senders.clone(),
+                subject_pattern: cluster.subject_pattern.clone(),
+                message_ids: cluster.message_ids.clone(),
+                label: String::new(),
+                should_archive: false,
+                action: DecisionAction::Exclude,
+                existing_filter_id: cluster.existing_filter_id.clone(),
+                needs_filter_update: false,
+            };
+
+            self.decisions.insert(key, decision);
+        }
+        Ok(())
     }
 
     fn toggle_archive(&mut self) {
@@ -739,6 +803,10 @@ impl ReviewSession {
         line("  A          Toggle auto-archive ON/OFF");
         line("  L          Change the target label");
         sep();
+        line("PERMANENT EXCLUSION:");
+        line("  E          EXCLUDE permanently - never show this cluster again");
+        line("             (use --ignore-exclusions to see all clusters afresh)");
+        sep();
         line("NAVIGATION:");
         line("  U          Undo last decision");
         line("  ?          Show this help");
@@ -752,6 +820,7 @@ impl ReviewSession {
         line("             → optionally archives matching emails");
         line("  N ignores: No filter or label created for this sender/domain");
         line("  D deletes: Removes the existing Gmail filter entirely");
+        line("  E excludes: Saves to .gmail-automation/exclusions.json, hidden in future runs");
         println!("╚{}╝", "═".repeat(w + 2));
         println!();
         println!("Press any key to continue...");

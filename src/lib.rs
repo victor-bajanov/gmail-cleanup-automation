@@ -59,6 +59,7 @@ pub mod classifier;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod exclusions;
 pub mod filter_manager;
 pub mod interactive;
 pub mod label_manager;

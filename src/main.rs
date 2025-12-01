@@ -164,6 +164,7 @@ async fn run() -> Result<()> {
             interactive,
             no_review,
             resume,
+            ignore_exclusions,
         } => {
             tracing::info!("Starting full pipeline run");
             if dry_run {
@@ -175,11 +176,14 @@ async fn run() -> Result<()> {
             if no_review {
                 println!("Running with review mode DISABLED");
             }
+            if ignore_exclusions {
+                println!("Running with exclusions IGNORED - all clusters will be shown");
+            }
 
             // Run the complete pipeline (clone the inner MultiProgress, not the Arc)
             // Review mode is enabled by default; pass !no_review
             let report =
-                cli::run_pipeline(&cli, dry_run, labels_only, interactive, !no_review, resume, (*multi_progress).clone()).await?;
+                cli::run_pipeline(&cli, dry_run, labels_only, interactive, !no_review, resume, ignore_exclusions, (*multi_progress).clone()).await?;
 
             // Display summary
             println!("\n========================================");

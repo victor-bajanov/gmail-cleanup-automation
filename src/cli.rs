@@ -68,6 +68,10 @@ pub enum Commands {
         /// Resume from previous interrupted run
         #[arg(long)]
         resume: bool,
+
+        /// Ignore saved exclusions (show all clusters, including previously excluded ones)
+        #[arg(long)]
+        ignore_exclusions: bool,
     },
 
     /// Rollback changes from a previous run
@@ -431,8 +435,9 @@ use crate::classifier::EmailClassifier;
 use crate::client::ExistingFilterInfo;
 use crate::config::Config;
 use crate::error::{GmailError, Result};
+use crate::exclusions::ExclusionManager;
 use crate::filter_manager::FilterManager;
-use crate::interactive::{create_clusters, ClusterDecision, DecisionAction, ReviewSession};
+use crate::interactive::{create_clusters, ClusterDecision, DecisionAction, EmailCluster, ReviewSession};
 use crate::label_manager::LabelManager;
 use crate::models::{Classification, FilterRule, MessageMetadata};
 use crate::state::{ProcessingPhase, ProcessingState};
@@ -440,6 +445,22 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::Path;
+
+/// Get a unique key for a cluster (mirrors ReviewSession::cluster_key)
+fn cluster_key(cluster: &EmailCluster) -> String {
+    let base = if cluster.is_specific_sender {
+        cluster.sender_email.clone()
+    } else {
+        format!("*@{}", cluster.sender_domain)
+    };
+
+    // Include subject pattern in key to differentiate subject-based clusters
+    if let Some(subject) = &cluster.subject_pattern {
+        format!("{}|subject:{}", base, subject)
+    } else {
+        base
+    }
+}
 use std::sync::Arc;
 
 /// Load review decisions from a JSON file
@@ -472,6 +493,7 @@ async fn load_decisions(path: &Path) -> Result<Vec<ClusterDecision>> {
 /// * `interactive` - If true, prompt user before major actions
 /// * `review` - If true, enter interactive cluster review mode
 /// * `resume` - If true, resume from previous state
+/// * `ignore_exclusions` - If true, ignore saved exclusions and show all clusters
 ///
 /// # Returns
 /// * `Ok(Report)` - Execution report with statistics
@@ -483,6 +505,7 @@ pub async fn run_pipeline(
     interactive: bool,
     review: bool,
     resume: bool,
+    ignore_exclusions: bool,
     multi_progress: MultiProgress,
 ) -> Result<Report> {
     let mut reporter = ProgressReporter::with_multi_progress(multi_progress);
@@ -632,6 +655,33 @@ pub async fn run_pipeline(
                 config.classification.minimum_emails_for_label,
             );
 
+            // Filter out excluded clusters (unless --ignore-exclusions is set)
+            let exclusions_path = cli.state_file.with_file_name("exclusions.json");
+            let exclusion_manager = if !ignore_exclusions {
+                ExclusionManager::load(&exclusions_path).await.unwrap_or_else(|_| ExclusionManager::new())
+            } else {
+                ExclusionManager::new()
+            };
+
+            let excluded_count = if !ignore_exclusions && !exclusion_manager.is_empty() {
+                let before_count = clusters.len();
+                clusters.retain(|c| {
+                    let key = cluster_key(c);
+                    !exclusion_manager.is_excluded(&key)
+                });
+                let filtered = before_count - clusters.len();
+                if filtered > 0 {
+                    info!("Filtered out {} excluded clusters (use --ignore-exclusions to see all)", filtered);
+                }
+                filtered
+            } else {
+                0
+            };
+
+            if excluded_count > 0 {
+                println!("Skipped {} permanently excluded clusters", excluded_count);
+            }
+
             // Match clusters against existing filters
             // Note: We can only check the from pattern now; label matching happens later
             // after labels are created and we have label IDs
@@ -759,6 +809,7 @@ pub async fn run_pipeline(
                         DecisionAction::Custom(_) => "Custom",
                         DecisionAction::Skip => "Skip",
                         DecisionAction::Delete => "Delete",
+                        DecisionAction::Exclude => "Exclude",
                     };
 
                     let sender_pattern = if decision.is_specific_sender {
@@ -791,11 +842,11 @@ pub async fn run_pipeline(
                 }
 
                 // Store decisions for filter generation
-                // Include Accept/Custom for creation, Reject/Delete for deletion
+                // Include Accept/Custom for creation, Reject/Delete/Exclude for deletion
                 review_decisions = decisions.into_iter()
                     .filter(|d| matches!(d.action,
                         DecisionAction::Accept | DecisionAction::Custom(_) |
-                        DecisionAction::Reject | DecisionAction::Delete))
+                        DecisionAction::Reject | DecisionAction::Delete | DecisionAction::Exclude))
                     .collect();
 
                 // Save decisions for resume capability
@@ -809,9 +860,15 @@ pub async fn run_pipeline(
                     .filter(|d| matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_)))
                     .count();
                 let delete_count = review_decisions.iter()
-                    .filter(|d| matches!(d.action, DecisionAction::Reject | DecisionAction::Delete))
+                    .filter(|d| matches!(d.action, DecisionAction::Reject | DecisionAction::Delete | DecisionAction::Exclude))
                     .count();
-                if delete_count > 0 {
+                let exclude_count = review_decisions.iter()
+                    .filter(|d| matches!(d.action, DecisionAction::Exclude))
+                    .count();
+                if exclude_count > 0 {
+                    println!("\nReview complete. {} filters will be created, {} will be deleted ({} permanently excluded).",
+                        create_count, delete_count, exclude_count);
+                } else if delete_count > 0 {
                     println!("\nReview complete. {} filters will be created, {} will be deleted.",
                         create_count, delete_count);
                 } else {
@@ -1086,8 +1143,8 @@ pub async fn run_pipeline(
                     // Handle filter creation/update/deletion
                     if let Some(existing_id) = existing_filter_id {
                         // Filter already exists
-                        if matches!(decision.map(|d| &d.action), Some(DecisionAction::Reject) | Some(DecisionAction::Delete)) {
-                            // User rejected or explicitly deleted - delete the existing filter
+                        if matches!(decision.map(|d| &d.action), Some(DecisionAction::Reject) | Some(DecisionAction::Delete) | Some(DecisionAction::Exclude)) {
+                            // User rejected, explicitly deleted, or excluded - delete the existing filter
                             info!("Deleting existing filter '{}' (ID: {}) - user requested deletion", filter.name, existing_id);
                             match client.delete_filter(existing_id).await {
                                 Ok(_) => info!("Successfully deleted filter"),
