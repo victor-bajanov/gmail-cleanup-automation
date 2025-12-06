@@ -64,6 +64,7 @@ pub mod filter_manager;
 pub mod interactive;
 pub mod label_manager;
 pub mod models;
+pub mod rate_limiter;
 pub mod scanner;
 pub mod state;
 
@@ -88,6 +89,9 @@ pub use config::{
 
 // Client traits
 pub use client::{GmailClient, ProductionGmailClient, RateLimitedGmailClient};
+
+// Rate limiting
+pub use rate_limiter::{QuotaCost, QuotaRateLimiter, QuotaStats};
 
 // Manager types
 pub use filter_manager::FilterManager;

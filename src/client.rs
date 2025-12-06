@@ -14,6 +14,7 @@ use tracing::{debug, warn};
 
 use crate::error::{GmailError, Result};
 use crate::models::{FilterRule, MessageMetadata};
+use crate::rate_limiter::{QuotaCost, QuotaRateLimiter};
 
 /// Progress callback type for batch operations
 pub type ProgressCallback = Arc<dyn Fn() + Send + Sync>;
@@ -212,22 +213,31 @@ where
 /// Production Gmail client with rate limiting and retry logic
 ///
 /// This implementation includes:
-/// - Semaphore-based rate limiting
+/// - Semaphore-based concurrency limiting
+/// - Quota-aware rate limiting (token bucket algorithm)
 /// - Exponential backoff retry logic
 /// - Concurrent message fetching with buffered streams
 ///
-/// Based on implementation spec lines 922-1011.
+/// The client enforces Gmail API quotas:
+/// - 250 quota units per second (default)
+/// - Read operations: 5 units
+/// - Write operations: 50 units
 pub struct ProductionGmailClient {
     hub: Gmail<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>>,
-    rate_limiter: Arc<Semaphore>,
+    /// Semaphore for limiting concurrent requests
+    concurrency_limiter: Arc<Semaphore>,
+    /// Token bucket for quota-aware rate limiting
+    quota_limiter: QuotaRateLimiter,
 }
 
 impl ProductionGmailClient {
-    /// Create a new production Gmail client
+    /// Create a new production Gmail client with default quota settings
     ///
     /// # Arguments
     /// * `hub` - Gmail API hub instance
     /// * `max_concurrent` - Maximum concurrent requests (typically 40-50)
+    ///
+    /// Uses Gmail's default quota of 250 units/second with 500 unit burst capacity.
     pub fn new(
         hub: Gmail<
             hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -236,15 +246,45 @@ impl ProductionGmailClient {
     ) -> Self {
         Self {
             hub,
-            rate_limiter: Arc::new(Semaphore::new(max_concurrent)),
+            concurrency_limiter: Arc::new(Semaphore::new(max_concurrent)),
+            quota_limiter: QuotaRateLimiter::new(),
         }
+    }
+
+    /// Create a new production Gmail client with custom quota settings
+    ///
+    /// # Arguments
+    /// * `hub` - Gmail API hub instance
+    /// * `max_concurrent` - Maximum concurrent requests
+    /// * `quota_units_per_second` - Quota refill rate (default: 250)
+    /// * `quota_burst_capacity` - Maximum burst capacity (default: 500)
+    pub fn with_quota_config(
+        hub: Gmail<
+            hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        >,
+        max_concurrent: usize,
+        quota_units_per_second: f64,
+        quota_burst_capacity: f64,
+    ) -> Self {
+        Self {
+            hub,
+            concurrency_limiter: Arc::new(Semaphore::new(max_concurrent)),
+            quota_limiter: QuotaRateLimiter::with_config(quota_units_per_second, quota_burst_capacity),
+        }
+    }
+
+    /// Get current quota usage statistics
+    pub async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats {
+        self.quota_limiter.stats().await
     }
 
     /// Fetch a single message with retry logic
     async fn fetch_single_with_retry(&self, id: &str) -> Result<MessageMetadata> {
-        let _permit = self.rate_limiter.acquire().await.map_err(|e| {
-            GmailError::Unknown(format!("Failed to acquire rate limit permit: {}", e))
+        // Acquire both concurrency permit and quota
+        let _concurrency_permit = self.concurrency_limiter.acquire().await.map_err(|e| {
+            GmailError::Unknown(format!("Failed to acquire concurrency permit: {}", e))
         })?;
+        let _quota_permit = self.quota_limiter.acquire(QuotaCost::Read).await;
 
         let mut attempts = 0;
         let max_attempts = 4; // Initial + 3 retries
@@ -468,6 +508,9 @@ impl GmailClient for ProductionGmailClient {
         let mut page_token: Option<String> = None;
 
         loop {
+            // Each page request costs 5 quota units
+            let _quota_permit = self.quota_limiter.acquire(QuotaCost::Read).await;
+
             let mut call = self
                 .hub
                 .users()
@@ -506,6 +549,9 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn list_labels(&self) -> Result<Vec<LabelInfo>> {
+        // Acquire quota before retry loop (quota is consumed per attempt)
+        let _quota_permit = self.quota_limiter.acquire(QuotaCost::Read).await;
+
         Self::with_retry("list_labels", 3, || async {
             // Wrap API call in timeout to prevent indefinite hangs
             let timeout_duration = Duration::from_secs(30);
@@ -551,6 +597,9 @@ impl GmailClient for ProductionGmailClient {
 
     async fn create_label(&self, name: &str) -> Result<String> {
         let name = name.to_string();
+        // Write operation costs 50 quota units
+        let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
+
         Self::with_retry("create_label", 3, || async {
             let label = Label {
                 name: Some(name.clone()),
@@ -570,6 +619,9 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn delete_label(&self, label_id: &str) -> Result<()> {
+        // Write operation costs 50 quota units
+        let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
+
         self.hub
             .users()
             .labels_delete("me", label_id)
@@ -582,6 +634,9 @@ impl GmailClient for ProductionGmailClient {
 
     async fn create_filter(&self, filter: &FilterRule) -> Result<String> {
         let filter = filter.clone();
+        // Write operation costs 50 quota units
+        let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
+
         Self::with_retry("create_filter", 3, || async {
             // Build the full Gmail query including from pattern, exclusions, and subject keywords
             let full_query = crate::filter_manager::FilterManager::build_gmail_query_static(&filter);
@@ -626,6 +681,9 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn list_filters(&self) -> Result<Vec<ExistingFilterInfo>> {
+        // Read operation costs 5 quota units
+        let _quota_permit = self.quota_limiter.acquire(QuotaCost::Read).await;
+
         Self::with_retry("list_filters", 3, || async {
             // Wrap API call in timeout to prevent indefinite hangs
             let timeout_duration = Duration::from_secs(30);
@@ -680,6 +738,9 @@ impl GmailClient for ProductionGmailClient {
 
     async fn delete_filter(&self, filter_id: &str) -> Result<()> {
         let filter_id = filter_id.to_string();
+        // Write operation costs 50 quota units
+        let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
+
         Self::with_retry("delete_filter", 3, || async {
             self.hub
                 .users()
@@ -705,6 +766,9 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {
+        // Write operation costs 50 quota units
+        let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
+
         let modify_request = ModifyMessageRequest {
             add_label_ids: Some(vec![label_id.to_string()]),
             remove_label_ids: None,
@@ -721,6 +785,9 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()> {
+        // Write operation costs 50 quota units
+        let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
+
         let modify_request = ModifyMessageRequest {
             add_label_ids: None,
             remove_label_ids: Some(vec![label_id.to_string()]),
@@ -747,6 +814,9 @@ impl GmailClient for ProductionGmailClient {
         let label_id = label_id.to_string();
 
         for chunk in message_ids.chunks(BATCH_SIZE) {
+            // Batch operation costs 50 quota units per batch
+            let _quota_permit = self.quota_limiter.acquire(QuotaCost::Batch).await;
+
             let chunk_vec = chunk.to_vec();
             let label_id_clone = label_id.clone();
 
@@ -783,6 +853,9 @@ impl GmailClient for ProductionGmailClient {
         let label_id = label_id.to_string();
 
         for chunk in message_ids.chunks(BATCH_SIZE) {
+            // Batch operation costs 50 quota units per batch
+            let _quota_permit = self.quota_limiter.acquire(QuotaCost::Batch).await;
+
             let chunk_vec = chunk.to_vec();
             let label_id_clone = label_id.clone();
 
@@ -835,6 +908,9 @@ impl GmailClient for ProductionGmailClient {
         };
 
         for chunk in message_ids.chunks(BATCH_SIZE) {
+            // Batch operation costs 50 quota units per batch
+            let _quota_permit = self.quota_limiter.acquire(QuotaCost::Batch).await;
+
             let chunk_vec = chunk.to_vec();
             let add_labels_clone = add_labels.clone();
             let remove_labels_clone = remove_labels.clone();
@@ -863,7 +939,7 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>> {
-        // Note: fetch_single_with_retry already handles rate limiting via semaphore
+        // Note: fetch_single_with_retry already handles quota via quota_limiter
         // buffer_unordered limits concurrency to 40 parallel requests
         stream::iter(message_ids)
             .map(|id| {
