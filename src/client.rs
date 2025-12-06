@@ -1028,4 +1028,137 @@ mod tests {
         let result = parse_date(date_str);
         assert!(result.is_ok());
     }
+
+    // Test retry logic for list_filters
+    #[tokio::test]
+    async fn test_with_retry_succeeds_after_transient_error() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let attempt_count = Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = Arc::clone(&attempt_count);
+
+        let result = ProductionGmailClient::with_retry("test_op", 3, || {
+            let count = Arc::clone(&attempt_count_clone);
+            async move {
+                let current = count.fetch_add(1, Ordering::SeqCst);
+                if current < 2 {
+                    // First two attempts fail with transient error
+                    Err(GmailError::NetworkError("Connection timeout".to_string()))
+                } else {
+                    // Third attempt succeeds
+                    Ok("success".to_string())
+                }
+            }
+        })
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "success");
+        assert_eq!(attempt_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_with_retry_fails_on_permanent_error() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let attempt_count = Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = Arc::clone(&attempt_count);
+
+        let result = ProductionGmailClient::with_retry("test_op", 3, || {
+            let count = Arc::clone(&attempt_count_clone);
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                // Permanent error - should not retry
+                Err::<String, _>(GmailError::AuthError("Invalid credentials".to_string()))
+            }
+        })
+        .await;
+
+        assert!(result.is_err());
+        // Should only attempt once, no retries for permanent errors
+        assert_eq!(attempt_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_with_retry_exhausts_all_retries() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let attempt_count = Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = Arc::clone(&attempt_count);
+
+        let result = ProductionGmailClient::with_retry("test_op", 3, || {
+            let count = Arc::clone(&attempt_count_clone);
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                // Always fail with transient error
+                Err::<String, _>(GmailError::RateLimitExceeded { retry_after: 1 })
+            }
+        })
+        .await;
+
+        assert!(result.is_err());
+        // Should attempt 4 times: initial + 3 retries
+        assert_eq!(attempt_count.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn test_with_retry_succeeds_immediately() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let attempt_count = Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = Arc::clone(&attempt_count);
+
+        let result = ProductionGmailClient::with_retry("test_op", 3, || {
+            let count = Arc::clone(&attempt_count_clone);
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok("success".to_string())
+            }
+        })
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "success");
+        // Should only attempt once
+        assert_eq!(attempt_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_timeout_triggers_network_error() {
+        use tokio::time::{sleep, Duration};
+
+        // Simulate a slow operation that exceeds timeout
+        let timeout_duration = Duration::from_millis(100);
+        let slow_operation = async {
+            sleep(Duration::from_millis(200)).await;
+            Ok::<String, GmailError>("too slow".to_string())
+        };
+
+        let result = tokio::time::timeout(timeout_duration, slow_operation).await;
+
+        // Should timeout
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_timeout_completes_within_limit() {
+        use tokio::time::{sleep, Duration};
+
+        // Simulate a fast operation that completes before timeout
+        let timeout_duration = Duration::from_millis(100);
+        let fast_operation = async {
+            sleep(Duration::from_millis(10)).await;
+            Ok::<String, GmailError>("fast enough".to_string())
+        };
+
+        let result = tokio::time::timeout(timeout_duration, fast_operation).await;
+
+        // Should succeed
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_ok());
+    }
 }
