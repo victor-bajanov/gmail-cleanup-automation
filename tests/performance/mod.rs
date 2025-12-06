@@ -2,7 +2,16 @@
 //!
 //! This module provides utilities for generating large volumes of realistic test emails
 //! for performance benchmarking and load testing.
+//!
+//! ## Memory Safety
+//!
+//! All generation functions in this module are memory-aware and will automatically
+//! limit allocations based on available system memory. This is critical for containerized
+//! test environments with restricted memory.
+//!
+//! Use `memory_limits::print_memory_diagnostics()` to see current memory availability.
 
+pub mod memory_limits;
 pub mod mock_generator;
 
 #[cfg(test)]
@@ -419,9 +428,24 @@ fn generate_message(
 /// - 10% Financial
 /// - 5% Personal
 /// - Remaining: Other
+///
+/// This function automatically applies memory limits based on available system memory.
+/// If the requested count exceeds safe limits, it will be reduced.
 pub fn generate_random_emails(count: usize) -> Vec<MessageMetadata> {
+    let (safe_count, was_limited) = memory_limits::apply_memory_limit(count);
+    if was_limited {
+        eprintln!(
+            "generate_random_emails: Reduced count from {} to {} due to memory constraints",
+            count, safe_count
+        );
+    }
+
     let mut rng = rand::thread_rng();
-    let mut messages = Vec::with_capacity(count);
+
+    // Use incremental allocation instead of with_capacity
+    let mut messages = Vec::new();
+    const BATCH_SIZE: usize = 10_000;
+    messages.reserve(safe_count.min(BATCH_SIZE));
 
     // Define category distribution weights
     let category_weights = vec![
@@ -440,7 +464,11 @@ pub fn generate_random_emails(count: usize) -> Vec<MessageMetadata> {
         category_pool.extend(std::iter::repeat(category).take(weight));
     }
 
-    for _ in 0..count {
+    for i in 0..safe_count {
+        // Reserve more capacity incrementally
+        if i > 0 && i % BATCH_SIZE == 0 && i + BATCH_SIZE <= safe_count {
+            messages.reserve(BATCH_SIZE);
+        }
         let domain = DOMAINS.choose(&mut rng).unwrap();
         let category = category_pool.choose(&mut rng).unwrap_or(&EmailCategory::Other);
         messages.push(generate_message(&mut rng, domain, *category, 90));
@@ -453,9 +481,23 @@ pub fn generate_random_emails(count: usize) -> Vec<MessageMetadata> {
 ///
 /// All emails will be newsletters with unsubscribe headers,
 /// using a variety of newsletter domains.
+///
+/// This function automatically applies memory limits based on available system memory.
 pub fn generate_newsletter_emails(count: usize) -> Vec<MessageMetadata> {
+    let (safe_count, was_limited) = memory_limits::apply_memory_limit(count);
+    if was_limited {
+        eprintln!(
+            "generate_newsletter_emails: Reduced count from {} to {} due to memory constraints",
+            count, safe_count
+        );
+    }
+
     let mut rng = rand::thread_rng();
-    let mut messages = Vec::with_capacity(count);
+
+    // Use incremental allocation
+    let mut messages = Vec::new();
+    const BATCH_SIZE: usize = 10_000;
+    messages.reserve(safe_count.min(BATCH_SIZE));
 
     // Focus on newsletter-heavy domains
     let newsletter_domains = [
@@ -469,7 +511,10 @@ pub fn generate_newsletter_emails(count: usize) -> Vec<MessageMetadata> {
         "wired.com",
     ];
 
-    for _ in 0..count {
+    for i in 0..safe_count {
+        if i > 0 && i % BATCH_SIZE == 0 && i + BATCH_SIZE <= safe_count {
+            messages.reserve(BATCH_SIZE);
+        }
         let domain = newsletter_domains.choose(&mut rng).unwrap();
         messages.push(generate_message(
             &mut rng,
@@ -490,17 +535,31 @@ pub fn generate_newsletter_emails(count: usize) -> Vec<MessageMetadata> {
 /// - Regular notifications throughout the day
 /// - Occasional personal emails
 /// - Marketing campaigns in waves
+///
+/// This function automatically applies memory limits based on available system memory.
 pub fn generate_mixed_workload(count: usize) -> Vec<MessageMetadata> {
+    let (safe_count, was_limited) = memory_limits::apply_memory_limit(count);
+    if was_limited {
+        eprintln!(
+            "generate_mixed_workload: Reduced count from {} to {} due to memory constraints",
+            count, safe_count
+        );
+    }
+
     let mut rng = rand::thread_rng();
-    let mut messages = Vec::with_capacity(count);
+
+    // Use incremental allocation
+    let mut messages = Vec::new();
+    const BATCH_SIZE: usize = 10_000;
+    messages.reserve(safe_count.min(BATCH_SIZE));
 
     // Split into chunks to simulate realistic patterns
-    let newsletter_count = count / 3; // Morning/evening newsletter bursts
-    let transactional_count = count / 5; // Receipts, shipping
-    let notification_count = count / 4; // Notifications spread throughout
-    let marketing_count = count / 6; // Marketing waves
-    let personal_count = count / 10; // Occasional personal
-    let remaining = count
+    let newsletter_count = safe_count / 3; // Morning/evening newsletter bursts
+    let transactional_count = safe_count / 5; // Receipts, shipping
+    let notification_count = safe_count / 4; // Notifications spread throughout
+    let marketing_count = safe_count / 6; // Marketing waves
+    let personal_count = safe_count / 10; // Occasional personal
+    let remaining = safe_count
         - newsletter_count
         - transactional_count
         - notification_count
@@ -509,6 +568,7 @@ pub fn generate_mixed_workload(count: usize) -> Vec<MessageMetadata> {
 
     // Generate newsletters (older, clustered)
     for _ in 0..newsletter_count {
+        reserve_if_needed(&mut messages, BATCH_SIZE);
         let domain = DOMAINS.choose(&mut rng).unwrap();
         messages.push(generate_message(
             &mut rng,
@@ -520,6 +580,7 @@ pub fn generate_mixed_workload(count: usize) -> Vec<MessageMetadata> {
 
     // Generate transactional emails (receipts + shipping)
     for i in 0..transactional_count {
+        reserve_if_needed(&mut messages, BATCH_SIZE);
         let domain = DOMAINS.choose(&mut rng).unwrap();
         let category = if i % 2 == 0 {
             EmailCategory::Receipt
@@ -531,6 +592,7 @@ pub fn generate_mixed_workload(count: usize) -> Vec<MessageMetadata> {
 
     // Generate notifications (spread out)
     for _ in 0..notification_count {
+        reserve_if_needed(&mut messages, BATCH_SIZE);
         let domain = DOMAINS.choose(&mut rng).unwrap();
         messages.push(generate_message(
             &mut rng,
@@ -542,6 +604,7 @@ pub fn generate_mixed_workload(count: usize) -> Vec<MessageMetadata> {
 
     // Generate marketing (recent wave)
     for _ in 0..marketing_count {
+        reserve_if_needed(&mut messages, BATCH_SIZE);
         let domain = DOMAINS.choose(&mut rng).unwrap();
         messages.push(generate_message(
             &mut rng,
@@ -553,6 +616,7 @@ pub fn generate_mixed_workload(count: usize) -> Vec<MessageMetadata> {
 
     // Generate personal emails (very recent)
     for _ in 0..personal_count {
+        reserve_if_needed(&mut messages, BATCH_SIZE);
         let domain = DOMAINS.choose(&mut rng).unwrap();
         messages.push(generate_message(
             &mut rng,
@@ -564,6 +628,7 @@ pub fn generate_mixed_workload(count: usize) -> Vec<MessageMetadata> {
 
     // Fill remaining with financial and other
     for i in 0..remaining {
+        reserve_if_needed(&mut messages, BATCH_SIZE);
         let domain = DOMAINS.choose(&mut rng).unwrap();
         let category = if i % 2 == 0 {
             EmailCategory::Financial
@@ -577,6 +642,13 @@ pub fn generate_mixed_workload(count: usize) -> Vec<MessageMetadata> {
     messages.shuffle(&mut rng);
 
     messages
+}
+
+/// Helper function to reserve capacity incrementally
+fn reserve_if_needed<T>(vec: &mut Vec<T>, batch_size: usize) {
+    if vec.len() == vec.capacity() {
+        vec.reserve(batch_size);
+    }
 }
 
 #[cfg(test)]

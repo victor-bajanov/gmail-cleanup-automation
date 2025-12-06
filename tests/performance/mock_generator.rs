@@ -3,11 +3,22 @@
 //! This module provides utilities to generate large numbers of realistic mock emails
 //! for stress testing and performance benchmarking. It uses deterministic randomness
 //! (seeded) to ensure reproducible test results.
+//!
+//! ## Memory Safety
+//!
+//! All generation functions are memory-aware and will automatically limit the number
+//! of messages generated based on available system memory. This prevents out-of-memory
+//! conditions in containerized test environments.
+//!
+//! Use `generate_mock_emails_checked()` to get an explicit error if memory limits
+//! would be exceeded, or `generate_mock_emails()` which automatically applies limits.
 
 use chrono::{DateTime, Duration, Utc};
 use gmail_automation::models::{EmailCategory, MessageMetadata};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+
+use super::memory_limits::{self, MemoryLimitExceeded};
 
 /// Distribution of email types for realistic test data
 #[derive(Debug, Clone)]
@@ -79,8 +90,55 @@ impl MockGenerator {
     }
 
     /// Generate N mock MessageMetadata structs with varied realistic data
+    ///
+    /// This function automatically applies memory limits based on available system memory.
+    /// If the requested count exceeds safe limits, it will be reduced and a warning printed.
+    ///
+    /// For explicit control over memory limits, use `generate_messages_checked()`.
     pub fn generate_messages(&mut self, count: usize) -> Vec<MessageMetadata> {
-        (0..count).map(|i| self.generate_single_message(i)).collect()
+        let (safe_count, was_limited) = memory_limits::apply_memory_limit(count);
+        if was_limited {
+            eprintln!(
+                "MockGenerator: Reduced message count from {} to {} due to memory constraints",
+                count, safe_count
+            );
+        }
+        self.generate_messages_unchecked(safe_count)
+    }
+
+    /// Generate N mock MessageMetadata structs, failing if memory limits would be exceeded
+    ///
+    /// Unlike `generate_messages()`, this function returns an error instead of
+    /// automatically reducing the count.
+    pub fn generate_messages_checked(&mut self, count: usize) -> Result<Vec<MessageMetadata>, MemoryLimitExceeded> {
+        memory_limits::check_allocation_safe(count)?;
+        Ok(self.generate_messages_unchecked(count))
+    }
+
+    /// Generate messages without memory limit checks
+    ///
+    /// # Safety
+    /// This function does not check memory limits. Use with caution.
+    /// Prefer `generate_messages()` or `generate_messages_checked()` for safe allocation.
+    fn generate_messages_unchecked(&mut self, count: usize) -> Vec<MessageMetadata> {
+        // Use incremental allocation instead of with_capacity to avoid
+        // pre-allocating potentially huge amounts of memory
+        let mut messages = Vec::new();
+
+        // Allocate in batches to avoid huge upfront allocation
+        const BATCH_SIZE: usize = 10_000;
+        let initial_capacity = count.min(BATCH_SIZE);
+        messages.reserve(initial_capacity);
+
+        for i in 0..count {
+            // Reserve more capacity incrementally
+            if i > 0 && i % BATCH_SIZE == 0 && i + BATCH_SIZE <= count {
+                messages.reserve(BATCH_SIZE);
+            }
+            messages.push(self.generate_single_message(i));
+        }
+
+        messages
     }
 
     /// Generate a single mock message
@@ -441,18 +499,43 @@ const COMMON_DOMAINS: &[&str] = &[
 ];
 
 /// Generate mock emails with default settings
+///
+/// This function automatically applies memory limits based on available system memory.
+/// If the requested count exceeds safe limits, it will be reduced.
 pub fn generate_mock_emails(count: usize) -> Vec<MessageMetadata> {
     let mut generator = MockGenerator::new(MockGeneratorConfig::default());
     generator.generate_messages(count)
 }
 
+/// Generate mock emails with default settings, returning an error if memory limits would be exceeded
+///
+/// Unlike `generate_mock_emails()`, this function returns an error instead of
+/// automatically reducing the count.
+pub fn generate_mock_emails_checked(count: usize) -> Result<Vec<MessageMetadata>, MemoryLimitExceeded> {
+    let mut generator = MockGenerator::new(MockGeneratorConfig::default());
+    generator.generate_messages_checked(count)
+}
+
 /// Generate mock emails with a specific seed
+///
+/// This function automatically applies memory limits based on available system memory.
 pub fn generate_mock_emails_with_seed(count: usize, seed: u64) -> Vec<MessageMetadata> {
     let mut generator = MockGenerator::new_with_seed(seed);
     generator.generate_messages(count)
 }
 
+/// Generate mock emails with a specific seed, returning an error if memory limits would be exceeded
+pub fn generate_mock_emails_with_seed_checked(
+    count: usize,
+    seed: u64,
+) -> Result<Vec<MessageMetadata>, MemoryLimitExceeded> {
+    let mut generator = MockGenerator::new_with_seed(seed);
+    generator.generate_messages_checked(count)
+}
+
 /// Generate mock emails with custom distribution
+///
+/// This function automatically applies memory limits based on available system memory.
 pub fn generate_mock_emails_with_distribution(
     count: usize,
     seed: u64,
@@ -465,6 +548,19 @@ pub fn generate_mock_emails_with_distribution(
     };
     let mut generator = MockGenerator::new(config);
     generator.generate_messages(count)
+}
+
+/// Get the maximum safe message count based on available memory
+///
+/// This is useful for tests that want to use the maximum available capacity
+/// without risking out-of-memory conditions.
+pub fn max_safe_message_count() -> usize {
+    memory_limits::calculate_max_messages_default()
+}
+
+/// Print memory diagnostics for debugging
+pub fn print_memory_diagnostics() {
+    memory_limits::print_memory_diagnostics();
 }
 
 #[cfg(test)]
