@@ -926,33 +926,15 @@ This project is licensed under the [MIT License](LICENSE).
 
 ---
 
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/gmail-automation/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/gmail-automation/discussions)
-- **Email**: your.email@example.com
-
----
-
 ## Roadmap
 
 ### Version 0.5.0
 - [ ] Rollback functionality
-- [ ] ML-based classification (OpenAI, Anthropic)
-- [ ] Advanced pattern learning from user behavior
-- [ ] Web UI for configuration and monitoring
+- [ ] Custom rule definitions via config
 
 ### Version 0.6.0
-- [ ] Multi-account support
-- [ ] Custom rule definitions via config
+- [ ] ML-based classification (OpenAI, Anthropic)
 - [ ] Email statistics and analytics
-- [ ] Scheduled automatic runs
-
-### Version 1.0.0
-- [ ] Production deployment guide
-- [ ] Docker container support
-- [ ] Cloud deployment options (AWS, GCP)
-- [ ] Comprehensive ML model training
 
 ---
 
@@ -971,7 +953,7 @@ A: The software is free and open source. Google Cloud Console is free for person
 A: Yes, as long as Gmail API is enabled for your organization.
 
 **Q: Can I run this on a schedule?**
-A: Not yet built-in. You can use cron/systemd to run periodically. Automatic scheduling is planned for v0.3.0.
+A: Not yet built-in. You can use cron/systemd to run periodically.
 
 **Q: Is my data private?**
 A: Yes. All processing happens locally on your machine. No data is sent to third parties (except Gmail API).
