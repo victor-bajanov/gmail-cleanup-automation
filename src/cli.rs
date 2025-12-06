@@ -606,17 +606,51 @@ pub async fn run_pipeline(
 
         reporter.finish_spinner(&scan_spinner, &format!("Found {} messages to process", total_messages));
 
-        // Fetch message metadata with progress bar
-        let fetch_bar = reporter.add_progress_bar(total_messages as u64, "Fetching message metadata...");
+        // Fetch message metadata and load existing filters/labels concurrently
+        // These are independent API calls that can run in parallel
+        let fetch_bar = reporter.add_progress_bar(total_messages as u64, "Fetching emails, filters, and labels...");
         let fetch_bar_clone = fetch_bar.clone();
 
         let progress_callback: crate::client::ProgressCallback = Arc::new(move || {
             fetch_bar_clone.inc(1);
         });
 
-        let messages = client.fetch_messages_with_progress(message_ids, progress_callback).await?;
+        // Run message fetching and filter/label loading concurrently
+        let client_clone = client.clone();
+        let client_clone2 = client.clone();
+        let label_prefix = config.labels.prefix.clone();
 
-        fetch_bar.finish_with_message(format!("Fetched {} message metadata records", messages.len()));
+        let (messages_result, filters_result, labels_result) = tokio::join!(
+            // Fetch all message metadata (already internally concurrent)
+            client.fetch_messages_with_progress(message_ids, progress_callback),
+            // Load existing filters for cluster matching
+            async {
+                let filters = client_clone.list_filters().await.unwrap_or_else(|e| {
+                    warn!("Failed to load existing filters: {}", e);
+                    Vec::new()
+                });
+                info!("Loaded {} existing filters", filters.len());
+                Ok::<_, GmailError>(filters)
+            },
+            // Load existing labels for review UI
+            async {
+                let mut label_manager = LabelManager::new(Box::new(client_clone2), label_prefix);
+                let count = label_manager.load_existing_labels().await?;
+                info!("Loaded {} existing labels", count);
+                Ok::<_, GmailError>(label_manager)
+            }
+        );
+
+        let messages = messages_result?;
+        existing_filters = filters_result?;
+        let preloaded_label_manager = labels_result?;
+
+        fetch_bar.finish_with_message(format!(
+            "Fetched {} emails, {} filters, {} labels",
+            messages.len(),
+            existing_filters.len(),
+            preloaded_label_manager.get_label_cache().len()
+        ));
 
         state.messages_scanned = messages.len();
         state.checkpoint(&cli.state_file).await?;
@@ -638,14 +672,6 @@ pub async fn run_pipeline(
 
         state.messages_classified = classifications.len();
         state.checkpoint(&cli.state_file).await?;
-
-        // Step 6.5: Load existing filters early (for matching against clusters)
-        let existing_filters_spinner = reporter.add_spinner("Loading existing Gmail filters...");
-        existing_filters = client.list_filters().await.unwrap_or_else(|e| {
-            warn!("Failed to load existing filters: {}", e);
-            Vec::new()
-        });
-        reporter.finish_spinner(&existing_filters_spinner, &format!("Found {} existing filters", existing_filters.len()));
 
         // Step 7: Interactive review (if enabled)
         if review {
@@ -755,19 +781,12 @@ pub async fn run_pipeline(
             }
 
             if !clusters.is_empty() {
-                // Load existing labels to build label ID -> name mapping for the review UI
-                let label_load_spinner = reporter.add_spinner("Loading existing labels...");
-                let mut temp_label_manager = LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
-                let _ = temp_label_manager.load_existing_labels().await?;
-
-                // Build label ID -> name mapping (strip prefix for display)
-                let label_id_to_name: HashMap<String, String> = temp_label_manager
+                // Use preloaded labels from concurrent fetch (build label ID -> name mapping for review UI)
+                let label_id_to_name: HashMap<String, String> = preloaded_label_manager
                     .get_label_cache()
                     .iter()
                     .map(|(name, id)| (id.clone(), name.clone()))
                     .collect();
-
-                reporter.finish_spinner(&label_load_spinner, &format!("Loaded {} existing labels", label_id_to_name.len()));
 
                 // Save the MultiProgress before dropping reporter (for reuse after interactive mode)
                 let multi = reporter.multi_progress();

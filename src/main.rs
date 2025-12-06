@@ -149,9 +149,8 @@ async fn run() -> Result<()> {
             println!("Successfully authenticated with Gmail API");
             println!("Token cached at: {:?}", cli.token_cache);
 
-            // Test the connection
+            // Test the connection (no add_scope needed - token already has all required scopes)
             let (_, profile) = hub.users().get_profile("me")
-                .add_scope("https://www.googleapis.com/auth/gmail.modify")
                 .doit().await?;
             println!("Connected to account: {}", profile.email_address.unwrap_or_default());
 
@@ -325,19 +324,24 @@ async fn run() -> Result<()> {
                 config.scan.max_concurrent_requests,
             );
 
-            // List all existing filters
-            let filters_spinner = reporter.add_spinner("Fetching existing Gmail filters...");
-            let existing_filters = client.list_filters().await?;
-            reporter.finish_spinner(&filters_spinner, &format!("Found {} total filters", existing_filters.len()));
+            // Fetch filters and labels concurrently (independent API calls)
+            let fetch_spinner = reporter.add_spinner("Fetching existing Gmail filters and labels...");
+            let (filters_result, labels_result) = tokio::join!(
+                client.list_filters(),
+                client.list_labels()
+            );
 
-            // List all labels to build ID -> name mapping
-            let labels_spinner = reporter.add_spinner("Fetching existing Gmail labels...");
-            let existing_labels = client.list_labels().await?;
+            let existing_filters = filters_result?;
+            let existing_labels = labels_result?;
             let label_id_to_name: std::collections::HashMap<String, String> = existing_labels
                 .iter()
                 .map(|l| (l.id.clone(), l.name.clone()))
                 .collect();
-            reporter.finish_spinner(&labels_spinner, &format!("Found {} total labels", existing_labels.len()));
+            reporter.finish_spinner(&fetch_spinner, &format!(
+                "Found {} filters and {} labels",
+                existing_filters.len(),
+                existing_labels.len()
+            ));
 
             // Find filters that add labels with the configured prefix (case-insensitive)
             let prefix_lower = label_prefix.to_lowercase();

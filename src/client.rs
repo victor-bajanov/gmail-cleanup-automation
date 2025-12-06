@@ -506,27 +506,47 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn list_labels(&self) -> Result<Vec<LabelInfo>> {
-        let (_, response) = self
-            .hub
-            .users()
-            .labels_list("me")
-            .add_scope("https://www.googleapis.com/auth/gmail.labels")
-            .doit()
-            .await?;
+        Self::with_retry("list_labels", 3, || async {
+            // Wrap API call in timeout to prevent indefinite hangs
+            let timeout_duration = Duration::from_secs(30);
+            let api_call = async {
+                debug!("Calling Gmail API to list labels...");
+                let result = self
+                    .hub
+                    .users()
+                    .labels_list("me")
+                    .add_scope("https://www.googleapis.com/auth/gmail.labels")
+                    .doit()
+                    .await;
+                debug!("Gmail API list labels call completed");
+                result
+            };
 
-        let labels = response
-            .labels
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|label| {
-                match (label.id, label.name) {
-                    (Some(id), Some(name)) => Some(LabelInfo { id, name }),
-                    _ => None,
+            let (_, response) = match tokio::time::timeout(timeout_duration, api_call).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    warn!("Gmail API list_labels call timed out after {:?}", timeout_duration);
+                    return Err(GmailError::NetworkError(
+                        format!("API call timed out after {:?}", timeout_duration)
+                    ));
                 }
-            })
-            .collect();
+            };
 
-        Ok(labels)
+            let labels: Vec<LabelInfo> = response
+                .labels
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|label| {
+                    match (label.id, label.name) {
+                        (Some(id), Some(name)) => Some(LabelInfo { id, name }),
+                        _ => None,
+                    }
+                })
+                .collect();
+
+            debug!("Successfully parsed {} labels", labels.len());
+            Ok(labels)
+        }).await
     }
 
     async fn create_label(&self, name: &str) -> Result<String> {
