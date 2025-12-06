@@ -4,6 +4,7 @@ use google_gmail1::{hyper_rustls, hyper_util, yup_oauth2, Gmail};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::Path;
+use tracing::{info, warn};
 use yup_oauth2::ApplicationSecret;
 
 use crate::error::{GmailError, Result};
@@ -25,6 +26,50 @@ pub const READONLY_SCOPES: &[&str] = &["https://www.googleapis.com/auth/gmail.re
 
 /// Metadata-only scope (headers only, no body content)
 pub const METADATA_SCOPES: &[&str] = &["https://www.googleapis.com/auth/gmail.metadata"];
+
+/// Check if a cached token file has all required scopes
+///
+/// Returns Ok(true) if token exists and has all scopes, Ok(false) if missing scopes,
+/// or Err if the token file cannot be read/parsed.
+pub async fn validate_token_scopes(token_cache_path: &Path) -> Result<bool> {
+    if !token_cache_path.exists() {
+        info!("No cached token found at {:?}", token_cache_path);
+        return Ok(false);
+    }
+
+    let content = tokio::fs::read_to_string(token_cache_path)
+        .await
+        .map_err(|e| GmailError::AuthError(format!("Failed to read token cache: {}", e)))?;
+
+    // Parse the token storage format used by yup-oauth2
+    // The format is a JSON object with scope keys mapping to token info
+    let token_data: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| GmailError::AuthError(format!("Failed to parse token cache: {}", e)))?;
+
+    // yup-oauth2 stores tokens with a key that is the sorted, space-joined scopes
+    // Check if we have a token entry that covers all required scopes
+    if let Some(obj) = token_data.as_object() {
+        for (scope_key, _token_info) in obj {
+            // The scope key is space-separated scopes
+            let cached_scopes: Vec<&str> = scope_key.split(' ').collect();
+
+            // Check if all required scopes are present in this token
+            let has_all_scopes = REQUIRED_SCOPES.iter().all(|required| {
+                cached_scopes.iter().any(|cached| cached == required)
+            });
+
+            if has_all_scopes {
+                info!("Cached token has all required scopes");
+                return Ok(true);
+            }
+        }
+    }
+
+    // No token with all required scopes found
+    let required_list = REQUIRED_SCOPES.join(", ");
+    warn!("Cached token is missing required scopes. Required: {}", required_list);
+    Ok(false)
+}
 
 /// Type alias for Gmail Hub to simplify type signatures
 pub type GmailHub = Gmail<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>>;
@@ -66,6 +111,7 @@ pub async fn get_gmail_hub() -> Result<GmailHub> {
 /// This function sets up the complete Gmail API client with:
 /// - OAuth2 authentication using InstalledFlow (desktop app flow)
 /// - Token persistence to disk for automatic refresh
+/// - Validation that cached tokens have all required scopes
 /// - HTTP/1 client with TLS support
 ///
 /// # Arguments
@@ -79,6 +125,25 @@ pub async fn initialize_gmail_hub(
     token_cache_path: &Path,
 ) -> Result<GmailHub>
 {
+    // Check if existing token has all required scopes
+    // If not, delete it to force re-authentication with correct scopes
+    if token_cache_path.exists() {
+        match validate_token_scopes(token_cache_path).await {
+            Ok(true) => {
+                info!("Existing token has all required scopes");
+            }
+            Ok(false) => {
+                warn!("Existing token is missing required scopes, removing to trigger re-auth");
+                if let Err(e) = tokio::fs::remove_file(token_cache_path).await {
+                    warn!("Failed to remove invalid token cache: {}", e);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to validate token scopes: {}, will try to use existing token", e);
+            }
+        }
+    }
+
     // Read OAuth2 credentials
     let secret = yup_oauth2::read_application_secret(credentials_path)
         .await
@@ -97,10 +162,13 @@ pub async fn initialize_gmail_hub(
 
     // Pre-authenticate with required scopes to ensure token is cached with correct scopes
     // This prevents the "wrong scope" issue during concurrent operations
+    // Note: We request ALL required scopes at once to get a single token with all permissions
+    info!("Requesting token with scopes: {:?}", REQUIRED_SCOPES);
     let _token = auth
         .token(REQUIRED_SCOPES)
         .await
         .map_err(|e| GmailError::AuthError(format!("Failed to obtain token: {}", e)))?;
+    info!("Token obtained successfully");
 
     // Configure HTTP client with TLS
     // Use HTTP/1 for compatibility (HTTP/2 is default but HTTP/1 works better with google-gmail1)
@@ -294,5 +362,63 @@ mod tests {
 
         assert_eq!(METADATA_SCOPES.len(), 1);
         assert!(METADATA_SCOPES.contains(&"https://www.googleapis.com/auth/gmail.metadata"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_scopes_missing_file() {
+        let path = Path::new("/nonexistent/token.json");
+        let result = validate_token_scopes(path).await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap()); // Should return false for missing file
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_scopes_valid_token() {
+        let temp_file = NamedTempFile::new().unwrap();
+
+        // Simulate yup-oauth2 token storage format with all required scopes
+        let token_json = r#"{
+            "https://www.googleapis.com/auth/gmail.labels https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.settings.basic": {
+                "access_token": "test_token",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }
+        }"#;
+
+        tokio::fs::write(temp_file.path(), token_json).await.unwrap();
+
+        let result = validate_token_scopes(temp_file.path()).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // Should return true for valid scopes
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_scopes_missing_scope() {
+        let temp_file = NamedTempFile::new().unwrap();
+
+        // Token with only some required scopes (missing gmail.settings.basic)
+        let token_json = r#"{
+            "https://www.googleapis.com/auth/gmail.labels https://www.googleapis.com/auth/gmail.modify": {
+                "access_token": "test_token",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }
+        }"#;
+
+        tokio::fs::write(temp_file.path(), token_json).await.unwrap();
+
+        let result = validate_token_scopes(temp_file.path()).await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap()); // Should return false for missing scope
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_scopes_invalid_json() {
+        let temp_file = NamedTempFile::new().unwrap();
+
+        tokio::fs::write(temp_file.path(), "not valid json").await.unwrap();
+
+        let result = validate_token_scopes(temp_file.path()).await;
+        assert!(result.is_err()); // Should return error for invalid JSON
     }
 }
