@@ -10,7 +10,7 @@ use google_gmail1::{
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::error::{GmailError, Result};
 use crate::models::{FilterRule, MessageMetadata};
@@ -606,36 +606,56 @@ impl GmailClient for ProductionGmailClient {
     }
 
     async fn list_filters(&self) -> Result<Vec<ExistingFilterInfo>> {
-        let (_, response) = self
-            .hub
-            .users()
-            .settings_filters_list("me")
-            .add_scope("https://www.googleapis.com/auth/gmail.settings.basic")
-            .doit()
-            .await?;
+        Self::with_retry("list_filters", 3, || async {
+            // Wrap API call in timeout to prevent indefinite hangs
+            let timeout_duration = Duration::from_secs(30);
+            let api_call = async {
+                debug!("Calling Gmail API to list filters...");
+                let result = self
+                    .hub
+                    .users()
+                    .settings_filters_list("me")
+                    .add_scope("https://www.googleapis.com/auth/gmail.settings.basic")
+                    .doit()
+                    .await;
+                debug!("Gmail API list filters call completed");
+                result
+            };
 
-        let filters = response
-            .filter
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|f| {
-                let id = f.id?;
-                let criteria = f.criteria.unwrap_or_default();
-                let action = f.action.unwrap_or_default();
+            let (_, response) = match tokio::time::timeout(timeout_duration, api_call).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    warn!("Gmail API list_filters call timed out after {:?}", timeout_duration);
+                    return Err(GmailError::NetworkError(
+                        format!("API call timed out after {:?}", timeout_duration)
+                    ));
+                }
+            };
 
-                Some(ExistingFilterInfo {
-                    id,
-                    query: criteria.query,
-                    from: criteria.from,
-                    to: criteria.to,
-                    subject: criteria.subject,
-                    add_label_ids: action.add_label_ids.unwrap_or_default(),
-                    remove_label_ids: action.remove_label_ids.unwrap_or_default(),
+            let filters: Vec<ExistingFilterInfo> = response
+                .filter
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|f| {
+                    let id = f.id?;
+                    let criteria = f.criteria.unwrap_or_default();
+                    let action = f.action.unwrap_or_default();
+
+                    Some(ExistingFilterInfo {
+                        id,
+                        query: criteria.query,
+                        from: criteria.from,
+                        to: criteria.to,
+                        subject: criteria.subject,
+                        add_label_ids: action.add_label_ids.unwrap_or_default(),
+                        remove_label_ids: action.remove_label_ids.unwrap_or_default(),
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
-        Ok(filters)
+            debug!("Successfully parsed {} filters", filters.len());
+            Ok(filters)
+        }).await
     }
 
     async fn delete_filter(&self, filter_id: &str) -> Result<()> {
