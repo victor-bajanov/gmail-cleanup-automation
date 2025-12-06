@@ -8,7 +8,8 @@ license = "MIT"
 [dependencies]
 # Gmail API
 google-gmail1 = "6.0.0"
-yup-oauth2 = { version = "12.1.0", default-features = false, features = ["hyper-rustls", "aws-lc-rs"] }
+# Note: yup-oauth2 TLS features are platform-specific (see target sections below)
+yup-oauth2 = { version = "12.1.0", default-features = false, features = ["hyper-rustls"] }
 
 # Async runtime
 tokio = { version = "1.47", features = ["full"] }
@@ -17,10 +18,11 @@ futures-buffered = "0.2"
 async-stream = "0.3"
 
 # HTTP client (required by google-gmail1)
+# Note: TLS crypto provider features are platform-specific (see target sections below)
 hyper = "1"
-hyper-rustls = { version = "0.27", features = ["http2", "native-tokio", "aws-lc-rs"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "native-tokio", "tls12", "logging"] }
 hyper-util = "0.1"
-rustls = { version = "0.23", features = ["aws_lc_rs"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -83,3 +85,17 @@ cli = []
 cache = ["rusqlite"]
 ml = ["async-openai"]
 claude-agents = ["pyo3", "ml"]
+
+# Platform-specific TLS crypto provider configuration
+# On non-Windows platforms, use aws-lc-rs (better performance, FIPS support)
+# On Windows, use ring (better compatibility, no NASM/CMake required)
+
+[target.'cfg(not(windows))'.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "native-tokio", "tls12", "logging", "aws-lc-rs"] }
+yup-oauth2 = { version = "12.1.0", default-features = false, features = ["hyper-rustls", "aws-lc-rs"] }
+
+[target.'cfg(windows)'.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "native-tokio", "tls12", "logging", "ring"] }
+yup-oauth2 = { version = "12.1.0", default-features = false, features = ["hyper-rustls", "ring"] }
