@@ -88,7 +88,15 @@ async fn main() {
 async fn run() -> Result<()> {
     // Install default crypto provider for rustls
     // This is necessary because multiple dependencies use different crypto providers
+    // On non-Windows platforms, use aws-lc-rs (better performance, FIPS support)
+    // On Windows, use ring (better compatibility, no NASM/CMake required)
+    #[cfg(not(windows))]
     rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("Failed to install default crypto provider"))?;
+
+    #[cfg(windows)]
+    rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| anyhow::anyhow!("Failed to install default crypto provider"))?;
 
