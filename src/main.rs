@@ -157,8 +157,9 @@ async fn run() -> Result<()> {
             println!("Successfully authenticated with Gmail API");
             println!("Token cached at: {:?}", cli.token_cache);
 
-            // Test the connection (no add_scope needed - token already has all required scopes)
+            // Test the connection - must specify scope to avoid triggering additional OAuth flow
             let (_, profile) = hub.users().get_profile("me")
+                .add_scope("https://www.googleapis.com/auth/gmail.modify")
                 .doit().await?;
             println!("Connected to account: {}", profile.email_address.unwrap_or_default());
 
