@@ -78,6 +78,7 @@ mockall = "0.13"
 wiremock = "0.6"
 proptest = "1.8"
 tempfile = "3"
+rand = "0.8"
 
 [features]
 default = ["cli"]
