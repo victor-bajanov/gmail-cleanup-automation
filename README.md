@@ -236,6 +236,14 @@ auto_archive_categories = ["newsletters", "notifications", "marketing"]
 [execution]
 # Enable dry-run mode by default (prevents changes)
 dry_run = false
+
+[circuit_breaker]
+# Enable circuit breaker to prevent overwhelming API during failures
+enabled = true
+# Number of consecutive failures before opening circuit
+failure_threshold = 5
+# Seconds to wait before testing if service recovered
+reset_timeout_secs = 60
 ```
 
 ### Key Settings
@@ -248,6 +256,9 @@ dry_run = false
 | `classification.minimum_emails_for_label` | 5 | Min emails to create filter |
 | `labels.prefix` | "AutoManaged" | Label prefix for organization |
 | `labels.auto_archive_categories` | `["newsletters", ...]` | Categories to auto-archive |
+| `circuit_breaker.enabled` | true | Enable circuit breaker protection |
+| `circuit_breaker.failure_threshold` | 5 | Consecutive failures to trip breaker |
+| `circuit_breaker.reset_timeout_secs` | 60 | Seconds before testing recovery |
 
 ---
 
@@ -964,6 +975,18 @@ A: The system automatically handles rate limits with backoff and retry. You can 
 ---
 
 ## Changelog
+
+### [0.5.0] - 2025-12-08
+
+**Rate Limiting & Reliability**
+- Circuit breaker with configurable thresholds (enabled by default)
+- Proper Retry-After header parsing for 429 responses
+- Fixed hardcoded concurrency to respect config
+- Quota usage statistics in end-of-run summary
+
+**Code Quality**
+- Fixed clippy warnings and improved code quality
+- Better error handling and logging
 
 ### [0.4.0] - 2025-12-01
 

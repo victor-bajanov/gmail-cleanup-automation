@@ -215,13 +215,14 @@ impl EmailScanner {
         &self,
         message_ids: Vec<String>,
         _format: MessageFormat,
+        concurrent_fetches: usize,
     ) -> Result<Vec<MessageMetadata>> {
         use futures::stream;
 
         info!(
             "Fetching {} messages with {} concurrent workers",
             message_ids.len(),
-            10
+            concurrent_fetches
         );
 
         let messages_stream = stream::iter(message_ids)
@@ -241,7 +242,7 @@ impl EmailScanner {
                     }
                 }
             })
-            .buffer_unordered(10);
+            .buffer_unordered(concurrent_fetches);
 
         let results: Vec<Result<MessageMetadata>> = messages_stream.collect().await;
 
@@ -302,8 +303,7 @@ impl EmailScanner {
         let mut page_token: Option<String> = None;
 
         loop {
-            let (message_ids, next_token) =
-                self.list_message_ids_page(config, page_token).await?;
+            let (message_ids, next_token) = self.list_message_ids_page(config, page_token).await?;
 
             if message_ids.is_empty() {
                 break;
@@ -313,7 +313,7 @@ impl EmailScanner {
 
             // Fetch messages concurrently
             let messages = self
-                .fetch_messages_concurrent(message_ids, config.format)
+                .fetch_messages_concurrent(message_ids, config.format, config.concurrent_fetches)
                 .await?;
 
             all_messages.extend(messages);
@@ -364,7 +364,7 @@ impl EmailScanner {
 
                         // Fetch messages concurrently
                         let messages_result = self
-                            .fetch_messages_concurrent(message_ids, config.format)
+                            .fetch_messages_concurrent(message_ids, config.format, config.concurrent_fetches)
                             .await;
 
                         match messages_result {
@@ -523,8 +523,8 @@ pub fn parse_message_metadata(message: &Message) -> Result<MessageMetadata> {
 
     let labels = message.label_ids.clone().unwrap_or_default();
 
-    let has_unsubscribe = headers.contains_key("List-Unsubscribe")
-        || headers.contains_key("List-Unsubscribe-Post");
+    let has_unsubscribe =
+        headers.contains_key("List-Unsubscribe") || headers.contains_key("List-Unsubscribe-Post");
 
     Ok(MessageMetadata {
         id,

@@ -29,8 +29,14 @@
 //!         ".gmail-automation/token.json".as_ref()
 //!     ).await?;
 //!
-//!     // Create rate-limited client
-//!     let client = ProductionGmailClient::new(hub, config.scan.max_concurrent_requests);
+//!     // Create rate-limited client with circuit breaker
+//!     let client = ProductionGmailClient::with_full_config(
+//!         hub,
+//!         config.scan.max_concurrent_requests,
+//!         250.0,
+//!         500.0,
+//!         config.circuit_breaker.clone()
+//!     );
 //!
 //!     // Use client to interact with Gmail API
 //!     // ...
@@ -54,9 +60,10 @@
 //! - [`state`] - Processing state management with checkpointing
 
 pub mod auth;
-pub mod client;
+pub mod circuit_breaker;
 pub mod classifier;
 pub mod cli;
+pub mod client;
 pub mod config;
 pub mod error;
 pub mod exclusions;
@@ -72,9 +79,7 @@ pub mod state;
 pub use error::{GmailError, Result};
 
 // Core data models
-pub use models::{
-    Classification, EmailCategory, FilterRule, MessageMetadata,
-};
+pub use models::{Classification, EmailCategory, FilterRule, MessageMetadata};
 
 // Classifier types
 pub use classifier::{DomainStats, EmailClassifier};
@@ -84,11 +89,15 @@ pub use scanner::{MessageFormat, ScanCheckpoint};
 
 // Config types
 pub use config::{
-    ClassificationConfig, ClaudeAgentsConfig, Config, ExecutionConfig, LabelConfig, ScanConfig,
+    CircuitBreakerConfig, ClassificationConfig, ClaudeAgentsConfig, Config, ExecutionConfig,
+    LabelConfig, ScanConfig,
 };
 
 // Client traits
 pub use client::{GmailClient, ProductionGmailClient, RateLimitedGmailClient};
+
+// Circuit breaker
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerStats, CircuitState};
 
 // Rate limiting
 pub use rate_limiter::{QuotaCost, QuotaRateLimiter, QuotaStats};
@@ -104,4 +113,6 @@ pub use state::{ProcessingPhase, ProcessingState};
 pub use cli::{Cli, Commands, ProgressReporter, Report};
 
 // Interactive review types
-pub use interactive::{create_clusters, ClusterDecision, DecisionAction, EmailCluster, ReviewSession};
+pub use interactive::{
+    create_clusters, ClusterDecision, DecisionAction, EmailCluster, ReviewSession,
+};

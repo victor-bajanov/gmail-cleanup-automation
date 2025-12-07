@@ -106,6 +106,27 @@ auto_archive_categories = [
 # - Does NOT modify Gmail account
 dry_run = false
 
+[circuit_breaker]
+# Circuit breaker prevents overwhelming the API during failures
+# When consecutive failures reach the threshold, requests are rejected
+# until the reset timeout expires, then one test request is allowed
+# Default: enabled with sensible thresholds
+
+# Enable or disable circuit breaker protection
+# Default: true
+enabled = true
+
+# Number of consecutive failures (429s, 5xx, network errors) to trip breaker
+# Lower = more sensitive, Higher = more tolerant
+# Default: 5
+failure_threshold = 5
+
+# Seconds to wait before allowing a test request after circuit opens
+# After timeout, one request is allowed through (half-open state)
+# If it succeeds, circuit closes; if it fails, circuit re-opens
+# Default: 60
+reset_timeout_secs = 60
+
 # ==============================================================================
 # Example Configurations for Different Use Cases
 # ==============================================================================

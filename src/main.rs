@@ -148,20 +148,24 @@ async fn run() -> Result<()> {
             }
 
             // Initialize Gmail hub (will trigger OAuth flow if needed)
-            let hub = gmail_automation::auth::initialize_gmail_hub(
-                &cli.credentials,
-                &cli.token_cache,
-            )
-            .await?;
+            let hub =
+                gmail_automation::auth::initialize_gmail_hub(&cli.credentials, &cli.token_cache)
+                    .await?;
 
             println!("Successfully authenticated with Gmail API");
             println!("Token cached at: {:?}", cli.token_cache);
 
             // Test the connection - must specify scope to avoid triggering additional OAuth flow
-            let (_, profile) = hub.users().get_profile("me")
+            let (_, profile) = hub
+                .users()
+                .get_profile("me")
                 .add_scope("https://www.googleapis.com/auth/gmail.modify")
-                .doit().await?;
-            println!("Connected to account: {}", profile.email_address.unwrap_or_default());
+                .doit()
+                .await?;
+            println!(
+                "Connected to account: {}",
+                profile.email_address.unwrap_or_default()
+            );
 
             Ok(())
         }
@@ -190,8 +194,17 @@ async fn run() -> Result<()> {
 
             // Run the complete pipeline (clone the inner MultiProgress, not the Arc)
             // Review mode is enabled by default; pass !no_review
-            let report =
-                cli::run_pipeline(&cli, dry_run, labels_only, interactive, !no_review, resume, ignore_exclusions, (*multi_progress).clone()).await?;
+            let report = cli::run_pipeline(
+                &cli,
+                dry_run,
+                labels_only,
+                interactive,
+                !no_review,
+                resume,
+                ignore_exclusions,
+                (*multi_progress).clone(),
+            )
+            .await?;
 
             // Display summary
             println!("\n========================================");
@@ -310,35 +323,40 @@ async fn run() -> Result<()> {
             let reporter = cli::ProgressReporter::with_multi_progress(multi);
 
             if dry_run {
-                let _ = reporter.multi_progress().println("Running in DRY RUN mode - no changes will be made");
+                let _ = reporter
+                    .multi_progress()
+                    .println("Running in DRY RUN mode - no changes will be made");
             }
 
             // Load configuration
             let config_spinner = reporter.add_spinner("Loading configuration...");
             let config = Config::load(&cli.config).await?;
             let label_prefix = &config.labels.prefix;
-            reporter.finish_spinner(&config_spinner, &format!("Configuration loaded (prefix: {})", label_prefix));
+            reporter.finish_spinner(
+                &config_spinner,
+                &format!("Configuration loaded (prefix: {})", label_prefix),
+            );
 
             // Initialize Gmail API
             let auth_spinner = reporter.add_spinner("Authenticating with Gmail API...");
-            let hub = gmail_automation::auth::initialize_gmail_hub(
-                &cli.credentials,
-                &cli.token_cache,
-            )
-            .await?;
+            let hub =
+                gmail_automation::auth::initialize_gmail_hub(&cli.credentials, &cli.token_cache)
+                    .await?;
             reporter.finish_spinner(&auth_spinner, "Gmail API authenticated");
 
-            let client = gmail_automation::client::ProductionGmailClient::new(
+            let client = gmail_automation::client::ProductionGmailClient::with_full_config(
                 hub,
                 config.scan.max_concurrent_requests,
+                250.0, // quota units per second
+                500.0, // quota burst capacity
+                config.circuit_breaker.clone(),
             );
 
             // Fetch filters and labels concurrently (independent API calls)
-            let fetch_spinner = reporter.add_spinner("Fetching existing Gmail filters and labels...");
-            let (filters_result, labels_result) = tokio::join!(
-                client.list_filters(),
-                client.list_labels()
-            );
+            let fetch_spinner =
+                reporter.add_spinner("Fetching existing Gmail filters and labels...");
+            let (filters_result, labels_result) =
+                tokio::join!(client.list_filters(), client.list_labels());
 
             let existing_filters = filters_result?;
             let existing_labels = labels_result?;
@@ -346,11 +364,14 @@ async fn run() -> Result<()> {
                 .iter()
                 .map(|l| (l.id.clone(), l.name.clone()))
                 .collect();
-            reporter.finish_spinner(&fetch_spinner, &format!(
-                "Found {} filters and {} labels",
-                existing_filters.len(),
-                existing_labels.len()
-            ));
+            reporter.finish_spinner(
+                &fetch_spinner,
+                &format!(
+                    "Found {} filters and {} labels",
+                    existing_filters.len(),
+                    existing_labels.len()
+                ),
+            );
 
             // Find filters that add labels with the configured prefix (case-insensitive)
             let prefix_lower = label_prefix.to_lowercase();
@@ -360,7 +381,11 @@ async fn run() -> Result<()> {
                 for label_id in &filter.add_label_ids {
                     if let Some(label_name) = label_id_to_name.get(label_id) {
                         if label_name.to_lowercase().starts_with(&prefix_lower) {
-                            filters_to_delete.push((filter.id.clone(), filter.query.clone(), label_name.clone()));
+                            filters_to_delete.push((
+                                filter.id.clone(),
+                                filter.query.clone(),
+                                label_name.clone(),
+                            ));
                             break; // Only add filter once even if it has multiple matching labels
                         }
                     }
@@ -374,41 +399,65 @@ async fn run() -> Result<()> {
                 .collect();
 
             // Display what will be deleted
-            let _ = reporter.multi_progress().println("\n========================================");
-            let _ = reporter.multi_progress().println("Auto-managed items found");
-            let _ = reporter.multi_progress().println("========================================");
+            let _ = reporter
+                .multi_progress()
+                .println("\n========================================");
+            let _ = reporter
+                .multi_progress()
+                .println("Auto-managed items found");
+            let _ = reporter
+                .multi_progress()
+                .println("========================================");
 
             if filters_to_delete.is_empty() {
-                let _ = reporter.multi_progress().println("\nNo auto-managed filters found.");
+                let _ = reporter
+                    .multi_progress()
+                    .println("\nNo auto-managed filters found.");
             } else {
-                let _ = reporter.multi_progress().println(format!("\nFilters to delete ({}):", filters_to_delete.len()));
+                let _ = reporter.multi_progress().println(format!(
+                    "\nFilters to delete ({}):",
+                    filters_to_delete.len()
+                ));
                 for (id, query, label_name) in &filters_to_delete {
                     let query_display = query.as_ref().map(|q| q.as_str()).unwrap_or("<no query>");
-                    let _ = reporter.multi_progress().println(format!("  - {} -> {} (ID: {})", query_display, label_name, id));
+                    let _ = reporter.multi_progress().println(format!(
+                        "  - {} -> {} (ID: {})",
+                        query_display, label_name, id
+                    ));
                 }
             }
 
             if delete_labels {
                 if labels_to_delete.is_empty() {
-                    let _ = reporter.multi_progress().println("\nNo auto-managed labels found.");
+                    let _ = reporter
+                        .multi_progress()
+                        .println("\nNo auto-managed labels found.");
                 } else {
-                    let _ = reporter.multi_progress().println(format!("\nLabels to delete ({}):", labels_to_delete.len()));
+                    let _ = reporter
+                        .multi_progress()
+                        .println(format!("\nLabels to delete ({}):", labels_to_delete.len()));
                     for label in &labels_to_delete {
-                        let _ = reporter.multi_progress().println(format!("  - {} (ID: {})", label.name, label.id));
+                        let _ = reporter
+                            .multi_progress()
+                            .println(format!("  - {} (ID: {})", label.name, label.id));
                     }
                 }
             }
 
             // If nothing to delete, exit early
             if filters_to_delete.is_empty() && (!delete_labels || labels_to_delete.is_empty()) {
-                let _ = reporter.multi_progress().println("\nNothing to delete. Exiting.");
+                let _ = reporter
+                    .multi_progress()
+                    .println("\nNothing to delete. Exiting.");
                 return Ok(());
             }
 
             // Confirm deletion (unless --force or --dry-run)
             if !dry_run && !force {
                 // Suspend progress bars for user input
-                let _ = reporter.multi_progress().println("\n⚠️  This action will permanently delete the items listed above!");
+                let _ = reporter
+                    .multi_progress()
+                    .println("\n⚠️  This action will permanently delete the items listed above!");
                 reporter.multi_progress().suspend(|| {
                     print!("Are you sure you want to proceed? [y/N]: ");
                     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -426,9 +475,13 @@ async fn run() -> Result<()> {
             // Delete filters
             if !filters_to_delete.is_empty() {
                 if dry_run {
-                    let _ = reporter.multi_progress().println(format!("\nWould delete {} filters", filters_to_delete.len()));
+                    let _ = reporter.multi_progress().println(format!(
+                        "\nWould delete {} filters",
+                        filters_to_delete.len()
+                    ));
                 } else {
-                    let pb = reporter.add_progress_bar(filters_to_delete.len() as u64, "Deleting filters...");
+                    let pb = reporter
+                        .add_progress_bar(filters_to_delete.len() as u64, "Deleting filters...");
 
                     let mut deleted = 0;
                     let mut failed = 0;
@@ -436,7 +489,8 @@ async fn run() -> Result<()> {
                         match client.delete_filter(filter_id).await {
                             Ok(_) => {
                                 deleted += 1;
-                                let query_display = query.as_ref().map(|q| q.as_str()).unwrap_or("<no query>");
+                                let query_display =
+                                    query.as_ref().map(|q| q.as_str()).unwrap_or("<no query>");
                                 tracing::debug!("Deleted filter: {}", query_display);
                             }
                             Err(e) => {
@@ -446,16 +500,22 @@ async fn run() -> Result<()> {
                         }
                         pb.inc(1);
                     }
-                    pb.finish_with_message(format!("Deleted {} filters ({} failed)", deleted, failed));
+                    pb.finish_with_message(format!(
+                        "Deleted {} filters ({} failed)",
+                        deleted, failed
+                    ));
                 }
             }
 
             // Delete labels (if requested)
             if delete_labels && !labels_to_delete.is_empty() {
                 if dry_run {
-                    let _ = reporter.multi_progress().println(format!("\nWould delete {} labels", labels_to_delete.len()));
+                    let _ = reporter
+                        .multi_progress()
+                        .println(format!("\nWould delete {} labels", labels_to_delete.len()));
                 } else {
-                    let pb = reporter.add_progress_bar(labels_to_delete.len() as u64, "Deleting labels...");
+                    let pb = reporter
+                        .add_progress_bar(labels_to_delete.len() as u64, "Deleting labels...");
 
                     let mut deleted = 0;
                     let mut failed = 0;
@@ -472,18 +532,31 @@ async fn run() -> Result<()> {
                         }
                         pb.inc(1);
                     }
-                    pb.finish_with_message(format!("Deleted {} labels ({} failed)", deleted, failed));
+                    pb.finish_with_message(format!(
+                        "Deleted {} labels ({} failed)",
+                        deleted, failed
+                    ));
                 }
             }
 
-            let _ = reporter.multi_progress().println("\n========================================");
+            let _ = reporter
+                .multi_progress()
+                .println("\n========================================");
             if dry_run {
-                let _ = reporter.multi_progress().println("Dry run complete. No changes were made.");
-                let _ = reporter.multi_progress().println("Run without --dry-run to apply changes.");
+                let _ = reporter
+                    .multi_progress()
+                    .println("Dry run complete. No changes were made.");
+                let _ = reporter
+                    .multi_progress()
+                    .println("Run without --dry-run to apply changes.");
             } else {
-                let _ = reporter.multi_progress().println("Unmanage operation complete!");
+                let _ = reporter
+                    .multi_progress()
+                    .println("Unmanage operation complete!");
             }
-            let _ = reporter.multi_progress().println("========================================");
+            let _ = reporter
+                .multi_progress()
+                .println("========================================");
 
             Ok(())
         }

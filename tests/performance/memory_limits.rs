@@ -118,7 +118,8 @@ fn detect_cgroup_v2_memory() -> Option<MemoryInfo> {
     let current_bytes = memory_current.trim().parse::<usize>().ok()?;
 
     // Also get total system memory for comparison
-    let (total, _) = parse_proc_meminfo().unwrap_or((FALLBACK_AVAILABLE_MEMORY, FALLBACK_AVAILABLE_MEMORY));
+    let (total, _) =
+        parse_proc_meminfo().unwrap_or((FALLBACK_AVAILABLE_MEMORY, FALLBACK_AVAILABLE_MEMORY));
 
     let effective_limit = limit_bytes.unwrap_or(total);
     let available = effective_limit.saturating_sub(current_bytes);
@@ -144,7 +145,8 @@ fn detect_cgroup_v1_memory() -> Option<MemoryInfo> {
     let usage_bytes = usage_str.trim().parse::<usize>().ok()?;
 
     // Get total system memory
-    let (total, _) = parse_proc_meminfo().unwrap_or((FALLBACK_AVAILABLE_MEMORY, FALLBACK_AVAILABLE_MEMORY));
+    let (total, _) =
+        parse_proc_meminfo().unwrap_or((FALLBACK_AVAILABLE_MEMORY, FALLBACK_AVAILABLE_MEMORY));
 
     // cgroup v1 reports a very high number (like 9223372036854771712) when unlimited
     // Check if limit is unreasonably high (more than 1 TB)
@@ -154,9 +156,7 @@ fn detect_cgroup_v1_memory() -> Option<MemoryInfo> {
         Some(limit_bytes)
     };
 
-    let available = effective_limit
-        .unwrap_or(total)
-        .saturating_sub(usage_bytes);
+    let available = effective_limit.unwrap_or(total).saturating_sub(usage_bytes);
 
     Some(MemoryInfo {
         total_bytes: total,
@@ -336,13 +336,25 @@ pub fn print_memory_diagnostics() {
 
     println!("=== Memory Diagnostics ===");
     println!("Source: {:?}", info.source);
-    println!("Total system memory: {} MB", info.total_bytes / (1024 * 1024));
-    println!("Available memory: {} MB", info.available_bytes / (1024 * 1024));
+    println!(
+        "Total system memory: {} MB",
+        info.total_bytes / (1024 * 1024)
+    );
+    println!(
+        "Available memory: {} MB",
+        info.available_bytes / (1024 * 1024)
+    );
     if let Some(cgroup_limit) = info.cgroup_limit_bytes {
         println!("Cgroup limit: {} MB", cgroup_limit / (1024 * 1024));
     }
-    println!("Effective available: {} MB", info.effective_available() / (1024 * 1024));
-    println!("Estimated bytes per message: {}", ESTIMATED_BYTES_PER_MESSAGE);
+    println!(
+        "Effective available: {} MB",
+        info.effective_available() / (1024 * 1024)
+    );
+    println!(
+        "Estimated bytes per message: {}",
+        ESTIMATED_BYTES_PER_MESSAGE
+    );
     println!("Max safe message count: {}", max_messages);
     println!("========================");
 }
@@ -367,7 +379,7 @@ mod tests {
     #[test]
     fn test_calculate_max_messages() {
         let info = MemoryInfo {
-            total_bytes: 1024 * 1024 * 1024, // 1 GB
+            total_bytes: 1024 * 1024 * 1024,    // 1 GB
             available_bytes: 512 * 1024 * 1024, // 512 MB
             cgroup_limit_bytes: None,
             source: MemorySource::Fallback,
@@ -379,14 +391,17 @@ mod tests {
         // 256 MB / 512 bytes per message = 524,288 messages
         // But capped at ABSOLUTE_MAX_MESSAGES = 500,000
         assert!(max > 0, "Max messages should be > 0");
-        assert!(max <= ABSOLUTE_MAX_MESSAGES, "Should be capped at absolute max");
+        assert!(
+            max <= ABSOLUTE_MAX_MESSAGES,
+            "Should be capped at absolute max"
+        );
     }
 
     #[test]
     fn test_calculate_max_messages_with_cgroup_limit() {
         let info = MemoryInfo {
-            total_bytes: 8 * 1024 * 1024 * 1024, // 8 GB system
-            available_bytes: 4 * 1024 * 1024 * 1024, // 4 GB available
+            total_bytes: 8 * 1024 * 1024 * 1024,         // 8 GB system
+            available_bytes: 4 * 1024 * 1024 * 1024,     // 4 GB available
             cgroup_limit_bytes: Some(256 * 1024 * 1024), // 256 MB cgroup limit
             source: MemorySource::CgroupV1,
         };

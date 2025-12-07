@@ -1,9 +1,9 @@
 //! Command-line interface
 
-use clap::{Parser, Subcommand};
-use tracing::{info, warn};
 use crate::client::{GmailClient, ProductionGmailClient};
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
 #[command(name = "gmail-filters")]
@@ -135,8 +135,29 @@ fn truncate_string(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", s.chars().take(max_len.saturating_sub(3)).collect::<String>())
+        format!(
+            "{}...",
+            s.chars()
+                .take(max_len.saturating_sub(3))
+                .collect::<String>()
+        )
     }
+}
+
+/// Format a number with commas as thousands separator
+fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::new();
+
+    for (i, c) in chars.iter().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.insert(0, ',');
+        }
+        result.insert(0, *c);
+    }
+
+    result
 }
 
 /// Progress reporter using indicatif
@@ -280,12 +301,14 @@ impl Report {
         if self.dry_run {
             md.push_str("- **Mode:** Dry Run (preview only)\n");
         }
-        md.push_str("\n");
+        md.push('\n');
 
         // If dry run, show planned changes prominently
         if let Some(ref planned) = self.planned_changes {
             md.push_str("## Planned Changes\n\n");
-            md.push_str("The following changes would be made when running without `--dry-run`:\n\n");
+            md.push_str(
+                "The following changes would be made when running without `--dry-run`:\n\n",
+            );
 
             // Labels section - show new vs existing
             md.push_str("### Labels\n\n");
@@ -295,7 +318,7 @@ impl Report {
                 for label in &planned.existing_labels {
                     md.push_str(&format!("- ✓ `{}`\n", label));
                 }
-                md.push_str("\n");
+                md.push('\n');
             }
 
             if planned.new_labels.is_empty() {
@@ -305,8 +328,11 @@ impl Report {
                 for label in &planned.new_labels {
                     md.push_str(&format!("- + `{}`\n", label));
                 }
-                md.push_str(&format!("\n**Total: {} new labels** ({} existing)\n\n",
-                    planned.new_labels.len(), planned.existing_labels.len()));
+                md.push_str(&format!(
+                    "\n**Total: {} new labels** ({} existing)\n\n",
+                    planned.new_labels.len(),
+                    planned.existing_labels.len()
+                ));
             }
 
             // Filters section - show actual match counts from live query
@@ -329,7 +355,10 @@ impl Report {
                         filter.name, escaped_query, archive_str, filter.actual_matches
                     ));
                 }
-                md.push_str(&format!("\n**Total: {} filters**\n\n", planned.filters.len()));
+                md.push_str(&format!(
+                    "\n**Total: {} filters**\n\n",
+                    planned.filters.len()
+                ));
 
                 if total_to_archive > 0 {
                     md.push_str(&format!("⚠️ **{} emails would be archived** (removed from inbox) by auto-archive filters.\n\n", total_to_archive));
@@ -348,7 +377,9 @@ impl Report {
             ));
             md.push_str(&format!(
                 "- **Messages that would stay in inbox:** {}\n\n",
-                planned.messages_to_label.saturating_sub(planned.messages_to_archive)
+                planned
+                    .messages_to_label
+                    .saturating_sub(planned.messages_to_archive)
             ));
         }
 
@@ -373,10 +404,10 @@ impl Report {
                     let escaped_subject = truncated_subject.replace('|', "\\|");
                     md.push_str(&format!("| {} | {} |\n", sender, escaped_subject));
                 }
-                md.push_str("\n");
+                md.push('\n');
             }
         }
-        md.push_str("\n");
+        md.push('\n');
 
         // Only show these summary sections for non-dry-run mode
         // (dry run already has detailed info in "Planned Changes" section)
@@ -385,7 +416,10 @@ impl Report {
             md.push_str(&format!("- **Total labels:** {}\n\n", self.labels_created));
 
             md.push_str("## Filters Created\n\n");
-            md.push_str(&format!("- **Total filters:** {}\n\n", self.filters_created));
+            md.push_str(&format!(
+                "- **Total filters:** {}\n\n",
+                self.filters_created
+            ));
 
             md.push_str("## Actions Taken\n\n");
             md.push_str(&format!(
@@ -412,11 +446,13 @@ impl Report {
                 label
             ));
         }
-        md.push_str("\n");
+        md.push('\n');
 
         if self.dry_run {
             md.push_str("---\n\n");
-            md.push_str("_To apply these changes, run the command again without the `--dry-run` flag._\n");
+            md.push_str(
+                "_To apply these changes, run the command again without the `--dry-run` flag._\n",
+            );
         }
 
         md
@@ -437,7 +473,9 @@ use crate::config::Config;
 use crate::error::{GmailError, Result};
 use crate::exclusions::ExclusionManager;
 use crate::filter_manager::FilterManager;
-use crate::interactive::{create_clusters, ClusterDecision, DecisionAction, EmailCluster, ReviewSession};
+use crate::interactive::{
+    create_clusters, ClusterDecision, DecisionAction, EmailCluster, ReviewSession,
+};
 use crate::label_manager::LabelManager;
 use crate::models::{Classification, FilterRule, MessageMetadata};
 use crate::state::{ProcessingPhase, ProcessingState};
@@ -498,6 +536,7 @@ async fn load_decisions(path: &Path) -> Result<Vec<ClusterDecision>> {
 /// # Returns
 /// * `Ok(Report)` - Execution report with statistics
 /// * `Err(GmailError)` - If any step fails
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pipeline(
     cli: &Cli,
     dry_run: bool,
@@ -517,15 +556,24 @@ pub async fn run_pipeline(
     if dry_run {
         config.execution.dry_run = true;
     }
-    reporter.finish_spinner(&config_spinner, &format!("Configuration loaded from {:?}", cli.config));
+    reporter.finish_spinner(
+        &config_spinner,
+        &format!("Configuration loaded from {:?}", cli.config),
+    );
 
     // Step 2: Initialize Gmail API
     let auth_spinner = reporter.add_spinner("Authenticating with Gmail API...");
     let hub = auth::initialize_gmail_hub(&cli.credentials, &cli.token_cache).await?;
     reporter.finish_spinner(&auth_spinner, "Gmail API authenticated successfully");
 
-    // Step 3: Create client with rate limiting
-    let client = Arc::new(ProductionGmailClient::new(hub, config.scan.max_concurrent_requests));
+    // Step 3: Create client with rate limiting and circuit breaker
+    let client = Arc::new(ProductionGmailClient::with_full_config(
+        hub,
+        config.scan.max_concurrent_requests,
+        250.0, // quota units per second
+        500.0, // quota burst capacity
+        config.circuit_breaker.clone(),
+    ));
 
     // Step 4: Load or create processing state
     let mut state = if resume {
@@ -551,494 +599,579 @@ pub async fn run_pipeline(
         let mut filters_created = 0;
 
         // Handle resume from CreatingFilters or CreatingLabels phase
-    if resume && matches!(state.phase, ProcessingPhase::CreatingFilters | ProcessingPhase::CreatingLabels) {
-        // Load saved decisions
-        let decisions_file = cli.state_file.with_file_name("decisions.json");
-        review_decisions = load_decisions(&decisions_file).await?;
+        if resume
+            && matches!(
+                state.phase,
+                ProcessingPhase::CreatingFilters | ProcessingPhase::CreatingLabels
+            )
+        {
+            // Load saved decisions
+            let decisions_file = cli.state_file.with_file_name("decisions.json");
+            review_decisions = load_decisions(&decisions_file).await?;
 
-        if review_decisions.is_empty() {
-            return Err(GmailError::StateError(
-                "Cannot resume: no saved decisions found. Please start a new run.".to_string()
-            ));
-        }
-
-        // Load existing filters from Gmail for deduplication
-        let existing_filters_spinner = reporter.add_spinner("Loading existing Gmail filters for resume...");
-        existing_filters = client.list_filters().await.unwrap_or_else(|e| {
-            warn!("Failed to load existing filters: {}", e);
-            Vec::new()
-        });
-        reporter.finish_spinner(&existing_filters_spinner, &format!("Found {} existing filters", existing_filters.len()));
-
-        // Load existing labels to build label name -> ID mapping
-        let label_spinner = reporter.add_spinner("Loading existing labels for resume...");
-        let mut label_manager = LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
-        let existing_label_count = label_manager.load_existing_labels().await?;
-
-        // Build label name -> ID mapping from the label cache
-        // Cache keys are already lowercase for case-insensitive lookup
-        for (name, id) in label_manager.get_label_cache() {
-            label_name_to_id.insert(name.clone(), id.clone());
-        }
-
-        reporter.finish_spinner(&label_spinner, &format!("Loaded {} existing labels", existing_label_count));
-
-        info!("Resuming from {:?} phase with {} decisions", state.phase, review_decisions.len());
-    }
-
-    // Step 5 & 6: Scan and classify emails (skip if resuming from later phases)
-    if !resume || matches!(state.phase, ProcessingPhase::Scanning | ProcessingPhase::Classifying) {
-        state.phase = ProcessingPhase::Scanning;
-        state.save(&cli.state_file).await?;
-
-        let scan_spinner = reporter.add_spinner("Scanning emails from inbox...");
-
-        // Build query for time period
-        let period = chrono::Duration::days(config.scan.period_days as i64);
-        let after_date = (Utc::now() - period).format("%Y/%m/%d").to_string();
-        let query = format!("after:{}", after_date);
-
-        tracing::info!("Scanning emails with query: {}", query);
-
-        // List message IDs
-        let message_ids = client.list_message_ids(&query).await?;
-        let total_messages = message_ids.len();
-
-        reporter.finish_spinner(&scan_spinner, &format!("Found {} messages to process", total_messages));
-
-        // Fetch message metadata and load existing filters/labels concurrently
-        // These are independent API calls that can run in parallel
-        let fetch_bar = reporter.add_progress_bar(total_messages as u64, "Fetching emails, filters, and labels...");
-        let fetch_bar_clone = fetch_bar.clone();
-
-        let progress_callback: crate::client::ProgressCallback = Arc::new(move || {
-            fetch_bar_clone.inc(1);
-        });
-
-        // Run message fetching and filter/label loading concurrently
-        let client_clone = client.clone();
-        let client_clone2 = client.clone();
-        let label_prefix = config.labels.prefix.clone();
-
-        let (messages_result, filters_result, labels_result) = tokio::join!(
-            // Fetch all message metadata (already internally concurrent)
-            client.fetch_messages_with_progress(message_ids, progress_callback),
-            // Load existing filters for cluster matching
-            async {
-                let filters = client_clone.list_filters().await.unwrap_or_else(|e| {
-                    warn!("Failed to load existing filters: {}", e);
-                    Vec::new()
-                });
-                info!("Loaded {} existing filters", filters.len());
-                Ok::<_, GmailError>(filters)
-            },
-            // Load existing labels for review UI
-            async {
-                let mut label_manager = LabelManager::new(Box::new(client_clone2), label_prefix);
-                let count = label_manager.load_existing_labels().await?;
-                info!("Loaded {} existing labels", count);
-                Ok::<_, GmailError>(label_manager)
+            if review_decisions.is_empty() {
+                return Err(GmailError::StateError(
+                    "Cannot resume: no saved decisions found. Please start a new run.".to_string(),
+                ));
             }
-        );
 
-        let messages = messages_result?;
-        existing_filters = filters_result?;
-        let preloaded_label_manager = labels_result?;
-
-        fetch_bar.finish_with_message(format!(
-            "Fetched {} emails, {} filters, {} labels",
-            messages.len(),
-            existing_filters.len(),
-            preloaded_label_manager.get_label_cache().len()
-        ));
-
-        state.messages_scanned = messages.len();
-        state.checkpoint(&cli.state_file).await?;
-
-        // Step 6: Classify emails
-        state.phase = ProcessingPhase::Classifying;
-        state.save(&cli.state_file).await?;
-
-        let classify_bar = reporter.add_progress_bar(messages.len() as u64, "Classifying emails...");
-        let classifier = EmailClassifier::new(config.labels.prefix.clone());
-
-        for msg in &messages {
-            let classification = classifier.classify(msg)?;
-            classifications.push((msg.clone(), classification));
-            classify_bar.inc(1);
-        }
-
-        classify_bar.finish_with_message(format!("Classified {} emails", classifications.len()));
-
-        state.messages_classified = classifications.len();
-        state.checkpoint(&cli.state_file).await?;
-
-        // Step 7: Interactive review (if enabled)
-        if review {
-            let mut clusters = create_clusters(
-                &messages,
-                &classifications,
-                config.classification.minimum_emails_for_label,
+            // Load existing filters from Gmail for deduplication
+            let existing_filters_spinner =
+                reporter.add_spinner("Loading existing Gmail filters for resume...");
+            existing_filters = client.list_filters().await.unwrap_or_else(|e| {
+                warn!("Failed to load existing filters: {}", e);
+                Vec::new()
+            });
+            reporter.finish_spinner(
+                &existing_filters_spinner,
+                &format!("Found {} existing filters", existing_filters.len()),
             );
 
-            // Filter out excluded clusters (unless --ignore-exclusions is set)
-            let exclusions_path = cli.state_file.with_file_name("exclusions.json");
-            let exclusion_manager = if !ignore_exclusions {
-                ExclusionManager::load(&exclusions_path).await.unwrap_or_else(|_| ExclusionManager::new())
-            } else {
-                ExclusionManager::new()
-            };
+            // Load existing labels to build label name -> ID mapping
+            let label_spinner = reporter.add_spinner("Loading existing labels for resume...");
+            let mut label_manager =
+                LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
+            let existing_label_count = label_manager.load_existing_labels().await?;
 
-            let excluded_count = if !ignore_exclusions && !exclusion_manager.is_empty() {
-                let before_count = clusters.len();
-                clusters.retain(|c| {
-                    let key = cluster_key(c);
-                    !exclusion_manager.is_excluded(&key)
-                });
-                let filtered = before_count - clusters.len();
-                if filtered > 0 {
-                    info!("Filtered out {} excluded clusters (use --ignore-exclusions to see all)", filtered);
-                }
-                filtered
-            } else {
-                0
-            };
-
-            if excluded_count > 0 {
-                println!("Skipped {} permanently excluded clusters", excluded_count);
+            // Build label name -> ID mapping from the label cache
+            // Cache keys are already lowercase for case-insensitive lookup
+            for (name, id) in label_manager.get_label_cache() {
+                label_name_to_id.insert(name.clone(), id.clone());
             }
 
-            // Match clusters against existing filters
-            // Note: We can only check the from pattern now; label matching happens later
-            // after labels are created and we have label IDs
-            for cluster in &mut clusters {
-                // Build a temporary from pattern to match
-                let from_pattern = if cluster.is_specific_sender {
-                    cluster.sender_email.clone()
+            reporter.finish_spinner(
+                &label_spinner,
+                &format!("Loaded {} existing labels", existing_label_count),
+            );
+
+            info!(
+                "Resuming from {:?} phase with {} decisions",
+                state.phase,
+                review_decisions.len()
+            );
+        }
+
+        // Step 5 & 6: Scan and classify emails (skip if resuming from later phases)
+        if !resume
+            || matches!(
+                state.phase,
+                ProcessingPhase::Scanning | ProcessingPhase::Classifying
+            )
+        {
+            state.phase = ProcessingPhase::Scanning;
+            state.save(&cli.state_file).await?;
+
+            let scan_spinner = reporter.add_spinner("Scanning emails from inbox...");
+
+            // Build query for time period
+            let period = chrono::Duration::days(config.scan.period_days as i64);
+            let after_date = (Utc::now() - period).format("%Y/%m/%d").to_string();
+            let query = format!("after:{}", after_date);
+
+            tracing::info!("Scanning emails with query: {}", query);
+
+            // List message IDs
+            let message_ids = client.list_message_ids(&query).await?;
+            let total_messages = message_ids.len();
+
+            reporter.finish_spinner(
+                &scan_spinner,
+                &format!("Found {} messages to process", total_messages),
+            );
+
+            // Fetch message metadata and load existing filters/labels concurrently
+            // These are independent API calls that can run in parallel
+            let fetch_bar = reporter.add_progress_bar(
+                total_messages as u64,
+                "Fetching emails, filters, and labels...",
+            );
+            let fetch_bar_clone = fetch_bar.clone();
+
+            let progress_callback: crate::client::ProgressCallback = Arc::new(move || {
+                fetch_bar_clone.inc(1);
+            });
+
+            // Run message fetching and filter/label loading concurrently
+            let client_clone = client.clone();
+            let client_clone2 = client.clone();
+            let label_prefix = config.labels.prefix.clone();
+
+            let (messages_result, filters_result, labels_result) = tokio::join!(
+                // Fetch all message metadata (already internally concurrent)
+                client.fetch_messages_with_progress(message_ids, progress_callback),
+                // Load existing filters for cluster matching
+                async {
+                    let filters = client_clone.list_filters().await.unwrap_or_else(|e| {
+                        warn!("Failed to load existing filters: {}", e);
+                        Vec::new()
+                    });
+                    info!("Loaded {} existing filters", filters.len());
+                    Ok::<_, GmailError>(filters)
+                },
+                // Load existing labels for review UI
+                async {
+                    let mut label_manager =
+                        LabelManager::new(Box::new(client_clone2), label_prefix);
+                    let count = label_manager.load_existing_labels().await?;
+                    info!("Loaded {} existing labels", count);
+                    Ok::<_, GmailError>(label_manager)
+                }
+            );
+
+            let messages = messages_result?;
+            existing_filters = filters_result?;
+            let preloaded_label_manager = labels_result?;
+
+            fetch_bar.finish_with_message(format!(
+                "Fetched {} emails, {} filters, {} labels",
+                messages.len(),
+                existing_filters.len(),
+                preloaded_label_manager.get_label_cache().len()
+            ));
+
+            state.messages_scanned = messages.len();
+            state.checkpoint(&cli.state_file).await?;
+
+            // Step 6: Classify emails
+            state.phase = ProcessingPhase::Classifying;
+            state.save(&cli.state_file).await?;
+
+            let classify_bar =
+                reporter.add_progress_bar(messages.len() as u64, "Classifying emails...");
+            let classifier = EmailClassifier::new(config.labels.prefix.clone());
+
+            for msg in &messages {
+                let classification = classifier.classify(msg)?;
+                classifications.push((msg.clone(), classification));
+                classify_bar.inc(1);
+            }
+
+            classify_bar
+                .finish_with_message(format!("Classified {} emails", classifications.len()));
+
+            state.messages_classified = classifications.len();
+            state.checkpoint(&cli.state_file).await?;
+
+            // Step 7: Interactive review (if enabled)
+            if review {
+                let mut clusters = create_clusters(
+                    &messages,
+                    &classifications,
+                    config.classification.minimum_emails_for_label,
+                );
+
+                // Filter out excluded clusters (unless --ignore-exclusions is set)
+                let exclusions_path = cli.state_file.with_file_name("exclusions.json");
+                let exclusion_manager = if !ignore_exclusions {
+                    ExclusionManager::load(&exclusions_path)
+                        .await
+                        .unwrap_or_else(|_| ExclusionManager::new())
                 } else {
-                    format!("*@{}", cluster.sender_domain)
+                    ExclusionManager::new()
                 };
 
-                // Try to find a matching existing filter
-                for existing in &existing_filters {
-                    let existing_query = match &existing.query {
-                        Some(q) => q.to_lowercase(),
-                        None => continue,
-                    };
-
-                    // Check if the from pattern matches
-                    let new_normalized = from_pattern.to_lowercase();
-
-                    // Gmail uses "from:(*@domain.com)" or "from:(email@domain.com)" format
-                    // Extract the actual pattern from the query
-                    let existing_clean = existing_query
-                        .replace("from:(", "")
-                        .replace(")", "")
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-
-                    let from_matches = existing_clean == new_normalized ||
-                        existing_query.contains(&format!("from:({})", new_normalized));
-
-                    if !from_matches {
-                        continue;
+                let excluded_count = if !ignore_exclusions && !exclusion_manager.is_empty() {
+                    let before_count = clusters.len();
+                    clusters.retain(|c| {
+                        let key = cluster_key(c);
+                        !exclusion_manager.is_excluded(&key)
+                    });
+                    let filtered = before_count - clusters.len();
+                    if filtered > 0 {
+                        info!("Filtered out {} excluded clusters (use --ignore-exclusions to see all)", filtered);
                     }
-
-                    // Check if subject pattern matches
-                    // Extract subject clause from existing query if present
-                    let existing_has_subject = existing_query.contains("subject:(");
-                    let subject_matches = match &cluster.subject_pattern {
-                        Some(pattern) => {
-                            // Cluster has subject pattern - existing filter must have matching subject
-                            let pattern_lower = pattern.to_lowercase();
-                            existing_query.contains(&format!("subject:({})", pattern_lower)) ||
-                            existing_query.contains(&format!("subject:(\"{}\")", pattern_lower))
-                        }
-                        None => {
-                            // Cluster has no subject pattern - existing filter should not have subject
-                            // (to avoid matching domain-wide cluster to subject-specific filter)
-                            !existing_has_subject
-                        }
-                    };
-
-                    if from_matches && subject_matches {
-                        cluster.existing_filter_id = Some(existing.id.clone());
-
-                        // Store the existing label ID (first one if multiple)
-                        cluster.existing_filter_label_id = existing.add_label_ids.first().cloned();
-
-                        // Store the existing archive setting (check if INBOX is removed)
-                        cluster.existing_filter_archive = Some(
-                            existing.remove_label_ids.iter().any(|l| l == "INBOX")
-                        );
-
-                        break; // Found a match, stop looking
-                    }
-                }
-            }
-
-            if !clusters.is_empty() {
-                // Use preloaded labels from concurrent fetch (build label ID -> name mapping for review UI)
-                let label_id_to_name: HashMap<String, String> = preloaded_label_manager
-                    .get_label_cache()
-                    .iter()
-                    .map(|(name, id)| (id.clone(), name.clone()))
-                    .collect();
-
-                // Save the MultiProgress before dropping reporter (for reuse after interactive mode)
-                let multi = reporter.multi_progress();
-                // Clear MultiProgress before entering interactive mode to prevent redraw issues
-                drop(reporter);
-
-                println!("\nEntering interactive review mode...");
-                println!("Found {} clusters to review (minimum {} emails each)\n",
-                    clusters.len(),
-                    config.classification.minimum_emails_for_label);
-
-                let mut session = ReviewSession::with_label_map(clusters, label_id_to_name);
-                let decisions = session.run()?;
-
-                // Create new reporter after interactive mode (reuse same MultiProgress for tracing coordination)
-                reporter = ProgressReporter::with_multi_progress(multi);
-
-                // Apply user decisions to classifications
-                for decision in &decisions {
-                    if matches!(decision.action, DecisionAction::Skip) {
-                        continue;
-                    }
-
-                    // Update classifications for messages in this cluster
-                    for (msg, class) in &mut classifications {
-                        if decision.message_ids.contains(&msg.id) {
-                            class.suggested_label = decision.label.clone();
-                            class.should_archive = decision.should_archive;
-                        }
-                    }
-                }
-
-                // Print review decisions summary
-                println!("\n### User Review Decisions\n");
-                for decision in &decisions {
-                    let action_str = match &decision.action {
-                        DecisionAction::Accept => "Accept",
-                        DecisionAction::Reject => "Reject",
-                        DecisionAction::Custom(_) => "Custom",
-                        DecisionAction::Skip => "Skip",
-                        DecisionAction::Delete => "Delete",
-                        DecisionAction::Exclude => "Exclude",
-                    };
-
-                    let sender_pattern = if decision.is_specific_sender {
-                        format!("from:({})", decision.sender_email)
-                    } else if decision.excluded_senders.is_empty() {
-                        format!("from:(*@{})", decision.sender_domain)
-                    } else {
-                        format!("from:(*@{}) excluding {} senders",
-                            decision.sender_domain,
-                            decision.excluded_senders.len())
-                    };
-
-                    let label_info = if !decision.label.is_empty() {
-                        format!(" -> Label: {}", decision.label)
-                    } else {
-                        String::new()
-                    };
-
-                    let archive_info = if decision.should_archive {
-                        " [Archive: Yes]"
-                    } else {
-                        ""
-                    };
-
-                    println!("  [{}] {}{}{}",
-                        action_str,
-                        sender_pattern,
-                        label_info,
-                        archive_info);
-                }
-
-                // Store decisions for filter generation
-                // Include Accept/Custom for creation, Reject/Delete/Exclude for deletion
-                review_decisions = decisions.into_iter()
-                    .filter(|d| matches!(d.action,
-                        DecisionAction::Accept | DecisionAction::Custom(_) |
-                        DecisionAction::Reject | DecisionAction::Delete | DecisionAction::Exclude))
-                    .collect();
-
-                // Save decisions for resume capability
-                let decisions_file = cli.state_file.with_file_name("decisions.json");
-                let decisions_json = serde_json::to_string_pretty(&review_decisions)
-                    .map_err(|e| GmailError::Unknown(format!("Failed to serialize decisions: {}", e)))?;
-                tokio::fs::write(&decisions_file, decisions_json).await?;
-                info!("Saved {} review decisions to {:?}", review_decisions.len(), decisions_file);
-
-                let create_count = review_decisions.iter()
-                    .filter(|d| matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_)))
-                    .count();
-                let delete_count = review_decisions.iter()
-                    .filter(|d| matches!(d.action, DecisionAction::Reject | DecisionAction::Delete | DecisionAction::Exclude))
-                    .count();
-                let exclude_count = review_decisions.iter()
-                    .filter(|d| matches!(d.action, DecisionAction::Exclude))
-                    .count();
-                if exclude_count > 0 {
-                    println!("\nReview complete. {} filters will be created, {} will be deleted ({} permanently excluded).",
-                        create_count, delete_count, exclude_count);
-                } else if delete_count > 0 {
-                    println!("\nReview complete. {} filters will be created, {} will be deleted.",
-                        create_count, delete_count);
+                    filtered
                 } else {
-                    println!("\nReview complete. {} filters will be created.", create_count);
+                    0
+                };
+
+                if excluded_count > 0 {
+                    println!("Skipped {} permanently excluded clusters", excluded_count);
                 }
-            } else {
-                println!("\nNo clusters meet minimum size threshold for review.");
-            }
-        }
 
-        // Step 8: Analyze classifications
-        let analysis_spinner = reporter.add_spinner("Analyzing email patterns...");
+                // Match clusters against existing filters
+                // Note: We can only check the from pattern now; label matching happens later
+                // after labels are created and we have label IDs
+                for cluster in &mut clusters {
+                    // Build a temporary from pattern to match
+                    let from_pattern = if cluster.is_specific_sender {
+                        cluster.sender_email.clone()
+                    } else {
+                        format!("*@{}", cluster.sender_domain)
+                    };
 
-        for (msg, classification) in &classifications {
-            let category = format!("{:?}", classification.category);
-            *category_counts.entry(category).or_insert(0) += 1;
-
-            domain_counts
-                .entry(msg.sender_domain.clone())
-                .or_insert_with(Vec::new)
-                .push(msg.clone());
-        }
-
-        reporter.finish_spinner(&analysis_spinner, "Email pattern analysis complete");
-    }
-
-    // Step 8: Create labels (skip if resuming from CreatingFilters phase)
-    if !resume || !matches!(state.phase, ProcessingPhase::CreatingFilters) {
-        state.phase = ProcessingPhase::CreatingLabels;
-        state.save(&cli.state_file).await?;
-
-        if interactive {
-            println!("\nReady to create labels. Categories found:");
-            for (category, count) in &category_counts {
-                println!("  - {}: {} emails", category, count);
-            }
-            if !confirm_action("Proceed with label creation?")? {
-                return Err(GmailError::OperationCancelled("User cancelled label creation".to_string()));
-            }
-        }
-
-        let label_spinner = reporter.add_spinner("Loading existing labels...");
-        let mut label_manager = LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
-
-        // Always load existing labels to check for conflicts
-        let existing_label_count = label_manager.load_existing_labels().await?;
-        reporter.finish_spinner(&label_spinner, &format!("Found {} existing labels", existing_label_count));
-
-        // Collect unique labels - from review decisions if available, otherwise from classifications
-        let mut unique_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        // If review mode was used, also include labels from existing filters that were matched
-        let mut existing_filter_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
-        if review {
-            for decision in &review_decisions {
-                // Collect existing filter label IDs so we can resolve them
-                if let Some(label_id) = &decision.existing_filter_id {
+                    // Try to find a matching existing filter
                     for existing in &existing_filters {
-                        if &existing.id == label_id {
-                            if let Some(first_label_id) = existing.add_label_ids.first() {
-                                existing_filter_labels.insert(first_label_id.clone());
+                        let existing_query = match &existing.query {
+                            Some(q) => q.to_lowercase(),
+                            None => continue,
+                        };
+
+                        // Check if the from pattern matches
+                        let new_normalized = from_pattern.to_lowercase();
+
+                        // Gmail uses "from:(*@domain.com)" or "from:(email@domain.com)" format
+                        // Extract the actual pattern from the query
+                        let existing_clean = existing_query
+                            .replace("from:(", "")
+                            .replace(")", "")
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+
+                        let from_matches = existing_clean == new_normalized
+                            || existing_query.contains(&format!("from:({})", new_normalized));
+
+                        if !from_matches {
+                            continue;
+                        }
+
+                        // Check if subject pattern matches
+                        // Extract subject clause from existing query if present
+                        let existing_has_subject = existing_query.contains("subject:(");
+                        let subject_matches = match &cluster.subject_pattern {
+                            Some(pattern) => {
+                                // Cluster has subject pattern - existing filter must have matching subject
+                                let pattern_lower = pattern.to_lowercase();
+                                existing_query.contains(&format!("subject:({})", pattern_lower))
+                                    || existing_query
+                                        .contains(&format!("subject:(\"{}\")", pattern_lower))
+                            }
+                            None => {
+                                // Cluster has no subject pattern - existing filter should not have subject
+                                // (to avoid matching domain-wide cluster to subject-specific filter)
+                                !existing_has_subject
+                            }
+                        };
+
+                        if from_matches && subject_matches {
+                            cluster.existing_filter_id = Some(existing.id.clone());
+
+                            // Store the existing label ID (first one if multiple)
+                            cluster.existing_filter_label_id =
+                                existing.add_label_ids.first().cloned();
+
+                            // Store the existing archive setting (check if INBOX is removed)
+                            cluster.existing_filter_archive =
+                                Some(existing.remove_label_ids.iter().any(|l| l == "INBOX"));
+
+                            break; // Found a match, stop looking
+                        }
+                    }
+                }
+
+                if !clusters.is_empty() {
+                    // Use preloaded labels from concurrent fetch (build label ID -> name mapping for review UI)
+                    let label_id_to_name: HashMap<String, String> = preloaded_label_manager
+                        .get_label_cache()
+                        .iter()
+                        .map(|(name, id)| (id.clone(), name.clone()))
+                        .collect();
+
+                    // Save the MultiProgress before dropping reporter (for reuse after interactive mode)
+                    let multi = reporter.multi_progress();
+                    // Clear MultiProgress before entering interactive mode to prevent redraw issues
+                    drop(reporter);
+
+                    println!("\nEntering interactive review mode...");
+                    println!(
+                        "Found {} clusters to review (minimum {} emails each)\n",
+                        clusters.len(),
+                        config.classification.minimum_emails_for_label
+                    );
+
+                    let mut session = ReviewSession::with_label_map(clusters, label_id_to_name);
+                    let decisions = session.run()?;
+
+                    // Create new reporter after interactive mode (reuse same MultiProgress for tracing coordination)
+                    reporter = ProgressReporter::with_multi_progress(multi);
+
+                    // Apply user decisions to classifications
+                    for decision in &decisions {
+                        if matches!(decision.action, DecisionAction::Skip) {
+                            continue;
+                        }
+
+                        // Update classifications for messages in this cluster
+                        for (msg, class) in &mut classifications {
+                            if decision.message_ids.contains(&msg.id) {
+                                class.suggested_label = decision.label.clone();
+                                class.should_archive = decision.should_archive;
+                            }
+                        }
+                    }
+
+                    // Print review decisions summary
+                    println!("\n### User Review Decisions\n");
+                    for decision in &decisions {
+                        let action_str = match &decision.action {
+                            DecisionAction::Accept => "Accept",
+                            DecisionAction::Reject => "Reject",
+                            DecisionAction::Custom(_) => "Custom",
+                            DecisionAction::Skip => "Skip",
+                            DecisionAction::Delete => "Delete",
+                            DecisionAction::Exclude => "Exclude",
+                        };
+
+                        let sender_pattern = if decision.is_specific_sender {
+                            format!("from:({})", decision.sender_email)
+                        } else if decision.excluded_senders.is_empty() {
+                            format!("from:(*@{})", decision.sender_domain)
+                        } else {
+                            format!(
+                                "from:(*@{}) excluding {} senders",
+                                decision.sender_domain,
+                                decision.excluded_senders.len()
+                            )
+                        };
+
+                        let label_info = if !decision.label.is_empty() {
+                            format!(" -> Label: {}", decision.label)
+                        } else {
+                            String::new()
+                        };
+
+                        let archive_info = if decision.should_archive {
+                            " [Archive: Yes]"
+                        } else {
+                            ""
+                        };
+
+                        println!(
+                            "  [{}] {}{}{}",
+                            action_str, sender_pattern, label_info, archive_info
+                        );
+                    }
+
+                    // Store decisions for filter generation
+                    // Include Accept/Custom for creation, Reject/Delete/Exclude for deletion
+                    review_decisions = decisions
+                        .into_iter()
+                        .filter(|d| {
+                            matches!(
+                                d.action,
+                                DecisionAction::Accept
+                                    | DecisionAction::Custom(_)
+                                    | DecisionAction::Reject
+                                    | DecisionAction::Delete
+                                    | DecisionAction::Exclude
+                            )
+                        })
+                        .collect();
+
+                    // Save decisions for resume capability
+                    let decisions_file = cli.state_file.with_file_name("decisions.json");
+                    let decisions_json =
+                        serde_json::to_string_pretty(&review_decisions).map_err(|e| {
+                            GmailError::Unknown(format!("Failed to serialize decisions: {}", e))
+                        })?;
+                    tokio::fs::write(&decisions_file, decisions_json).await?;
+                    info!(
+                        "Saved {} review decisions to {:?}",
+                        review_decisions.len(),
+                        decisions_file
+                    );
+
+                    let create_count = review_decisions
+                        .iter()
+                        .filter(|d| {
+                            matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_))
+                        })
+                        .count();
+                    let delete_count = review_decisions
+                        .iter()
+                        .filter(|d| {
+                            matches!(
+                                d.action,
+                                DecisionAction::Reject
+                                    | DecisionAction::Delete
+                                    | DecisionAction::Exclude
+                            )
+                        })
+                        .count();
+                    let exclude_count = review_decisions
+                        .iter()
+                        .filter(|d| matches!(d.action, DecisionAction::Exclude))
+                        .count();
+                    if exclude_count > 0 {
+                        println!("\nReview complete. {} filters will be created, {} will be deleted ({} permanently excluded).",
+                        create_count, delete_count, exclude_count);
+                    } else if delete_count > 0 {
+                        println!(
+                            "\nReview complete. {} filters will be created, {} will be deleted.",
+                            create_count, delete_count
+                        );
+                    } else {
+                        println!(
+                            "\nReview complete. {} filters will be created.",
+                            create_count
+                        );
+                    }
+                } else {
+                    println!("\nNo clusters meet minimum size threshold for review.");
+                }
+            }
+
+            // Step 8: Analyze classifications
+            let analysis_spinner = reporter.add_spinner("Analyzing email patterns...");
+
+            for (msg, classification) in &classifications {
+                let category = format!("{:?}", classification.category);
+                *category_counts.entry(category).or_insert(0) += 1;
+
+                domain_counts
+                    .entry(msg.sender_domain.clone())
+                    .or_default()
+                    .push(msg.clone());
+            }
+
+            reporter.finish_spinner(&analysis_spinner, "Email pattern analysis complete");
+        }
+
+        // Step 8: Create labels (skip if resuming from CreatingFilters phase)
+        if !resume || !matches!(state.phase, ProcessingPhase::CreatingFilters) {
+            state.phase = ProcessingPhase::CreatingLabels;
+            state.save(&cli.state_file).await?;
+
+            if interactive {
+                println!("\nReady to create labels. Categories found:");
+                for (category, count) in &category_counts {
+                    println!("  - {}: {} emails", category, count);
+                }
+                if !confirm_action("Proceed with label creation?")? {
+                    return Err(GmailError::OperationCancelled(
+                        "User cancelled label creation".to_string(),
+                    ));
+                }
+            }
+
+            let label_spinner = reporter.add_spinner("Loading existing labels...");
+            let mut label_manager =
+                LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
+
+            // Always load existing labels to check for conflicts
+            let existing_label_count = label_manager.load_existing_labels().await?;
+            reporter.finish_spinner(
+                &label_spinner,
+                &format!("Found {} existing labels", existing_label_count),
+            );
+
+            // Collect unique labels - from review decisions if available, otherwise from classifications
+            let mut unique_labels: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+
+            // If review mode was used, also include labels from existing filters that were matched
+            let mut existing_filter_labels: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            if review {
+                for decision in &review_decisions {
+                    // Collect existing filter label IDs so we can resolve them
+                    if let Some(label_id) = &decision.existing_filter_id {
+                        for existing in &existing_filters {
+                            if &existing.id == label_id {
+                                if let Some(first_label_id) = existing.add_label_ids.first() {
+                                    existing_filter_labels.insert(first_label_id.clone());
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        if !review_decisions.is_empty() {
-            // When review mode was used, only create labels for accepted clusters
-            for decision in &review_decisions {
-                if !decision.label.is_empty() {
-                    unique_labels.insert(decision.label.clone());
+            if !review_decisions.is_empty() {
+                // When review mode was used, only create labels for accepted clusters
+                for decision in &review_decisions {
+                    if !decision.label.is_empty() {
+                        unique_labels.insert(decision.label.clone());
+                    }
                 }
-            }
-        } else {
-            // Fallback: collect from classifications for domains above threshold
-            let threshold = config.classification.minimum_emails_for_label;
-            let domains_above_threshold: std::collections::HashSet<String> = domain_counts
-                .iter()
-                .filter(|(_, msgs)| msgs.len() >= threshold)
-                .map(|(domain, _)| domain.clone())
-                .collect();
-
-            for (msg, classification) in &classifications {
-                if !classification.suggested_label.is_empty()
-                    && domains_above_threshold.contains(&msg.sender_domain)
-                {
-                    unique_labels.insert(classification.suggested_label.clone());
-                }
-            }
-        }
-
-        // Determine which labels already exist vs need to be created
-        let unique_labels_vec: Vec<String> = unique_labels.iter().cloned().collect();
-        let _existing_labels = label_manager.find_existing_labels(&unique_labels_vec);
-        let _new_labels = label_manager.find_new_labels(&unique_labels_vec);
-
-        let label_spinner = reporter.add_spinner("Creating Gmail labels...");
-
-        // Create labels (or collect planned labels in dry run mode)
-        // Also build a map from label name -> label ID for filter creation
-        labels_created = 0; // Reset for this run
-        let mut labels_skipped = 0;
-
-        for label in &unique_labels {
-            // The label from suggested_label already has full path like "auto/other/domain"
-            // We need to create it directly without adding another prefix
-            let sanitized = label_manager.sanitize_label_name(label).unwrap_or_default();
-
-            // Check if label already exists in cache (case-insensitive)
-            if let Some(existing_id) = label_manager.get_label_id(&sanitized) {
-                labels_skipped += 1;
-                existing_label_names.push(label.clone());
-                // Store with lowercase key for case-insensitive lookup later
-                label_name_to_id.insert(label.to_lowercase(), existing_id);
-                continue;
-            }
-
-            if !dry_run {
-                // Create the label directly (it already has the full path)
-                let label_id = label_manager.create_label_direct(&sanitized).await?;
-                state.labels_created.push(label_id.clone());
-                // Store with lowercase key for case-insensitive lookup later
-                label_name_to_id.insert(label.to_lowercase(), label_id);
-                labels_created += 1;
             } else {
-                planned_labels.push(label.clone());
-                labels_created += 1;
+                // Fallback: collect from classifications for domains above threshold
+                let threshold = config.classification.minimum_emails_for_label;
+                let domains_above_threshold: std::collections::HashSet<String> = domain_counts
+                    .iter()
+                    .filter(|(_, msgs)| msgs.len() >= threshold)
+                    .map(|(domain, _)| domain.clone())
+                    .collect();
+
+                for (msg, classification) in &classifications {
+                    if !classification.suggested_label.is_empty()
+                        && domains_above_threshold.contains(&msg.sender_domain)
+                    {
+                        unique_labels.insert(classification.suggested_label.clone());
+                    }
+                }
             }
+
+            // Determine which labels already exist vs need to be created
+            let unique_labels_vec: Vec<String> = unique_labels.iter().cloned().collect();
+            let _existing_labels = label_manager.find_existing_labels(&unique_labels_vec);
+            let _new_labels = label_manager.find_new_labels(&unique_labels_vec);
+
+            let label_spinner = reporter.add_spinner("Creating Gmail labels...");
+
+            // Create labels (or collect planned labels in dry run mode)
+            // Also build a map from label name -> label ID for filter creation
+            labels_created = 0; // Reset for this run
+            let mut labels_skipped = 0;
+
+            for label in &unique_labels {
+                // The label from suggested_label already has full path like "auto/other/domain"
+                // We need to create it directly without adding another prefix
+                let sanitized = label_manager.sanitize_label_name(label).unwrap_or_default();
+
+                // Check if label already exists in cache (case-insensitive)
+                if let Some(existing_id) = label_manager.get_label_id(&sanitized) {
+                    labels_skipped += 1;
+                    existing_label_names.push(label.clone());
+                    // Store with lowercase key for case-insensitive lookup later
+                    label_name_to_id.insert(label.to_lowercase(), existing_id);
+                    continue;
+                }
+
+                if !dry_run {
+                    // Create the label directly (it already has the full path)
+                    let label_id = label_manager.create_label_direct(&sanitized).await?;
+                    state.labels_created.push(label_id.clone());
+                    // Store with lowercase key for case-insensitive lookup later
+                    label_name_to_id.insert(label.to_lowercase(), label_id);
+                    labels_created += 1;
+                } else {
+                    planned_labels.push(label.clone());
+                    labels_created += 1;
+                }
+            }
+
+            let label_action = if dry_run { "Would create" } else { "Created" };
+            let skip_msg = if labels_skipped > 0 {
+                format!(" ({} already exist)", labels_skipped)
+            } else {
+                String::new()
+            };
+            reporter.finish_spinner(
+                &label_spinner,
+                &format!("{} {} labels{}", label_action, labels_created, skip_msg),
+            );
+            state.checkpoint(&cli.state_file).await?;
         }
 
-        let label_action = if dry_run { "Would create" } else { "Created" };
-        let skip_msg = if labels_skipped > 0 {
-            format!(" ({} already exist)", labels_skipped)
-        } else {
-            String::new()
-        };
-        reporter.finish_spinner(&label_spinner, &format!("{} {} labels{}", label_action, labels_created, skip_msg));
-        state.checkpoint(&cli.state_file).await?;
-    }
-
-    // Step 9: Create filters (unless labels_only)
-    let (filters_created, planned_filters, total_labeled_count): (usize, Vec<PlannedFilter>, usize) = if !labels_only {
+        // Step 9: Create filters (unless labels_only)
+        let (filters_created, planned_filters, total_labeled_count): (
+            usize,
+            Vec<PlannedFilter>,
+            usize,
+        ) = if !labels_only {
             state.phase = ProcessingPhase::CreatingFilters;
             state.save(&cli.state_file).await?;
 
             if interactive {
                 println!("\nReady to create {} filter rules", domain_counts.len());
                 if !confirm_action("Proceed with filter creation?")? {
-                    return Err(GmailError::OperationCancelled("User cancelled filter creation".to_string()));
+                    return Err(GmailError::OperationCancelled(
+                        "User cancelled filter creation".to_string(),
+                    ));
                 }
             }
 
@@ -1050,43 +1183,47 @@ pub async fn run_pipeline(
                 // Filter out Reject/Delete decisions without existing filters (they don't need new filters)
                 // Keep Accept and Custom decisions for filter creation
                 // Keep Reject/Delete with existing_filter_id for filter deletion (handled separately)
-                review_decisions.iter()
-                    .filter(|d| matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_)))
+                review_decisions
+                    .iter()
+                    .filter(|d| {
+                        matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_))
+                    })
                     .map(|d| {
-                    let from_pattern = if d.is_specific_sender {
-                        Some(d.sender_email.clone())
-                    } else {
-                        Some(format!("*@{}", d.sender_domain))
-                    };
+                        let from_pattern = if d.is_specific_sender {
+                            Some(d.sender_email.clone())
+                        } else {
+                            Some(format!("*@{}", d.sender_domain))
+                        };
 
-                    // Build filter name including subject pattern if present
-                    let filter_name = if let Some(subject) = &d.subject_pattern {
-                        format!("{} + \"{}\" → {}", d.sender_email, subject, d.label)
-                    } else if d.is_specific_sender {
-                        format!("{} → {}", d.sender_email, d.label)
-                    } else {
-                        format!("{} → {}", d.sender_domain, d.label)
-                    };
+                        // Build filter name including subject pattern if present
+                        let filter_name = if let Some(subject) = &d.subject_pattern {
+                            format!("{} + \"{}\" → {}", d.sender_email, subject, d.label)
+                        } else if d.is_specific_sender {
+                            format!("{} → {}", d.sender_email, d.label)
+                        } else {
+                            format!("{} → {}", d.sender_domain, d.label)
+                        };
 
-                    // If there's a subject pattern, use it as a subject keyword
-                    let subject_keywords = if let Some(subject) = &d.subject_pattern {
-                        vec![subject.clone()]
-                    } else {
-                        vec![]
-                    };
+                        // If there's a subject pattern, use it as a subject keyword
+                        let subject_keywords = if let Some(subject) = &d.subject_pattern {
+                            vec![subject.clone()]
+                        } else {
+                            vec![]
+                        };
 
-                    FilterRule {
-                        id: None,
-                        name: filter_name,
-                        from_pattern,
-                        is_specific_sender: d.is_specific_sender,
-                        excluded_senders: d.excluded_senders.clone(),
-                        subject_keywords,
-                        target_label_id: d.label.clone(),
-                        should_archive: d.should_archive,
-                        estimated_matches: d.message_ids.len(),
-                    }
-                }).collect()
+                        FilterRule {
+                            id: None,
+                            name: filter_name,
+                            from_pattern,
+                            is_specific_sender: d.is_specific_sender,
+                            excluded_senders: d.excluded_senders.clone(),
+                            subject_keywords,
+                            target_label_id: d.label.clone(),
+                            should_archive: d.should_archive,
+                            estimated_matches: d.message_ids.len(),
+                        }
+                    })
+                    .collect()
             } else {
                 // No review, generate from classifications
                 filter_manager.generate_filters_from_classifications(
@@ -1098,7 +1235,11 @@ pub async fn run_pipeline(
             // Use progress bar instead of spinner since we're iterating
             let filter_bar = reporter.add_progress_bar(
                 filters.len() as u64,
-                if dry_run { "Validating filter rules..." } else { "Creating filter rules..." }
+                if dry_run {
+                    "Validating filter rules..."
+                } else {
+                    "Creating filter rules..."
+                },
             );
 
             // Collect planned filters for dry run report
@@ -1125,16 +1266,21 @@ pub async fn run_pipeline(
             }
 
             for filter in &filters {
-                filter_bar.set_message(format!("Processing: {}", truncate_string(&filter.name, 40)));
+                filter_bar
+                    .set_message(format!("Processing: {}", truncate_string(&filter.name, 40)));
                 // Build the Gmail query
                 let gmail_query = filter_manager.build_gmail_query(filter);
 
                 if !dry_run {
                     // Look up the actual label ID from the label name (case-insensitive)
-                    let label_id = label_name_to_id.get(&filter.target_label_id.to_lowercase())
-                        .ok_or_else(|| GmailError::LabelError(
-                            format!("Label ID not found for label: {}", filter.target_label_id)
-                        ))?;
+                    let label_id = label_name_to_id
+                        .get(&filter.target_label_id.to_lowercase())
+                        .ok_or_else(|| {
+                            GmailError::LabelError(format!(
+                                "Label ID not found for label: {}",
+                                filter.target_label_id
+                            ))
+                        })?;
 
                     // Create a modified filter with the actual label ID
                     let mut filter_with_id = filter.clone();
@@ -1146,7 +1292,14 @@ pub async fn run_pipeline(
                         let base = if filter.is_specific_sender {
                             filter.from_pattern.clone().unwrap_or_default()
                         } else {
-                            format!("*@{}", filter.from_pattern.as_deref().unwrap_or("").trim_start_matches("*@"))
+                            format!(
+                                "*@{}",
+                                filter
+                                    .from_pattern
+                                    .as_deref()
+                                    .unwrap_or("")
+                                    .trim_start_matches("*@")
+                            )
                         };
                         if !filter.subject_keywords.is_empty() {
                             format!("{}|subject:{}", base, filter.subject_keywords.join(" "))
@@ -1162,9 +1315,17 @@ pub async fn run_pipeline(
                     // Handle filter creation/update/deletion
                     if let Some(existing_id) = existing_filter_id {
                         // Filter already exists
-                        if matches!(decision.map(|d| &d.action), Some(DecisionAction::Reject) | Some(DecisionAction::Delete) | Some(DecisionAction::Exclude)) {
+                        if matches!(
+                            decision.map(|d| &d.action),
+                            Some(DecisionAction::Reject)
+                                | Some(DecisionAction::Delete)
+                                | Some(DecisionAction::Exclude)
+                        ) {
                             // User rejected, explicitly deleted, or excluded - delete the existing filter
-                            info!("Deleting existing filter '{}' (ID: {}) - user requested deletion", filter.name, existing_id);
+                            info!(
+                                "Deleting existing filter '{}' (ID: {}) - user requested deletion",
+                                filter.name, existing_id
+                            );
                             match client.delete_filter(existing_id).await {
                                 Ok(_) => info!("Successfully deleted filter"),
                                 Err(e) => warn!("Failed to delete filter: {}", e),
@@ -1172,7 +1333,10 @@ pub async fn run_pipeline(
                             filters_skipped += 1;
                         } else if needs_update {
                             // User changed settings - update the filter
-                            info!("Updating existing filter '{}' (ID: {}) with new settings", filter.name, existing_id);
+                            info!(
+                                "Updating existing filter '{}' (ID: {}) with new settings",
+                                filter.name, existing_id
+                            );
                             match client.update_filter(existing_id, &filter_with_id).await {
                                 Ok(new_id) => {
                                     state.filters_created.push(new_id);
@@ -1182,18 +1346,24 @@ pub async fn run_pipeline(
                             }
                         } else {
                             // Filter exists and matches - skip creation but still apply retroactively
-                            info!("Filter '{}' already exists (ID: {}), skipping creation", filter.name, existing_id);
+                            info!(
+                                "Filter '{}' already exists (ID: {}), skipping creation",
+                                filter.name, existing_id
+                            );
                             filters_skipped += 1;
                         }
                     } else {
                         // No existing filter from decision - check Gmail for duplicates before creating
                         // This handles the resume case where filter may have been created before crash
-                        let already_exists = existing_filters.iter().any(|ef| {
-                            ef.matches_filter_rule(&filter_with_id)
-                        });
+                        let already_exists = existing_filters
+                            .iter()
+                            .any(|ef| ef.matches_filter_rule(&filter_with_id));
 
                         if already_exists {
-                            info!("Filter '{}' already exists in Gmail, skipping creation", filter.name);
+                            info!(
+                                "Filter '{}' already exists in Gmail, skipping creation",
+                                filter.name
+                            );
                             filters_skipped += 1;
                         } else {
                             // Create new filter
@@ -1209,24 +1379,36 @@ pub async fn run_pipeline(
                         let count = matching_ids.len();
                         if filter.should_archive {
                             // Add label + remove INBOX in one batch call
-                            info!("Labeling and archiving {} emails for filter '{}'", count, filter.name);
-                            match client.batch_modify_labels(
-                                &matching_ids,
-                                &[label_id.clone()],
-                                &["INBOX".to_string()],
-                            ).await {
+                            info!(
+                                "Labeling and archiving {} emails for filter '{}'",
+                                count, filter.name
+                            );
+                            match client
+                                .batch_modify_labels(
+                                    &matching_ids,
+                                    std::slice::from_ref(label_id),
+                                    &["INBOX".to_string()],
+                                )
+                                .await
+                            {
                                 Ok(modified) => {
                                     total_labeled += modified;
                                     total_archived += modified;
                                 }
-                                Err(e) => warn!("Failed to label/archive emails for filter '{}': {}", filter.name, e),
+                                Err(e) => warn!(
+                                    "Failed to label/archive emails for filter '{}': {}",
+                                    filter.name, e
+                                ),
                             }
                         } else {
                             // Just add label
                             info!("Labeling {} emails for filter '{}'", count, filter.name);
                             match client.batch_add_label(&matching_ids, label_id).await {
                                 Ok(modified) => total_labeled += modified,
-                                Err(e) => warn!("Failed to label emails for filter '{}': {}", filter.name, e),
+                                Err(e) => warn!(
+                                    "Failed to label emails for filter '{}': {}",
+                                    filter.name, e
+                                ),
                             }
                         }
                     }
@@ -1258,14 +1440,28 @@ pub async fn run_pipeline(
             };
             let retroactive_msg = if !dry_run && (total_labeled > 0 || total_archived > 0) {
                 let parts: Vec<String> = [
-                    if total_labeled > 0 { Some(format!("labeled {}", total_labeled)) } else { None },
-                    if total_archived > 0 { Some(format!("archived {}", total_archived)) } else { None },
-                ].into_iter().flatten().collect();
+                    if total_labeled > 0 {
+                        Some(format!("labeled {}", total_labeled))
+                    } else {
+                        None
+                    },
+                    if total_archived > 0 {
+                        Some(format!("archived {}", total_archived))
+                    } else {
+                        None
+                    },
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
                 format!(" ({})", parts.join(", "))
             } else {
                 String::new()
             };
-            filter_bar.finish_with_message(format!("{} {} filters{}{}", filter_action, filters_created, skip_msg, retroactive_msg));
+            filter_bar.finish_with_message(format!(
+                "{} {} filters{}{}",
+                filter_action, filters_created, skip_msg, retroactive_msg
+            ));
             state.checkpoint(&cli.state_file).await?;
 
             (filters_created, planned_filters, total_labeled)
@@ -1298,11 +1494,14 @@ pub async fn run_pipeline(
         domain_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
         for (domain, msgs) in domain_list.iter().take(10) {
             if let Some(msg) = msgs.first() {
-                let label = format!("{:?}", classifications
-                    .iter()
-                    .find(|(m, _)| m.id == msg.id)
-                    .map(|(_, c)| &c.category)
-                    .unwrap_or(&crate::models::EmailCategory::Other));
+                let label = format!(
+                    "{:?}",
+                    classifications
+                        .iter()
+                        .find(|(m, _)| m.id == msg.id)
+                        .map(|(_, c)| &c.category)
+                        .unwrap_or(&crate::models::EmailCategory::Other)
+                );
                 top_senders.push((domain.clone(), msgs.len(), label));
             }
         }
@@ -1311,7 +1510,7 @@ pub async fn run_pipeline(
         let mut category_examples: HashMap<String, Vec<(String, String)>> = HashMap::new();
         for (msg, classification) in &classifications {
             let category = format!("{:?}", classification.category);
-            let examples = category_examples.entry(category).or_insert_with(Vec::new);
+            let examples = category_examples.entry(category).or_default();
             if examples.len() < 10 {
                 examples.push((msg.sender_email.clone(), msg.subject.clone()));
             }
@@ -1320,10 +1519,12 @@ pub async fn run_pipeline(
         // Calculate message counts for report
         let (messages_labeled, messages_archived_count) = if dry_run {
             // For dry run, estimate from classifications
-            let to_label = classifications.iter()
+            let to_label = classifications
+                .iter()
                 .filter(|(_, c)| !c.suggested_label.is_empty())
                 .count();
-            let to_archive = classifications.iter()
+            let to_archive = classifications
+                .iter()
                 .filter(|(_, c)| c.should_archive)
                 .count();
             (to_label, to_archive)
@@ -1352,8 +1553,16 @@ pub async fn run_pipeline(
             duration_seconds,
             emails_scanned: state.messages_scanned,
             emails_classified: state.messages_classified,
-            labels_created: if dry_run { labels_created } else { state.labels_created.len() },
-            filters_created: if dry_run { filters_created } else { state.filters_created.len() },
+            labels_created: if dry_run {
+                labels_created
+            } else {
+                state.labels_created.len()
+            },
+            filters_created: if dry_run {
+                filters_created
+            } else {
+                state.filters_created.len()
+            },
             messages_modified: messages_labeled,
             messages_archived: messages_archived_count,
             classification_breakdown,
@@ -1364,17 +1573,43 @@ pub async fn run_pipeline(
         };
 
         // Save report
-        let report_path = cli.state_file.with_file_name(format!("report-{}.md", run_id));
-        report.save(&report_path).await
+        let report_path = cli
+            .state_file
+            .with_file_name(format!("report-{}.md", run_id));
+        report
+            .save(&report_path)
+            .await
             .map_err(|e| GmailError::Unknown(format!("Failed to save report: {}", e)))?;
 
         tracing::info!("Report saved to {:?}", report_path);
+
+        // Get quota usage statistics
+        let quota_stats = client.quota_stats().await;
+
         if dry_run {
             println!("\nDry run completed! No changes were made.");
-            println!("Review the report to see what would happen: {:?}", report_path);
+            println!(
+                "Review the report to see what would happen: {:?}",
+                report_path
+            );
         } else {
             println!("\nPipeline completed successfully!");
             println!("Report saved to: {:?}", report_path);
+        }
+
+        // Display API usage statistics
+        println!("\nAPI Usage:");
+        println!(
+            "  Total operations: {}",
+            format_number(quota_stats.total_operations)
+        );
+        println!(
+            "  Total quota consumed: {} units",
+            format_number(quota_stats.total_consumed)
+        );
+        if quota_stats.total_operations > 0 {
+            let avg = quota_stats.total_consumed as f64 / quota_stats.total_operations as f64;
+            println!("  Average quota per operation: {:.1} units", avg);
         }
 
         Ok(report)
@@ -1391,7 +1626,9 @@ pub async fn run_pipeline(
 /// Prompt user for confirmation
 fn confirm_action(prompt: &str) -> Result<bool> {
     print!("{} [y/N]: ", prompt);
-    io::stdout().flush().map_err(|e| GmailError::Unknown(e.to_string()))?;
+    io::stdout()
+        .flush()
+        .map_err(|e| GmailError::Unknown(e.to_string()))?;
 
     let mut input = String::new();
     io::stdin()

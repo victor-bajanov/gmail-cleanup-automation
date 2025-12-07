@@ -124,7 +124,8 @@ impl QuotaRateLimiter {
                 let now = Instant::now();
                 let elapsed = now.duration_since(state.last_refill).as_secs_f64();
                 let refill_amount = elapsed * state.refill_rate;
-                state.available_units = (state.available_units + refill_amount).min(state.max_units);
+                state.available_units =
+                    (state.available_units + refill_amount).min(state.max_units);
                 state.last_refill = now;
 
                 trace!(
@@ -142,8 +143,7 @@ impl QuotaRateLimiter {
 
                     debug!(
                         "Acquired {} quota units, {:.1} remaining",
-                        units_needed,
-                        state.available_units
+                        units_needed, state.available_units
                     );
 
                     return QuotaPermit { _private: () };
@@ -313,7 +313,10 @@ mod tests {
         let elapsed = start.elapsed();
 
         // Should have waited ~50ms (5 units / 100 units per sec)
-        assert!(elapsed.as_millis() >= 40, "Should have waited for quota refill");
+        assert!(
+            elapsed.as_millis() >= 40,
+            "Should have waited for quota refill"
+        );
     }
 
     #[tokio::test]
@@ -330,7 +333,11 @@ mod tests {
 
         // Should have refilled ~50 units
         let available = limiter.available().await;
-        assert!(available >= 40.0 && available <= 60.0, "Should have refilled ~50 units, got {}", available);
+        assert!(
+            available >= 40.0 && available <= 60.0,
+            "Should have refilled ~50 units, got {}",
+            available
+        );
     }
 
     #[tokio::test]

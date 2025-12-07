@@ -140,7 +140,10 @@ mod tests {
         // On other platforms, test structure works
         #[cfg(not(target_os = "linux"))]
         {
-            println!("Memory measurement not available on this platform (RSS = {:.2} MB)", mem.rss_mb());
+            println!(
+                "Memory measurement not available on this platform (RSS = {:.2} MB)",
+                mem.rss_mb()
+            );
         }
     }
 
@@ -162,10 +165,18 @@ mod tests {
         let emails = generate_mock_emails(10_000);
 
         let after_generation = MemoryUsage::current();
-        print_memory_stats("After Generating 10,000 Emails", &baseline, &after_generation);
+        print_memory_stats(
+            "After Generating 10,000 Emails",
+            &baseline,
+            &after_generation,
+        );
 
         // Verify we generated the right amount
-        assert_eq!(emails.len(), 10_000, "Should generate exactly 10,000 emails");
+        assert_eq!(
+            emails.len(),
+            10_000,
+            "Should generate exactly 10,000 emails"
+        );
 
         let delta = after_generation.delta(&baseline);
         let delta_mb = delta.rss_delta_mb();
@@ -203,7 +214,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         let baseline = MemoryUsage::current();
-        println!("Baseline RSS: {:.2} MB (after email generation)", baseline.rss_mb());
+        println!(
+            "Baseline RSS: {:.2} MB (after email generation)",
+            baseline.rss_mb()
+        );
 
         // Create classifier and classify all emails
         println!("Classifying 10,000 emails...");
@@ -216,7 +230,11 @@ mod tests {
             .expect("Classification should succeed");
 
         let after_classification = MemoryUsage::current();
-        print_memory_stats("After Classifying 10,000 Emails", &baseline, &after_classification);
+        print_memory_stats(
+            "After Classifying 10,000 Emails",
+            &baseline,
+            &after_classification,
+        );
 
         // Verify we classified all emails
         assert_eq!(
@@ -228,7 +246,10 @@ mod tests {
         let delta = after_classification.delta(&baseline);
         let delta_mb = delta.rss_delta_mb();
 
-        println!("\nRESULT: Classified 10,000 emails using {:.2} MB additional", delta_mb);
+        println!(
+            "\nRESULT: Classified 10,000 emails using {:.2} MB additional",
+            delta_mb
+        );
 
         // Classifications should add some memory but not excessive
         // We'll be conservative: < 150 MB for classifications on top of emails
@@ -264,8 +285,11 @@ mod tests {
         let emails = generate_mock_emails(10_000);
         let after_gen = MemoryUsage::current();
         let gen_delta = after_gen.delta(&baseline).rss_delta_mb();
-        println!("     Memory after generation: {:.2} MB (+{:.2} MB)",
-                 after_gen.rss_mb(), gen_delta);
+        println!(
+            "     Memory after generation: {:.2} MB (+{:.2} MB)",
+            after_gen.rss_mb(),
+            gen_delta
+        );
 
         // Step 2: Classify emails
         println!("  2. Classifying emails...");
@@ -278,8 +302,11 @@ mod tests {
 
         let after_classify = MemoryUsage::current();
         let classify_delta = after_classify.delta(&after_gen).rss_delta_mb();
-        println!("     Memory after classification: {:.2} MB (+{:.2} MB)",
-                 after_classify.rss_mb(), classify_delta);
+        println!(
+            "     Memory after classification: {:.2} MB (+{:.2} MB)",
+            after_classify.rss_mb(),
+            classify_delta
+        );
 
         // Step 3: Store both in memory (simulating in-memory storage)
         println!("  3. Storing results in memory...");
@@ -290,10 +317,17 @@ mod tests {
 
         let after_storage = MemoryUsage::current();
         let storage_delta = after_storage.delta(&after_classify).rss_delta_mb();
-        println!("     Memory after storage: {:.2} MB (+{:.2} MB)",
-                 after_storage.rss_mb(), storage_delta);
+        println!(
+            "     Memory after storage: {:.2} MB (+{:.2} MB)",
+            after_storage.rss_mb(),
+            storage_delta
+        );
 
-        print_memory_stats("Complete Pipeline for 10,000 Emails", &baseline, &after_storage);
+        print_memory_stats(
+            "Complete Pipeline for 10,000 Emails",
+            &baseline,
+            &after_storage,
+        );
 
         let total_delta = after_storage.delta(&baseline);
         let total_mb = total_delta.rss_delta_mb();
@@ -304,7 +338,11 @@ mod tests {
         println!("  - Storage:        {:.2} MB", storage_delta);
 
         // Verify we have all data
-        assert_eq!(storage.len(), 10_000, "Should have 10,000 email+classification pairs");
+        assert_eq!(
+            storage.len(),
+            10_000,
+            "Should have 10,000 email+classification pairs"
+        );
 
         // README claims: "Typical: 50-100 MB for processing 10,000 emails"
         // We'll use a conservative limit of 300 MB to account for test overhead
@@ -318,11 +356,19 @@ mod tests {
 
             // Check if within claimed typical range
             if total_mb >= 50.0 && total_mb <= 100.0 {
-                println!("\nSUCCESS: Memory usage is within README claimed typical range (50-100 MB)");
+                println!(
+                    "\nSUCCESS: Memory usage is within README claimed typical range (50-100 MB)"
+                );
             } else if total_mb < 50.0 {
-                println!("\nEXCELLENT: Memory usage is better than claimed ({:.2} MB < 50 MB)", total_mb);
+                println!(
+                    "\nEXCELLENT: Memory usage is better than claimed ({:.2} MB < 50 MB)",
+                    total_mb
+                );
             } else if total_mb <= 150.0 {
-                println!("\nGOOD: Memory usage is reasonable, though above typical range ({:.2} MB)", total_mb);
+                println!(
+                    "\nGOOD: Memory usage is reasonable, though above typical range ({:.2} MB)",
+                    total_mb
+                );
             }
         }
     }
@@ -341,7 +387,10 @@ mod tests {
         let batch_size = 2_500;
         let num_batches = 4;
 
-        println!("Processing {} batches of {} emails each...", num_batches, batch_size);
+        println!(
+            "Processing {} batches of {} emails each...",
+            num_batches, batch_size
+        );
 
         // Simulate processing batches with some data retention
         let mut all_results = Vec::new();
@@ -367,7 +416,10 @@ mod tests {
                 .expect("Classification should succeed");
 
             let after_batch_classify = MemoryUsage::current();
-            println!("    After classification: {:.2} MB", after_batch_classify.rss_mb());
+            println!(
+                "    After classification: {:.2} MB",
+                after_batch_classify.rss_mb()
+            );
 
             // Store results (simulating concurrent retention)
             all_results.push((batch_emails, batch_classifications));
@@ -381,12 +433,19 @@ mod tests {
             }
         }
 
-        print_memory_stats("Peak Memory During Batch Processing", &baseline, &peak_memory);
+        print_memory_stats(
+            "Peak Memory During Batch Processing",
+            &baseline,
+            &peak_memory,
+        );
 
         let peak_delta = peak_memory.delta(&baseline);
         let peak_mb = peak_delta.rss_delta_mb();
 
-        println!("\nRESULT: Peak memory during batch processing: {:.2} MB", peak_mb);
+        println!(
+            "\nRESULT: Peak memory during batch processing: {:.2} MB",
+            peak_mb
+        );
         println!("Total emails processed: {}", batch_size * num_batches);
 
         // Verify we processed all batches
@@ -410,7 +469,10 @@ mod tests {
             if peak_mb <= 200.0 {
                 println!("\nSUCCESS: Peak memory is within README claimed range (~200 MB)");
             } else if peak_mb <= 250.0 {
-                println!("\nGOOD: Peak memory is close to claimed range ({:.2} MB vs ~200 MB)", peak_mb);
+                println!(
+                    "\nGOOD: Peak memory is close to claimed range ({:.2} MB vs ~200 MB)",
+                    peak_mb
+                );
             }
         }
     }
@@ -435,7 +497,11 @@ mod tests {
             .expect("Classification should succeed");
 
         let after_processing = MemoryUsage::current();
-        print_memory_stats("After Processing 1,000 Emails", &baseline, &after_processing);
+        print_memory_stats(
+            "After Processing 1,000 Emails",
+            &baseline,
+            &after_processing,
+        );
 
         assert_eq!(emails.len(), 1_000);
         assert_eq!(classifications.len(), 1_000);
@@ -483,7 +549,11 @@ mod tests {
 
             let peak = MemoryUsage::current();
             let peak_delta = peak.delta(&baseline).rss_delta_mb();
-            println!("Peak RSS while in scope: {:.2} MB (+{:.2} MB)", peak.rss_mb(), peak_delta);
+            println!(
+                "Peak RSS while in scope: {:.2} MB (+{:.2} MB)",
+                peak.rss_mb(),
+                peak_delta
+            );
         } // Drop everything here
 
         // Give time for OS to reclaim memory
@@ -491,10 +561,17 @@ mod tests {
 
         let after_drop = MemoryUsage::current();
         let after_delta = after_drop.delta(&baseline).rss_delta_mb();
-        println!("After drop RSS: {:.2} MB (+{:.2} MB from baseline)", after_drop.rss_mb(), after_delta);
+        println!(
+            "After drop RSS: {:.2} MB (+{:.2} MB from baseline)",
+            after_drop.rss_mb(),
+            after_delta
+        );
 
         // Memory should have been released (though OS may not immediately reclaim it)
-        println!("\nRESULT: Memory after cleanup: {:.2} MB delta from baseline", after_delta);
+        println!(
+            "\nRESULT: Memory after cleanup: {:.2} MB delta from baseline",
+            after_delta
+        );
         println!("(Note: OS may not immediately reclaim all memory)");
     }
 }

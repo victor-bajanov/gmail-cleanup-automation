@@ -5,10 +5,10 @@
 //! persist across runs.
 
 use crate::error::{GmailError, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
-use chrono::{DateTime, Utc};
 
 /// A persistent exclusion for a cluster
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,10 +49,8 @@ impl ExclusionManager {
         let exclusions: Vec<Exclusion> = serde_json::from_str(&json)
             .map_err(|e| GmailError::Unknown(format!("Failed to parse exclusions file: {}", e)))?;
 
-        let excluded_keys: HashSet<String> = exclusions
-            .iter()
-            .map(|e| e.cluster_key.clone())
-            .collect();
+        let excluded_keys: HashSet<String> =
+            exclusions.iter().map(|e| e.cluster_key.clone()).collect();
 
         Ok(Self {
             excluded_keys,
@@ -71,10 +69,8 @@ impl ExclusionManager {
         let exclusions: Vec<Exclusion> = serde_json::from_str(&json)
             .map_err(|e| GmailError::Unknown(format!("Failed to parse exclusions file: {}", e)))?;
 
-        let excluded_keys: HashSet<String> = exclusions
-            .iter()
-            .map(|e| e.cluster_key.clone())
-            .collect();
+        let excluded_keys: HashSet<String> =
+            exclusions.iter().map(|e| e.cluster_key.clone()).collect();
 
         Ok(Self {
             excluded_keys,

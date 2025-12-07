@@ -55,9 +55,12 @@ pub struct FilterRule {
 
 /// Custom deserializers for Gmail API types
 pub mod deserializers {
-    use serde::{de::{self, Deserializer}, Deserialize};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use chrono::{DateTime, Utc};
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use serde::{
+        de::{self, Deserializer},
+        Deserialize,
+    };
 
     /// Deserialize Gmail timestamp (milliseconds since epoch as string)
     pub fn deserialize_gmail_timestamp<'de, D>(
@@ -79,9 +82,7 @@ pub mod deserializers {
     }
 
     /// Deserialize base64url encoded data
-    pub fn deserialize_base64url<'de, D>(
-        deserializer: D,
-    ) -> Result<Option<Vec<u8>>, D::Error>
+    pub fn deserialize_base64url<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
     where
         D: Deserializer<'de>,
     {

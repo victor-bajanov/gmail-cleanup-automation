@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::error::{GmailError, Result};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub scan: ScanConfig,
@@ -13,6 +13,8 @@ pub struct Config {
     pub labels: LabelConfig,
     #[serde(default)]
     pub execution: ExecutionConfig,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,16 +94,28 @@ impl Default for LabelConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExecutionConfig {
     #[serde(default)]
     pub dry_run: bool,
 }
 
-impl Default for ExecutionConfig {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CircuitBreakerConfig {
+    #[serde(default = "default_circuit_breaker_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_failure_threshold")]
+    pub failure_threshold: u32,
+    #[serde(default = "default_reset_timeout_secs")]
+    pub reset_timeout_secs: u64,
+}
+
+impl Default for CircuitBreakerConfig {
     fn default() -> Self {
         Self {
-            dry_run: false,
+            enabled: default_circuit_breaker_enabled(),
+            failure_threshold: default_failure_threshold(),
+            reset_timeout_secs: default_reset_timeout_secs(),
         }
     }
 }
@@ -146,15 +160,16 @@ fn default_max_iterations() -> u32 {
     3
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            scan: ScanConfig::default(),
-            classification: ClassificationConfig::default(),
-            labels: LabelConfig::default(),
-            execution: ExecutionConfig::default(),
-        }
-    }
+fn default_circuit_breaker_enabled() -> bool {
+    true
+}
+
+fn default_failure_threshold() -> u32 {
+    5
+}
+
+fn default_reset_timeout_secs() -> u64 {
+    60
 }
 
 impl Config {
@@ -169,9 +184,8 @@ impl Config {
             .await
             .map_err(|e| GmailError::ConfigError(format!("Failed to read config file: {}", e)))?;
 
-        let config: Self = toml::from_str(&content).map_err(|e| {
-            GmailError::ConfigError(format!("Failed to parse config file: {}", e))
-        })?;
+        let config: Self = toml::from_str(&content)
+            .map_err(|e| GmailError::ConfigError(format!("Failed to parse config file: {}", e)))?;
 
         // Validate the loaded config
         config.validate()?;
@@ -183,11 +197,9 @@ impl Config {
     pub async fn save(&self, path: &Path) -> Result<()> {
         // Create parent directory if it doesn't exist
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| {
-                    GmailError::ConfigError(format!("Failed to create config directory: {}", e))
-                })?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                GmailError::ConfigError(format!("Failed to create config directory: {}", e))
+            })?;
         }
 
         let content = toml::to_string_pretty(self)
@@ -281,6 +293,18 @@ impl Config {
             }
         }
 
+        // Validate circuit breaker config
+        if self.circuit_breaker.failure_threshold == 0 {
+            return Err(GmailError::ConfigError(
+                "circuit_breaker.failure_threshold must be greater than 0".to_string(),
+            ));
+        }
+        if self.circuit_breaker.reset_timeout_secs == 0 {
+            return Err(GmailError::ConfigError(
+                "circuit_breaker.reset_timeout_secs must be greater than 0".to_string(),
+            ));
+        }
+
         tracing::debug!("Configuration validation passed");
         Ok(())
     }
@@ -316,9 +340,18 @@ mod tests {
         // Verify label defaults
         assert_eq!(config.labels.prefix, "AutoManaged");
         assert_eq!(config.labels.auto_archive_categories.len(), 3);
-        assert!(config.labels.auto_archive_categories.contains(&"newsletters".to_string()));
-        assert!(config.labels.auto_archive_categories.contains(&"notifications".to_string()));
-        assert!(config.labels.auto_archive_categories.contains(&"marketing".to_string()));
+        assert!(config
+            .labels
+            .auto_archive_categories
+            .contains(&"newsletters".to_string()));
+        assert!(config
+            .labels
+            .auto_archive_categories
+            .contains(&"notifications".to_string()));
+        assert!(config
+            .labels
+            .auto_archive_categories
+            .contains(&"marketing".to_string()));
 
         // Verify execution defaults
         assert!(!config.execution.dry_run);
@@ -345,7 +378,10 @@ mod tests {
         config.scan.period_days = 366;
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("cannot exceed 365"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("cannot exceed 365"));
     }
 
     #[test]
@@ -398,7 +434,10 @@ mod tests {
         config.classification.mode = "invalid".to_string();
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid classification.mode"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid classification.mode"));
     }
 
     #[test]
@@ -421,7 +460,10 @@ mod tests {
         config.classification.llm_provider = "invalid".to_string();
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid classification.llm_provider"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid classification.llm_provider"));
     }
 
     #[test]
@@ -444,7 +486,10 @@ mod tests {
         config.classification.minimum_emails_for_label = 0;
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("minimum_emails_for_label must be greater than 0"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("minimum_emails_for_label must be greater than 0"));
     }
 
     #[test]
@@ -453,7 +498,10 @@ mod tests {
         config.classification.claude_agents.max_iterations = 0;
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("max_iterations must be greater than 0"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("max_iterations must be greater than 0"));
     }
 
     #[test]
@@ -462,7 +510,10 @@ mod tests {
         config.labels.prefix = "".to_string();
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("prefix cannot be empty"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("prefix cannot be empty"));
     }
 
     #[test]
@@ -471,7 +522,10 @@ mod tests {
         config.labels.prefix = "Auto/Managed".to_string();
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("prefix cannot contain '/'"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("prefix cannot contain '/'"));
     }
 
     #[test]
@@ -480,7 +534,10 @@ mod tests {
         config.labels.auto_archive_categories.push("".to_string());
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("auto_archive_categories cannot contain empty strings"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("auto_archive_categories cannot contain empty strings"));
     }
 
     #[tokio::test]
@@ -491,7 +548,10 @@ mod tests {
         let deserialized: Config = toml::from_str(&serialized).unwrap();
 
         assert_eq!(config.scan.period_days, deserialized.scan.period_days);
-        assert_eq!(config.scan.max_concurrent_requests, deserialized.scan.max_concurrent_requests);
+        assert_eq!(
+            config.scan.max_concurrent_requests,
+            deserialized.scan.max_concurrent_requests
+        );
         assert_eq!(config.classification.mode, deserialized.classification.mode);
         assert_eq!(config.labels.prefix, deserialized.labels.prefix);
         assert_eq!(config.execution.dry_run, deserialized.execution.dry_run);
@@ -510,7 +570,10 @@ mod tests {
         let loaded = Config::load(path).await.unwrap();
 
         assert_eq!(config.scan.period_days, loaded.scan.period_days);
-        assert_eq!(config.scan.max_concurrent_requests, loaded.scan.max_concurrent_requests);
+        assert_eq!(
+            config.scan.max_concurrent_requests,
+            loaded.scan.max_concurrent_requests
+        );
         assert_eq!(config.classification.mode, loaded.classification.mode);
         assert_eq!(config.labels.prefix, loaded.labels.prefix);
     }
@@ -532,11 +595,16 @@ mod tests {
         let path = temp_file.path();
 
         // Write invalid TOML
-        tokio::fs::write(path, "this is not valid toml {[}]").await.unwrap();
+        tokio::fs::write(path, "this is not valid toml {[}]")
+            .await
+            .unwrap();
 
         let result = Config::load(path).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to parse config file"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to parse config file"));
     }
 
     #[tokio::test]

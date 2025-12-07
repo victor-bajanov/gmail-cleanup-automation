@@ -15,8 +15,8 @@
 
 use chrono::{DateTime, Duration, Utc};
 use gmail_automation::models::{EmailCategory, MessageMetadata};
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 use super::memory_limits::{self, MemoryLimitExceeded};
 
@@ -110,7 +110,10 @@ impl MockGenerator {
     ///
     /// Unlike `generate_messages()`, this function returns an error instead of
     /// automatically reducing the count.
-    pub fn generate_messages_checked(&mut self, count: usize) -> Result<Vec<MessageMetadata>, MemoryLimitExceeded> {
+    pub fn generate_messages_checked(
+        &mut self,
+        count: usize,
+    ) -> Result<Vec<MessageMetadata>, MemoryLimitExceeded> {
         memory_limits::check_allocation_safe(count)?;
         Ok(self.generate_messages_unchecked(count))
     }
@@ -145,7 +148,11 @@ impl MockGenerator {
     fn generate_single_message(&mut self, index: usize) -> MessageMetadata {
         let category = self.select_category();
         let sender_email = self.generate_sender(&category);
-        let sender_domain = sender_email.split('@').nth(1).unwrap_or("example.com").to_string();
+        let sender_domain = sender_email
+            .split('@')
+            .nth(1)
+            .unwrap_or("example.com")
+            .to_string();
         let subject = self.generate_subject(&category);
         let sender_name = self.generate_sender_name(&category, &sender_email);
         let date_received = self.generate_date();
@@ -224,36 +231,73 @@ impl MockGenerator {
     fn select_sender_prefix(&mut self, category: &EmailCategory) -> String {
         let prefixes: Vec<&str> = match category {
             EmailCategory::Newsletter => vec![
-                "newsletter", "news", "updates", "digest", "weekly",
-                "monthly", "bulletin", "noreply", "info",
+                "newsletter",
+                "news",
+                "updates",
+                "digest",
+                "weekly",
+                "monthly",
+                "bulletin",
+                "noreply",
+                "info",
             ],
             EmailCategory::Receipt => vec![
-                "orders", "receipts", "noreply", "confirmation",
-                "purchases", "order-confirmation", "transactions",
+                "orders",
+                "receipts",
+                "noreply",
+                "confirmation",
+                "purchases",
+                "order-confirmation",
+                "transactions",
             ],
             EmailCategory::Notification => vec![
-                "notifications", "notify", "alerts", "noreply",
-                "updates", "system", "automated", "no-reply",
+                "notifications",
+                "notify",
+                "alerts",
+                "noreply",
+                "updates",
+                "system",
+                "automated",
+                "no-reply",
             ],
             EmailCategory::Marketing => vec![
-                "marketing", "promo", "promotions", "deals", "offers",
-                "sales", "special-offers", "noreply",
+                "marketing",
+                "promo",
+                "promotions",
+                "deals",
+                "offers",
+                "sales",
+                "special-offers",
+                "noreply",
             ],
             EmailCategory::Financial => vec![
-                "billing", "invoices", "finance", "accounts",
-                "payments", "statements", "noreply",
+                "billing",
+                "invoices",
+                "finance",
+                "accounts",
+                "payments",
+                "statements",
+                "noreply",
             ],
             EmailCategory::Shipping => vec![
-                "shipping", "delivery", "tracking", "logistics",
-                "dispatch", "noreply",
+                "shipping",
+                "delivery",
+                "tracking",
+                "logistics",
+                "dispatch",
+                "noreply",
             ],
             EmailCategory::Personal => vec![
-                "john.doe", "jane.smith", "bob.wilson", "alice.jones",
-                "charlie.brown", "david.lee", "emma.taylor", "frank.white",
+                "john.doe",
+                "jane.smith",
+                "bob.wilson",
+                "alice.jones",
+                "charlie.brown",
+                "david.lee",
+                "emma.taylor",
+                "frank.white",
             ],
-            EmailCategory::Other => vec![
-                "info", "contact", "support", "help", "service",
-            ],
+            EmailCategory::Other => vec!["info", "contact", "support", "help", "service"],
         };
 
         let index = self.rng.gen_range(0..prefixes.len());
@@ -370,9 +414,18 @@ impl MockGenerator {
         match category {
             EmailCategory::Personal => {
                 let names = vec![
-                    "John Doe", "Jane Smith", "Bob Wilson", "Alice Jones",
-                    "Charlie Brown", "David Lee", "Emma Taylor", "Frank White",
-                    "Grace Miller", "Henry Davis", "Ivy Martinez", "Jack Anderson",
+                    "John Doe",
+                    "Jane Smith",
+                    "Bob Wilson",
+                    "Alice Jones",
+                    "Charlie Brown",
+                    "David Lee",
+                    "Emma Taylor",
+                    "Frank White",
+                    "Grace Miller",
+                    "Henry Davis",
+                    "Ivy Martinez",
+                    "Jack Anderson",
                 ];
                 let index = self.rng.gen_range(0..names.len());
                 names[index].to_string()
@@ -386,9 +439,7 @@ impl MockGenerator {
                 let mut chars = company_name.chars();
                 match chars.next() {
                     None => String::from("Company"),
-                    Some(first) => {
-                        first.to_uppercase().collect::<String>() + chars.as_str()
-                    }
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
                 }
             }
         }
@@ -511,7 +562,9 @@ pub fn generate_mock_emails(count: usize) -> Vec<MessageMetadata> {
 ///
 /// Unlike `generate_mock_emails()`, this function returns an error instead of
 /// automatically reducing the count.
-pub fn generate_mock_emails_checked(count: usize) -> Result<Vec<MessageMetadata>, MemoryLimitExceeded> {
+pub fn generate_mock_emails_checked(
+    count: usize,
+) -> Result<Vec<MessageMetadata>, MemoryLimitExceeded> {
     let mut generator = MockGenerator::new(MockGeneratorConfig::default());
     generator.generate_messages_checked(count)
 }
@@ -622,19 +675,39 @@ mod tests {
 
         // Verify distribution ratios roughly match expectations
         // Personal should be ~2% (allow 0-5%)
-        assert!(personal_count <= 50, "Personal emails should be ~2%, got {}/1000", personal_count);
+        assert!(
+            personal_count <= 50,
+            "Personal emails should be ~2%, got {}/1000",
+            personal_count
+        );
 
         // Most should be automated (>95%)
-        assert!(automated_count > 950, "Expected >950 automated emails, got {}", automated_count);
+        assert!(
+            automated_count > 950,
+            "Expected >950 automated emails, got {}",
+            automated_count
+        );
 
         // Many should have unsubscribe headers (newsletters, marketing ~45%)
-        assert!(unsubscribe_count > 300, "Expected >300 with unsubscribe, got {}", unsubscribe_count);
-        assert!(unsubscribe_count < 600, "Expected <600 with unsubscribe, got {}", unsubscribe_count);
+        assert!(
+            unsubscribe_count > 300,
+            "Expected >300 with unsubscribe, got {}",
+            unsubscribe_count
+        );
+        assert!(
+            unsubscribe_count < 600,
+            "Expected <600 with unsubscribe, got {}",
+            unsubscribe_count
+        );
 
         // Verify we have a good variety of subject lines
         let unique_subjects: std::collections::HashSet<_> =
             messages.iter().map(|m| &m.subject).collect();
-        assert!(unique_subjects.len() > 50, "Should have variety in subjects, got {}", unique_subjects.len());
+        assert!(
+            unique_subjects.len() > 50,
+            "Should have variety in subjects, got {}",
+            unique_subjects.len()
+        );
     }
 
     #[test]
@@ -649,8 +722,14 @@ mod tests {
         assert!(automated_count > 90, "Expected >90 automated emails");
 
         // Many but not all automated emails have unsubscribe
-        assert!(unsubscribe_count > 30, "Expected >30 emails with unsubscribe");
-        assert!(unsubscribe_count < automated_count, "Unsubscribe count should be less than automated count");
+        assert!(
+            unsubscribe_count > 30,
+            "Expected >30 emails with unsubscribe"
+        );
+        assert!(
+            unsubscribe_count < automated_count,
+            "Unsubscribe count should be less than automated count"
+        );
     }
 
     #[test]
@@ -664,7 +743,11 @@ mod tests {
         }
 
         // Should have good variety of domains (at least 20 different ones)
-        assert!(domains.len() >= 20, "Expected at least 20 different domains, got {}", domains.len());
+        assert!(
+            domains.len() >= 20,
+            "Expected at least 20 different domains, got {}",
+            domains.len()
+        );
     }
 
     #[test]
@@ -691,13 +774,13 @@ mod tests {
     #[serial]
     fn test_custom_distribution() {
         let distribution = EmailDistribution {
-            newsletter: 0.50,  // 50% newsletters
-            receipt: 0.30,     // 30% receipts
+            newsletter: 0.50,   // 50% newsletters
+            receipt: 0.30,      // 30% receipts
             notification: 0.10, // 10% notifications
-            marketing: 0.05,   // 5% marketing
-            financial: 0.03,   // 3% financial
-            shipping: 0.01,    // 1% shipping
-            personal: 0.01,    // 1% personal
+            marketing: 0.05,    // 5% marketing
+            financial: 0.03,    // 3% financial
+            shipping: 0.01,     // 1% shipping
+            personal: 0.01,     // 1% personal
         };
 
         let messages = generate_mock_emails_with_distribution(1000, 42, distribution);
@@ -707,12 +790,24 @@ mod tests {
         let unsubscribe_count = messages.iter().filter(|m| m.has_unsubscribe).count();
 
         // Should be roughly 55% with unsubscribe (allow variance)
-        assert!(unsubscribe_count > 400, "Expected ~550 with unsubscribe, got {}", unsubscribe_count);
-        assert!(unsubscribe_count < 700, "Expected ~550 with unsubscribe, got {}", unsubscribe_count);
+        assert!(
+            unsubscribe_count > 400,
+            "Expected ~550 with unsubscribe, got {}",
+            unsubscribe_count
+        );
+        assert!(
+            unsubscribe_count < 700,
+            "Expected ~550 with unsubscribe, got {}",
+            unsubscribe_count
+        );
 
         // Very few should be personal (~1%)
         let personal_count = messages.iter().filter(|m| !m.is_automated).count();
-        assert!(personal_count < 30, "Expected ~10 personal, got {}", personal_count);
+        assert!(
+            personal_count < 30,
+            "Expected ~10 personal, got {}",
+            personal_count
+        );
     }
 
     #[test]

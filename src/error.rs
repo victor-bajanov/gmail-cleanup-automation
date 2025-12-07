@@ -82,6 +82,13 @@ pub enum GmailError {
     #[error("Quota exceeded: {0}")]
     QuotaExceeded(String),
 
+    /// Circuit breaker is open (rejecting requests)
+    #[error("Circuit breaker open: {message}. Will retry after {retry_after_secs} seconds")]
+    CircuitBreakerOpen {
+        message: String,
+        retry_after_secs: u64,
+    },
+
     /// Generic catch-all error
     #[error("Unknown error: {0}")]
     Unknown(String),
@@ -96,6 +103,7 @@ impl GmailError {
                 | GmailError::RateLimitError(_)
                 | GmailError::ServerError { .. }
                 | GmailError::NetworkError(_)
+                | GmailError::CircuitBreakerOpen { .. }
         )
     }
 
@@ -105,6 +113,38 @@ impl GmailError {
     }
 }
 
+/// Parse the Retry-After header from an HTTP response
+///
+/// The Retry-After header can be specified in two formats:
+/// 1. Delay-seconds: An integer indicating seconds to wait (e.g., "120")
+/// 2. HTTP-date: An HTTP date format (e.g., "Wed, 21 Oct 2015 07:28:00 GMT")
+///
+/// Returns the number of seconds to wait. If the header is missing or invalid,
+/// returns a default of 5 seconds.
+fn parse_retry_after_header<B>(response: &hyper::Response<B>) -> u64 {
+    const DEFAULT_RETRY_AFTER: u64 = 5;
+
+    if let Some(retry_after_value) = response.headers().get("retry-after") {
+        if let Ok(retry_after_str) = retry_after_value.to_str() {
+            // Try to parse as integer (delay-seconds format)
+            if let Ok(seconds) = retry_after_str.parse::<u64>() {
+                return seconds;
+            }
+
+            // Try to parse as HTTP date format
+            if let Ok(http_date) = httpdate::parse_http_date(retry_after_str) {
+                // Calculate seconds until that time
+                let now = std::time::SystemTime::now();
+                if let Ok(duration) = http_date.duration_since(now) {
+                    return duration.as_secs();
+                }
+            }
+        }
+    }
+
+    DEFAULT_RETRY_AFTER
+}
+
 impl From<google_gmail1::Error> for GmailError {
     fn from(error: google_gmail1::Error) -> Self {
         match error {
@@ -112,11 +152,18 @@ impl From<google_gmail1::Error> for GmailError {
             google_gmail1::Error::Failure(ref response) => {
                 let status = response.status();
                 let status_code = status.as_u16();
-                let message = format!("HTTP {}: {}", status_code, status.canonical_reason().unwrap_or("Unknown"));
+                let message = format!(
+                    "HTTP {}: {}",
+                    status_code,
+                    status.canonical_reason().unwrap_or("Unknown")
+                );
 
                 match status_code {
                     // Rate limiting - transient
-                    429 => GmailError::RateLimitExceeded { retry_after: 1 },
+                    429 => {
+                        let retry_after = parse_retry_after_header(response);
+                        GmailError::RateLimitExceeded { retry_after }
+                    }
                     // Not found
                     404 => GmailError::MessageNotFound("Resource not found".to_string()),
                     // Bad request
@@ -133,9 +180,7 @@ impl From<google_gmail1::Error> for GmailError {
                 }
             }
             // BadRequest variant (request not understood by server)
-            google_gmail1::Error::BadRequest(ref err) => {
-                GmailError::BadRequest(format!("{}", err))
-            }
+            google_gmail1::Error::BadRequest(ref err) => GmailError::BadRequest(format!("{}", err)),
             // Network/connection errors - transient
             google_gmail1::Error::HttpError(ref err) => {
                 GmailError::NetworkError(format!("Connection error: {}", err))
@@ -191,5 +236,108 @@ mod tests {
         let auth_error = GmailError::AuthError("Invalid token".to_string());
         let display = format!("{}", auth_error);
         assert!(display.contains("Authentication failed"));
+    }
+
+    #[test]
+    fn test_parse_retry_after_header_integer() {
+        // Test parsing integer seconds format
+        let mut response = hyper::Response::builder().status(429).body(()).unwrap();
+        response.headers_mut().insert(
+            "retry-after",
+            hyper::header::HeaderValue::from_static("120"),
+        );
+
+        let retry_after = parse_retry_after_header(&response);
+        assert_eq!(retry_after, 120);
+    }
+
+    #[test]
+    fn test_parse_retry_after_header_missing() {
+        // Test default value when header is missing
+        let response = hyper::Response::builder().status(429).body(()).unwrap();
+
+        let retry_after = parse_retry_after_header(&response);
+        assert_eq!(retry_after, 5); // Default value
+    }
+
+    #[test]
+    fn test_parse_retry_after_header_invalid() {
+        // Test default value when header is invalid
+        let mut response = hyper::Response::builder().status(429).body(()).unwrap();
+        response.headers_mut().insert(
+            "retry-after",
+            hyper::header::HeaderValue::from_static("invalid"),
+        );
+
+        let retry_after = parse_retry_after_header(&response);
+        assert_eq!(retry_after, 5); // Default value
+    }
+
+    #[test]
+    fn test_parse_retry_after_header_http_date() {
+        // Test parsing HTTP date format
+        // Note: This test uses a date in the future
+        let mut response = hyper::Response::builder().status(429).body(()).unwrap();
+
+        // Create a date 60 seconds in the future
+        let future_time = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let http_date = httpdate::fmt_http_date(future_time);
+
+        response.headers_mut().insert(
+            "retry-after",
+            hyper::header::HeaderValue::from_str(&http_date).unwrap(),
+        );
+
+        let retry_after = parse_retry_after_header(&response);
+        // Should be close to 60 seconds (allowing for some test execution time)
+        assert!(
+            retry_after >= 59 && retry_after <= 61,
+            "Expected ~60, got {}",
+            retry_after
+        );
+    }
+
+    #[test]
+    fn test_parse_retry_after_header_past_http_date() {
+        // Test HTTP date in the past (should fall back to default)
+        let mut response = hyper::Response::builder().status(429).body(()).unwrap();
+
+        // Create a date in the past
+        let past_time = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let http_date = httpdate::fmt_http_date(past_time);
+
+        response.headers_mut().insert(
+            "retry-after",
+            hyper::header::HeaderValue::from_str(&http_date).unwrap(),
+        );
+
+        let retry_after = parse_retry_after_header(&response);
+        // Should fall back to default since past dates don't make sense
+        assert_eq!(retry_after, 5);
+    }
+
+    #[test]
+    fn test_parse_retry_after_header_zero() {
+        // Test zero seconds (edge case)
+        let mut response = hyper::Response::builder().status(429).body(()).unwrap();
+        response
+            .headers_mut()
+            .insert("retry-after", hyper::header::HeaderValue::from_static("0"));
+
+        let retry_after = parse_retry_after_header(&response);
+        assert_eq!(retry_after, 0);
+    }
+
+    #[test]
+    fn test_parse_retry_after_header_large_value() {
+        // Test large retry-after value
+        let mut response = hyper::Response::builder().status(429).body(()).unwrap();
+        response.headers_mut().insert(
+            "retry-after",
+            hyper::header::HeaderValue::from_static("3600"),
+        );
+
+        let retry_after = parse_retry_after_header(&response);
+        assert_eq!(retry_after, 3600);
     }
 }

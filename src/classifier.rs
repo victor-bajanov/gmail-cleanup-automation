@@ -9,9 +9,18 @@ use std::collections::HashMap;
 /// Automated email patterns (lines 1388-1397)
 static AUTOMATED_PATTERNS: Lazy<HashMap<&'static str, Vec<&'static str>>> = Lazy::new(|| {
     let mut map = HashMap::new();
-    map.insert("noreply", vec!["noreply@", "no-reply@", "donotreply@", "do-not-reply@"]);
-    map.insert("notifications", vec!["notifications@", "notify@", "alerts@"]);
-    map.insert("marketing", vec!["marketing@", "promo@", "promotions@", "deals@"]);
+    map.insert(
+        "noreply",
+        vec!["noreply@", "no-reply@", "donotreply@", "do-not-reply@"],
+    );
+    map.insert(
+        "notifications",
+        vec!["notifications@", "notify@", "alerts@"],
+    );
+    map.insert(
+        "marketing",
+        vec!["marketing@", "promo@", "promotions@", "deals@"],
+    );
     map.insert("newsletter", vec!["newsletter@", "news@", "updates@"]);
     map.insert("automated", vec!["automated@", "auto@", "bot@", "system@"]);
     map.insert("info", vec!["info@", "contact@", "support@", "help@"]);
@@ -35,44 +44,40 @@ static COMMERCIAL_DOMAINS: Lazy<Vec<&'static str>> = Lazy::new(|| {
 /// Subject pattern regexes using once_cell (lines 1415-1451)
 static SUBJECT_PATTERNS: Lazy<SubjectPatterns> = Lazy::new(|| SubjectPatterns {
     receipt: Regex::new(
-        r"(?i)(receipt|invoice|order|purchase|payment|transaction|confirmation|bill)"
+        r"(?i)(receipt|invoice|order|purchase|payment|transaction|confirmation|bill)",
     )
     .unwrap(),
 
     shipping: Regex::new(
-        r"(?i)(ship|deliver|tracking|dispatch|out for delivery|package|parcel|fedex|ups|usps|dhl)"
+        r"(?i)(ship|deliver|tracking|dispatch|out for delivery|package|parcel|fedex|ups|usps|dhl)",
     )
     .unwrap(),
 
-    newsletter: Regex::new(
-        r"(?i)(newsletter|digest|weekly|monthly|roundup|bulletin|update)"
-    )
-    .unwrap(),
+    newsletter: Regex::new(r"(?i)(newsletter|digest|weekly|monthly|roundup|bulletin|update)")
+        .unwrap(),
 
     marketing: Regex::new(
-        r"(?i)(sale|discount|offer|deal|promo|coupon|limited time|exclusive|save|% off)"
+        r"(?i)(sale|discount|offer|deal|promo|coupon|limited time|exclusive|save|% off)",
     )
     .unwrap(),
 
     notification: Regex::new(
-        r"(?i)(notification|alert|reminder|verify|confirm|action required|security)"
+        r"(?i)(notification|alert|reminder|verify|confirm|action required|security)",
     )
     .unwrap(),
 
     financial: Regex::new(
-        r"(?i)(statement|balance|credit card|bank|account|payment due|funds|wire|transfer)"
+        r"(?i)(statement|balance|credit card|bank|account|payment due|funds|wire|transfer)",
     )
     .unwrap(),
 
     automated: Regex::new(
-        r"(?i)(automated|automatic|do not reply|this is an automated|system generated)"
+        r"(?i)(automated|automatic|do not reply|this is an automated|system generated)",
     )
     .unwrap(),
 
-    unsubscribe: Regex::new(
-        r"(?i)(unsubscribe|opt.?out|manage.?preferences|update.?subscription)"
-    )
-    .unwrap(),
+    unsubscribe: Regex::new(r"(?i)(unsubscribe|opt.?out|manage.?preferences|update.?subscription)")
+        .unwrap(),
 });
 
 struct SubjectPatterns {
@@ -98,57 +103,84 @@ static KNOWN_SERVICES: Lazy<HashMap<&'static str, ServiceInfo>> = Lazy::new(|| {
     let mut map = HashMap::new();
 
     // E-commerce
-    map.insert("amazon.com", ServiceInfo {
-        name: "Amazon".to_string(),
-        category: EmailCategory::Receipt,
-        priority: 70,
-    });
-    map.insert("ebay.com", ServiceInfo {
-        name: "eBay".to_string(),
-        category: EmailCategory::Receipt,
-        priority: 70,
-    });
+    map.insert(
+        "amazon.com",
+        ServiceInfo {
+            name: "Amazon".to_string(),
+            category: EmailCategory::Receipt,
+            priority: 70,
+        },
+    );
+    map.insert(
+        "ebay.com",
+        ServiceInfo {
+            name: "eBay".to_string(),
+            category: EmailCategory::Receipt,
+            priority: 70,
+        },
+    );
 
     // Social media
-    map.insert("facebook.com", ServiceInfo {
-        name: "Facebook".to_string(),
-        category: EmailCategory::Notification,
-        priority: 40,
-    });
-    map.insert("twitter.com", ServiceInfo {
-        name: "Twitter".to_string(),
-        category: EmailCategory::Notification,
-        priority: 40,
-    });
-    map.insert("linkedin.com", ServiceInfo {
-        name: "LinkedIn".to_string(),
-        category: EmailCategory::Notification,
-        priority: 50,
-    });
+    map.insert(
+        "facebook.com",
+        ServiceInfo {
+            name: "Facebook".to_string(),
+            category: EmailCategory::Notification,
+            priority: 40,
+        },
+    );
+    map.insert(
+        "twitter.com",
+        ServiceInfo {
+            name: "Twitter".to_string(),
+            category: EmailCategory::Notification,
+            priority: 40,
+        },
+    );
+    map.insert(
+        "linkedin.com",
+        ServiceInfo {
+            name: "LinkedIn".to_string(),
+            category: EmailCategory::Notification,
+            priority: 50,
+        },
+    );
 
     // Financial
-    map.insert("paypal.com", ServiceInfo {
-        name: "PayPal".to_string(),
-        category: EmailCategory::Financial,
-        priority: 90,
-    });
-    map.insert("stripe.com", ServiceInfo {
-        name: "Stripe".to_string(),
-        category: EmailCategory::Financial,
-        priority: 90,
-    });
+    map.insert(
+        "paypal.com",
+        ServiceInfo {
+            name: "PayPal".to_string(),
+            category: EmailCategory::Financial,
+            priority: 90,
+        },
+    );
+    map.insert(
+        "stripe.com",
+        ServiceInfo {
+            name: "Stripe".to_string(),
+            category: EmailCategory::Financial,
+            priority: 90,
+        },
+    );
 
     // Tech services
-    map.insert("github.com", ServiceInfo {
-        name: "GitHub".to_string(),
-        category: EmailCategory::Notification,
-        priority: 60,
-    });
-    map.insert("gitlab.com", ServiceInfo {
-        name: "GitLab".to_string(),
-        category: EmailCategory::Notification,
-        priority: 60,
-    });
+    map.insert(
+        "github.com",
+        ServiceInfo {
+            name: "GitHub".to_string(),
+            category: EmailCategory::Notification,
+            priority: 60,
+        },
+    );
+    map.insert(
+        "gitlab.com",
+        ServiceInfo {
+            name: "GitLab".to_string(),
+            category: EmailCategory::Notification,
+            priority: 60,
+        },
+    );
 
     map
 });
@@ -241,16 +273,16 @@ impl EmailClassifier {
         // Check for financial sender domains before subject patterns
         // Invoices from billing/finance addresses should be Financial, not Receipt
         let sender_email_lower = message.sender_email.to_lowercase();
-        if sender_email_lower.starts_with("billing@")
+        if (sender_email_lower.starts_with("billing@")
             || sender_email_lower.starts_with("finance@")
             || sender_email_lower.starts_with("invoices@")
-            || sender_email_lower.starts_with("accounts@") {
-            if SUBJECT_PATTERNS.financial.is_match(&subject_lower)
+            || sender_email_lower.starts_with("accounts@"))
+            && (SUBJECT_PATTERNS.financial.is_match(&subject_lower)
                 || subject_lower.contains("invoice")
                 || subject_lower.contains("statement")
-                || subject_lower.contains("bill") {
-                return EmailCategory::Financial;
-            }
+                || subject_lower.contains("bill"))
+        {
+            return EmailCategory::Financial;
         }
 
         // Pattern matching on subject
@@ -403,7 +435,12 @@ impl EmailClassifier {
     }
 
     /// Determine if message should be auto-archived
-    fn should_auto_archive(&self, _message: &MessageMetadata, category: &EmailCategory, priority: i32) -> bool {
+    fn should_auto_archive(
+        &self,
+        _message: &MessageMetadata,
+        category: &EmailCategory,
+        priority: i32,
+    ) -> bool {
         // Never archive high-priority messages
         if priority >= 70 {
             return false;
@@ -420,7 +457,11 @@ impl EmailClassifier {
         }
 
         // Auto-archive marketing and newsletters with low priority
-        if matches!(category, EmailCategory::Marketing | EmailCategory::Newsletter) && priority < 40 {
+        if matches!(
+            category,
+            EmailCategory::Marketing | EmailCategory::Newsletter
+        ) && priority < 40
+        {
             return true;
         }
 
@@ -433,7 +474,12 @@ impl EmailClassifier {
     }
 
     /// Calculate confidence score
-    fn calculate_confidence(&self, message: &MessageMetadata, _category: &EmailCategory, is_automated: bool) -> f32 {
+    fn calculate_confidence(
+        &self,
+        message: &MessageMetadata,
+        _category: &EmailCategory,
+        is_automated: bool,
+    ) -> f32 {
         let mut confidence: f32 = 0.5;
 
         // Known service = high confidence
@@ -449,7 +495,10 @@ impl EmailClassifier {
             SUBJECT_PATTERNS.financial.is_match(&subject_lower),
             SUBJECT_PATTERNS.newsletter.is_match(&subject_lower),
             SUBJECT_PATTERNS.marketing.is_match(&subject_lower),
-        ].iter().filter(|&&x| x).count();
+        ]
+        .iter()
+        .filter(|&&x| x)
+        .count();
 
         if pattern_matches > 0 {
             confidence += 0.2;
@@ -470,7 +519,13 @@ impl EmailClassifier {
     }
 
     /// Generate reasoning for classification
-    fn generate_reasoning(&self, message: &MessageMetadata, category: &EmailCategory, is_automated: bool, priority: i32) -> String {
+    fn generate_reasoning(
+        &self,
+        message: &MessageMetadata,
+        category: &EmailCategory,
+        is_automated: bool,
+        priority: i32,
+    ) -> String {
         let mut reasons = Vec::new();
 
         // Category reasoning
@@ -512,7 +567,7 @@ impl EmailClassifier {
             let main_domain = extract_main_domain(&message.sender_domain);
             clusters
                 .entry(main_domain)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(message.id.clone());
         }
 
@@ -589,58 +644,32 @@ static COMPOUND_TLDS: &[&str] = &[
     // United Kingdom
     "co.uk", "org.uk", "me.uk", "net.uk", "ac.uk", "gov.uk", "ltd.uk", "plc.uk",
     // New Zealand
-    "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz",
-    // Japan
-    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
-    // Korea
-    "co.kr", "or.kr", "ne.kr", "go.kr", "ac.kr",
-    // Brazil
-    "com.br", "net.br", "org.br", "gov.br", "edu.br",
-    // India
-    "co.in", "net.in", "org.in", "gov.in", "ac.in",
-    // South Africa
-    "co.za", "org.za", "net.za", "gov.za", "ac.za",
-    // Germany (rare but exist)
-    "com.de",
-    // France
-    "com.fr",
-    // Spain
-    "com.es", "org.es", "nom.es",
-    // Italy
-    "com.it",
-    // Mexico
-    "com.mx", "org.mx", "gob.mx", "net.mx",
-    // China
-    "com.cn", "net.cn", "org.cn", "gov.cn", "ac.cn",
-    // Hong Kong
-    "com.hk", "org.hk", "net.hk", "gov.hk", "edu.hk",
-    // Singapore
-    "com.sg", "org.sg", "net.sg", "gov.sg", "edu.sg",
-    // Taiwan
-    "com.tw", "org.tw", "net.tw", "gov.tw", "edu.tw",
-    // Indonesia
-    "co.id", "or.id", "go.id", "ac.id",
-    // Malaysia
-    "com.my", "org.my", "net.my", "gov.my", "edu.my",
-    // Thailand
-    "co.th", "or.th", "go.th", "ac.th",
-    // Philippines
-    "com.ph", "org.ph", "net.ph", "gov.ph", "edu.ph",
-    // Vietnam
-    "com.vn", "net.vn", "org.vn", "gov.vn", "edu.vn",
-    // Russia
-    "com.ru", "org.ru", "net.ru",
-    // Turkey
-    "com.tr", "org.tr", "net.tr", "gov.tr", "edu.tr",
-    // Argentina
-    "com.ar", "org.ar", "net.ar", "gov.ar", "edu.ar",
-    // Colombia
-    "com.co", "org.co", "net.co", "gov.co", "edu.co",
-    // Chile
-    "com.cl",
-    // Peru
-    "com.pe", "org.pe", "net.pe", "gob.pe", "edu.pe",
-    // Other common patterns
+    "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz", // Japan
+    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp", // Korea
+    "co.kr", "or.kr", "ne.kr", "go.kr", "ac.kr", // Brazil
+    "com.br", "net.br", "org.br", "gov.br", "edu.br", // India
+    "co.in", "net.in", "org.in", "gov.in", "ac.in", // South Africa
+    "co.za", "org.za", "net.za", "gov.za", "ac.za",  // Germany (rare but exist)
+    "com.de", // France
+    "com.fr", // Spain
+    "com.es", "org.es", "nom.es", // Italy
+    "com.it", // Mexico
+    "com.mx", "org.mx", "gob.mx", "net.mx", // China
+    "com.cn", "net.cn", "org.cn", "gov.cn", "ac.cn", // Hong Kong
+    "com.hk", "org.hk", "net.hk", "gov.hk", "edu.hk", // Singapore
+    "com.sg", "org.sg", "net.sg", "gov.sg", "edu.sg", // Taiwan
+    "com.tw", "org.tw", "net.tw", "gov.tw", "edu.tw", // Indonesia
+    "co.id", "or.id", "go.id", "ac.id", // Malaysia
+    "com.my", "org.my", "net.my", "gov.my", "edu.my", // Thailand
+    "co.th", "or.th", "go.th", "ac.th", // Philippines
+    "com.ph", "org.ph", "net.ph", "gov.ph", "edu.ph", // Vietnam
+    "com.vn", "net.vn", "org.vn", "gov.vn", "edu.vn", // Russia
+    "com.ru", "org.ru", "net.ru", // Turkey
+    "com.tr", "org.tr", "net.tr", "gov.tr", "edu.tr", // Argentina
+    "com.ar", "org.ar", "net.ar", "gov.ar", "edu.ar", // Colombia
+    "com.co", "org.co", "net.co", "gov.co", "edu.co", // Chile
+    "com.cl", // Peru
+    "com.pe", "org.pe", "net.pe", "gob.pe", "edu.pe", // Other common patterns
     "co.il", "org.il", "ac.il", // Israel
     "co.at", // Austria
 ];
@@ -670,8 +699,7 @@ fn extract_main_domain(domain: &str) -> String {
     };
 
     if parts.len() >= tld_parts_count {
-        parts[parts.len() - tld_parts_count..]
-            .join(".")
+        parts[parts.len() - tld_parts_count..].join(".")
     } else {
         domain.to_string()
     }
@@ -731,10 +759,16 @@ mod tests {
         assert_eq!(classifier.detect_category(&receipt), EmailCategory::Receipt);
 
         let marketing = create_test_message("deals@store.com", "50% Off Sale Today!");
-        assert_eq!(classifier.detect_category(&marketing), EmailCategory::Marketing);
+        assert_eq!(
+            classifier.detect_category(&marketing),
+            EmailCategory::Marketing
+        );
 
         let financial = create_test_message("billing@service.com", "Invoice #12345");
-        assert_eq!(classifier.detect_category(&financial), EmailCategory::Financial);
+        assert_eq!(
+            classifier.detect_category(&financial),
+            EmailCategory::Financial
+        );
     }
 
     #[test]

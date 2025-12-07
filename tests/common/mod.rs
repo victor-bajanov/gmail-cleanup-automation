@@ -1,11 +1,11 @@
 //! Common test utilities and fixtures
 
 use chrono::Utc;
-use gmail_automation::models::{EmailCategory, FilterRule, MessageMetadata};
 use gmail_automation::client::GmailClient;
 use gmail_automation::error::Result;
-use mockall::predicate::*;
+use gmail_automation::models::{EmailCategory, FilterRule, MessageMetadata};
 use mockall::mock;
+use mockall::predicate::*;
 use serde_json::json;
 
 /// Create a test message with default values
@@ -172,6 +172,7 @@ mock! {
             message_ids: Vec<String>,
             on_progress: gmail_automation::client::ProgressCallback,
         ) -> Result<Vec<MessageMetadata>>;
+        async fn quota_stats(&self) -> gmail_automation::rate_limiter::QuotaStats;
     }
 }
 
@@ -204,12 +205,8 @@ mod tests {
 
     #[test]
     fn test_mock_gmail_message_response() {
-        let response = mock_gmail_message_response(
-            "msg1",
-            "thread1",
-            "test@example.com",
-            "Test Subject",
-        );
+        let response =
+            mock_gmail_message_response("msg1", "thread1", "test@example.com", "Test Subject");
         assert_eq!(response["id"], "msg1");
         assert_eq!(response["threadId"], "thread1");
     }

@@ -1,5 +1,4 @@
-///! Label management and creation with hierarchy support and consolidation logic
-
+//! Label management and creation with hierarchy support and consolidation logic
 use crate::client::GmailClient;
 use crate::error::{GmailError, Result};
 use regex::Regex;
@@ -131,14 +130,20 @@ impl LabelManager {
             .create_label(&sanitized_name)
             .await
             .map_err(|e| {
-                GmailError::ApiError(format!("Failed to create label '{}': {}", sanitized_name, e))
+                GmailError::ApiError(format!(
+                    "Failed to create label '{}': {}",
+                    sanitized_name, e
+                ))
             })?;
 
         // Track the created label (cache uses lowercase key)
         self.cache_insert(sanitized_name.clone(), label_id.clone());
         self.created_labels.push(label_id.clone());
 
-        info!("Successfully created label '{}' with ID: {}", sanitized_name, label_id);
+        info!(
+            "Successfully created label '{}' with ID: {}",
+            sanitized_name, label_id
+        );
         Ok(label_id)
     }
 
@@ -171,19 +176,18 @@ impl LabelManager {
         info!("Creating label: {}", full_name);
 
         // Create the label via Gmail API
-        let label_id = self
-            .client
-            .create_label(full_name)
-            .await
-            .map_err(|e| {
-                GmailError::ApiError(format!("Failed to create label '{}': {}", full_name, e))
-            })?;
+        let label_id = self.client.create_label(full_name).await.map_err(|e| {
+            GmailError::ApiError(format!("Failed to create label '{}': {}", full_name, e))
+        })?;
 
         // Track the created label (cache uses lowercase key)
         self.cache_insert(full_name.to_string(), label_id.clone());
         self.created_labels.push(label_id.clone());
 
-        info!("Successfully created label '{}' with ID: {}", full_name, label_id);
+        info!(
+            "Successfully created label '{}' with ID: {}",
+            full_name, label_id
+        );
         Ok(label_id)
     }
 
@@ -206,16 +210,12 @@ impl LabelManager {
                 debug!("Creating parent label: {}", parent_path);
 
                 // Create parent directly (without prefix, as it's already full path)
-                let label_id = self
-                    .client
-                    .create_label(&parent_path)
-                    .await
-                    .map_err(|e| {
-                        GmailError::ApiError(format!(
-                            "Failed to create parent label '{}': {}",
-                            parent_path, e
-                        ))
-                    })?;
+                let label_id = self.client.create_label(&parent_path).await.map_err(|e| {
+                    GmailError::ApiError(format!(
+                        "Failed to create parent label '{}': {}",
+                        parent_path, e
+                    ))
+                })?;
 
                 self.cache_insert(parent_path.clone(), label_id.clone());
                 self.created_labels.push(label_id);
@@ -291,7 +291,7 @@ impl LabelManager {
         if sanitized.len() > 50 {
             sanitized = sanitized[..50].to_string();
             // Ensure we don't cut in the middle of a word
-            if let Some(last_space) = sanitized.rfind(|c| c == ' ' || c == '/') {
+            if let Some(last_space) = sanitized.rfind([' ', '/']) {
                 sanitized = sanitized[..last_space].to_string();
             }
         }
@@ -408,11 +408,15 @@ impl LabelManager {
                 vec![]
             };
 
-            match self.client.batch_modify_labels(
-                &message_ids,
-                &[label_id.clone()],
-                &remove_labels,
-            ).await {
+            match self
+                .client
+                .batch_modify_labels(
+                    &message_ids,
+                    std::slice::from_ref(&label_id),
+                    &remove_labels,
+                )
+                .await
+            {
                 Ok(count) => {
                     debug!("Batch applied label {} to {} messages", label_id, count);
                     success_count += count;
@@ -450,7 +454,7 @@ impl LabelManager {
     fn extract_domain_from_label(&self, label: &str) -> String {
         label
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or(label)
             .to_lowercase()
             .replace(' ', "")
@@ -526,12 +530,12 @@ impl LabelManager {
                 let parent = parts[..parts.len() - 1].join("/");
                 hierarchy
                     .entry(parent)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(label_name.clone());
             } else {
                 hierarchy
                     .entry("ROOT".to_string())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(label_name.clone());
             }
         }
@@ -668,6 +672,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -717,6 +722,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -754,6 +760,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -799,6 +806,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -818,13 +826,17 @@ mod tests {
 
         // Low volume sender should be consolidated to generic category
         let result = consolidated.get("Low Volume Sender").unwrap();
-        assert!(result.contains("AutoManaged"), "Expected result to contain 'AutoManaged', got: {}", result);
+        assert!(
+            result.contains("AutoManaged"),
+            "Expected result to contain 'AutoManaged', got: {}",
+            result
+        );
     }
 
     #[tokio::test]
     async fn test_create_labels_for_categories() {
-        use mockall::predicate::*;
         use async_trait::async_trait;
+        use mockall::predicate::*;
 
         // Create a mock client
         mockall::mock! {
@@ -848,6 +860,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -890,13 +903,13 @@ mod tests {
             .times(1)
             .returning(|_| Ok("label-id-2".to_string()));
 
-        let mut manager = LabelManager::new(
-            Box::new(mock_client),
-            "AutoManaged".to_string(),
-        );
+        let mut manager = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
 
         let mut categories = HashMap::new();
-        categories.insert("newsletters_github".to_string(), "Newsletters/GitHub".to_string());
+        categories.insert(
+            "newsletters_github".to_string(),
+            "Newsletters/GitHub".to_string(),
+        );
         categories.insert("receipts_amazon".to_string(), "Receipts/Amazon".to_string());
 
         let result = manager.create_labels_for_categories(categories).await;
@@ -904,14 +917,20 @@ mod tests {
 
         let label_map = result.unwrap();
         assert_eq!(label_map.len(), 2);
-        assert_eq!(label_map.get("newsletters_github"), Some(&"label-id-1".to_string()));
-        assert_eq!(label_map.get("receipts_amazon"), Some(&"label-id-2".to_string()));
+        assert_eq!(
+            label_map.get("newsletters_github"),
+            Some(&"label-id-1".to_string())
+        );
+        assert_eq!(
+            label_map.get("receipts_amazon"),
+            Some(&"label-id-2".to_string())
+        );
     }
 
     #[tokio::test]
     async fn test_apply_labels_bulk() {
-        use mockall::predicate::*;
         use async_trait::async_trait;
+        use mockall::predicate::*;
 
         mockall::mock! {
             pub TestGmailClient {}
@@ -934,6 +953,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -950,10 +970,7 @@ mod tests {
             .times(1)
             .returning(|msg_ids, _, _| Ok(msg_ids.len()));
 
-        let manager = LabelManager::new(
-            Box::new(mock_client),
-            "AutoManaged".to_string(),
-        );
+        let manager = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
 
         let message_ids = vec!["msg-1".to_string(), "msg-2".to_string()];
         let result = manager.apply_labels(message_ids, "label-123", false).await;

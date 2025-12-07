@@ -32,7 +32,10 @@ async fn test_state_file_size_1k_messages() {
 
     // Print results
     println!("\n=== State File Size Test: 1,000 Messages ===");
-    println!("File size: {} bytes ({:.2} KB)", file_size_bytes, file_size_kb);
+    println!(
+        "File size: {} bytes ({:.2} KB)",
+        file_size_bytes, file_size_kb
+    );
     println!("Messages represented: 1,000");
     println!("KB per 1,000 messages: {:.2}", kb_per_1k_messages);
     println!("Target: < 5 KB per 1,000 messages");
@@ -46,7 +49,10 @@ async fn test_state_file_size_1k_messages() {
     );
 
     // Verify it's close to the README claim (~1 KB)
-    println!("\nVerdict: PASS - State file is {:.2} KB per 1,000 messages", kb_per_1k_messages);
+    println!(
+        "\nVerdict: PASS - State file is {:.2} KB per 1,000 messages",
+        kb_per_1k_messages
+    );
 }
 
 /// Test that state file size is reasonable for 10,000 messages
@@ -70,7 +76,10 @@ async fn test_state_file_size_10k_messages() {
 
     // Print results
     println!("\n=== State File Size Test: 10,000 Messages ===");
-    println!("File size: {} bytes ({:.2} KB)", file_size_bytes, file_size_kb);
+    println!(
+        "File size: {} bytes ({:.2} KB)",
+        file_size_bytes, file_size_kb
+    );
     println!("Messages represented: 10,000");
     println!("KB per 1,000 messages: {:.2}", kb_per_1k_messages);
     println!("Target: < 5 KB per 1,000 messages");
@@ -83,7 +92,10 @@ async fn test_state_file_size_10k_messages() {
         kb_per_1k_messages
     );
 
-    println!("\nVerdict: PASS - State file is {:.2} KB per 1,000 messages", kb_per_1k_messages);
+    println!(
+        "\nVerdict: PASS - State file is {:.2} KB per 1,000 messages",
+        kb_per_1k_messages
+    );
 }
 
 /// Test that state file size is reasonable for 25,000 messages and scales linearly
@@ -107,7 +119,10 @@ async fn test_state_file_size_25k_messages() {
 
     // Print results
     println!("\n=== State File Size Test: 25,000 Messages ===");
-    println!("File size: {} bytes ({:.2} KB)", file_size_bytes, file_size_kb);
+    println!(
+        "File size: {} bytes ({:.2} KB)",
+        file_size_bytes, file_size_kb
+    );
     println!("Messages represented: 25,000");
     println!("KB per 1,000 messages: {:.2}", kb_per_1k_messages);
     println!("Target: < 5 KB per 1,000 messages");
@@ -120,7 +135,10 @@ async fn test_state_file_size_25k_messages() {
         kb_per_1k_messages
     );
 
-    println!("\nVerdict: PASS - State file is {:.2} KB per 1,000 messages", kb_per_1k_messages);
+    println!(
+        "\nVerdict: PASS - State file is {:.2} KB per 1,000 messages",
+        kb_per_1k_messages
+    );
 }
 
 /// Test linear scaling across different message counts
@@ -129,23 +147,21 @@ async fn test_state_file_size_25k_messages() {
 async fn test_state_file_size_linear_scaling() {
     let temp_dir = TempDir::new().unwrap();
 
-    let test_cases = vec![
-        1_000,
-        5_000,
-        10_000,
-        15_000,
-        20_000,
-        25_000,
-    ];
+    let test_cases = vec![1_000, 5_000, 10_000, 15_000, 20_000, 25_000];
 
     println!("\n=== State File Size Linear Scaling Test ===");
-    println!("{:<15} | {:<15} | {:<15} | {:<20}", "Messages", "File Size (KB)", "File Size (B)", "KB per 1k msgs");
+    println!(
+        "{:<15} | {:<15} | {:<15} | {:<20}",
+        "Messages", "File Size (KB)", "File Size (B)", "KB per 1k msgs"
+    );
     println!("{}", "-".repeat(70));
 
     let mut ratios = Vec::new();
 
     for message_count in test_cases {
-        let state_path = temp_dir.path().join(format!("state_{}.json", message_count));
+        let state_path = temp_dir
+            .path()
+            .join(format!("state_{}.json", message_count));
 
         let mut state = ProcessingState::new();
         populate_state_for_messages(&mut state, message_count);
@@ -163,10 +179,7 @@ async fn test_state_file_size_linear_scaling() {
 
         println!(
             "{:<15} | {:<15.2} | {:<15} | {:<20.3}",
-            message_count,
-            file_size_kb,
-            file_size_bytes,
-            kb_per_1k_messages
+            message_count, file_size_kb, file_size_bytes, kb_per_1k_messages
         );
 
         // Assert individual case is reasonable
@@ -182,17 +195,18 @@ async fn test_state_file_size_linear_scaling() {
 
     // Calculate variance to verify linear scaling
     let mean_ratio: f64 = ratios.iter().sum::<f64>() / ratios.len() as f64;
-    let variance: f64 = ratios
-        .iter()
-        .map(|r| (r - mean_ratio).powi(2))
-        .sum::<f64>() / ratios.len() as f64;
+    let variance: f64 =
+        ratios.iter().map(|r| (r - mean_ratio).powi(2)).sum::<f64>() / ratios.len() as f64;
     let std_dev = variance.sqrt();
     let coefficient_of_variation = (std_dev / mean_ratio) * 100.0;
 
     println!("\nScaling Analysis:");
     println!("  Mean KB per 1k messages: {:.3}", mean_ratio);
     println!("  Standard deviation: {:.3}", std_dev);
-    println!("  Coefficient of variation: {:.2}%", coefficient_of_variation);
+    println!(
+        "  Coefficient of variation: {:.2}%",
+        coefficient_of_variation
+    );
     println!("  Target: CV < 40% (indicating reasonable scaling)");
     println!("  Note: Small message counts have higher overhead, causing higher CV");
 
@@ -215,19 +229,23 @@ async fn test_state_file_with_various_data() {
     let temp_dir = TempDir::new().unwrap();
 
     let test_scenarios = vec![
-        ("minimal", 10_000, 10, 5, 10),        // Minimal labels/filters, some failures
-        ("typical", 10_000, 50, 25, 100),      // Typical case
-        ("heavy", 10_000, 200, 100, 500),      // Many labels/filters, many failures
-        ("extreme", 10_000, 500, 250, 1000),   // High but realistic case
+        ("minimal", 10_000, 10, 5, 10), // Minimal labels/filters, some failures
+        ("typical", 10_000, 50, 25, 100), // Typical case
+        ("heavy", 10_000, 200, 100, 500), // Many labels/filters, many failures
+        ("extreme", 10_000, 500, 250, 1000), // High but realistic case
     ];
 
     println!("\n=== State File Size with Various Data Configurations ===");
-    println!("{:<12} | {:<10} | {:<8} | {:<10} | {:<10} | {:<15} | {:<15}",
-             "Scenario", "Messages", "Labels", "Filters", "Failures", "File Size (KB)", "KB per 1k msgs");
+    println!(
+        "{:<12} | {:<10} | {:<8} | {:<10} | {:<10} | {:<15} | {:<15}",
+        "Scenario", "Messages", "Labels", "Filters", "Failures", "File Size (KB)", "KB per 1k msgs"
+    );
     println!("{}", "-".repeat(100));
 
     for (scenario_name, message_count, label_count, filter_count, failure_count) in test_scenarios {
-        let state_path = temp_dir.path().join(format!("state_{}.json", scenario_name));
+        let state_path = temp_dir
+            .path()
+            .join(format!("state_{}.json", scenario_name));
 
         let mut state = ProcessingState::new();
         populate_state_with_custom_data(
@@ -294,7 +312,10 @@ async fn test_state_file_compression_info() {
     let json_obj: serde_json::Value = serde_json::from_str(&json_content).unwrap();
 
     println!("\n=== State File Structure Analysis ===");
-    println!("File size: {} bytes ({:.2} KB)", file_size_bytes, file_size_kb);
+    println!(
+        "File size: {} bytes ({:.2} KB)",
+        file_size_bytes, file_size_kb
+    );
     println!("Messages represented: 10,000");
     println!("KB per 1,000 messages: {:.2}", file_size_kb / 10.0);
     println!("\nJSON Structure:");
@@ -344,7 +365,9 @@ fn populate_state_for_messages(state: &mut ProcessingState, message_count: usize
     // Add some failed messages (roughly 1% failure rate)
     let failure_count = (message_count / 100).max(1);
     for i in 0..failure_count {
-        state.failed_message_ids.push(format!("msg_failed_{:010}", i));
+        state
+            .failed_message_ids
+            .push(format!("msg_failed_{:010}", i));
     }
 
     // Simulate some checkpoints
@@ -384,7 +407,9 @@ fn populate_state_with_custom_data(
 
     // Add failed messages
     for i in 0..failure_count {
-        state.failed_message_ids.push(format!("msg_failed_{:010}", i));
+        state
+            .failed_message_ids
+            .push(format!("msg_failed_{:010}", i));
     }
 
     // Simulate checkpoints

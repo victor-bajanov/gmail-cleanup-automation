@@ -118,12 +118,23 @@ impl ReviewSession {
     }
 
     /// Create a new review session with label ID to name mapping
-    pub fn with_label_map(clusters: Vec<EmailCluster>, label_id_to_name: HashMap<String, String>) -> Self {
-        Self::with_exclusions(clusters, label_id_to_name, PathBuf::from(".gmail-automation/exclusions.json"))
+    pub fn with_label_map(
+        clusters: Vec<EmailCluster>,
+        label_id_to_name: HashMap<String, String>,
+    ) -> Self {
+        Self::with_exclusions(
+            clusters,
+            label_id_to_name,
+            PathBuf::from(".gmail-automation/exclusions.json"),
+        )
     }
 
     /// Create a new review session with custom exclusions path
-    pub fn with_exclusions(mut clusters: Vec<EmailCluster>, label_id_to_name: HashMap<String, String>, exclusions_path: PathBuf) -> Self {
+    pub fn with_exclusions(
+        mut clusters: Vec<EmailCluster>,
+        label_id_to_name: HashMap<String, String>,
+        exclusions_path: PathBuf,
+    ) -> Self {
         // Resolve existing filter label IDs to names
         for cluster in &mut clusters {
             if let Some(label_id) = &cluster.existing_filter_label_id {
@@ -135,15 +146,13 @@ impl ReviewSession {
         clusters.sort_by_key(|c| if c.existing_filter_id.is_some() { 0 } else { 1 });
 
         // Count existing filters for Shift+S navigation
-        let existing_filter_count = clusters.iter()
+        let existing_filter_count = clusters
+            .iter()
             .filter(|c| c.existing_filter_id.is_some())
             .count();
 
         // Extract unique suggested labels for the label picker
-        let mut labels: Vec<String> = clusters
-            .iter()
-            .map(|c| c.suggested_label.clone())
-            .collect();
+        let mut labels: Vec<String> = clusters.iter().map(|c| c.suggested_label.clone()).collect();
         labels.sort();
         labels.dedup();
 
@@ -189,11 +198,17 @@ impl ReviewSession {
 
         loop {
             // Clear screen and display current cluster
-            execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))
-                .map_err(|e| GmailError::Unknown(format!("Terminal error: {}", e)))?;
+            execute!(
+                stdout,
+                terminal::Clear(ClearType::All),
+                cursor::MoveTo(0, 0)
+            )
+            .map_err(|e| GmailError::Unknown(format!("Terminal error: {}", e)))?;
 
             self.display_current(&mut stdout)?;
-            stdout.flush().map_err(|e| GmailError::Unknown(e.to_string()))?;
+            stdout
+                .flush()
+                .map_err(|e| GmailError::Unknown(e.to_string()))?;
 
             // Wait for key input
             // Only handle Press events to avoid key bounce on Windows
@@ -251,15 +266,17 @@ impl ReviewSession {
             .map(|i| if i < filled { '█' } else { '░' })
             .collect();
 
-        let top    = format!("┌{}┐", "─".repeat(w + 2));
-        let mid    = format!("├{}┤", "─".repeat(w + 2));
+        let top = format!("┌{}┐", "─".repeat(w + 2));
+        let mid = format!("├{}┤", "─".repeat(w + 2));
         let bottom = format!("└{}┘", "─".repeat(w + 2));
 
         out!("{}", top);
         let new_count = total - self.existing_filter_count;
         let progress_text = if self.existing_filter_count > 0 {
-            format!("Progress: [{}] {:>3}/{:<3} clusters ({} existing, {} new)",
-                bar, reviewed, total, self.existing_filter_count, new_count)
+            format!(
+                "Progress: [{}] {:>3}/{:<3} clusters ({} existing, {} new)",
+                bar, reviewed, total, self.existing_filter_count, new_count
+            )
         } else {
             format!("Progress: [{}] {:>3}/{:<3} clusters", bar, reviewed, total)
         };
@@ -275,7 +292,10 @@ impl ReviewSession {
             out!("{}", line(&format!("  Reviewed: {:>4}", reviewed)));
             out!("{}", line(&format!("  Deferred: {:>4}", deferred)));
             out!("{}", line(""));
-            out!("{}", line("Press [W] to write changes, [Q] to quit without saving"));
+            out!(
+                "{}",
+                line("Press [W] to write changes, [Q] to quit without saving")
+            );
         } else {
             let cluster = &self.clusters[self.current_index];
             let archive_status = if cluster.should_archive { "YES" } else { "NO" };
@@ -293,7 +313,8 @@ impl ReviewSession {
             } else if cluster.excluded_senders.is_empty() {
                 format!("from:(*@{})", cluster.sender_domain)
             } else {
-                let exclusions = cluster.excluded_senders
+                let exclusions = cluster
+                    .excluded_senders
                     .iter()
                     .map(|s| format!("-from:({})", s))
                     .collect::<Vec<_>>()
@@ -308,22 +329,45 @@ impl ReviewSession {
             } else if cluster.is_specific_sender {
                 format!("{} (specific sender)", cluster.sender_email)
             } else if !cluster.excluded_senders.is_empty() {
-                format!("*@{} (excl. {} senders)", cluster.sender_domain, cluster.excluded_senders.len())
+                format!(
+                    "*@{} (excl. {} senders)",
+                    cluster.sender_domain,
+                    cluster.excluded_senders.len()
+                )
             } else {
                 format!("*@{}", cluster.sender_domain)
             };
 
             // Truncation lengths scale with width
-            let name_max = w.saturating_sub(22);  // "CLUSTER: " + " (XX emails)"
+            let name_max = w.saturating_sub(22); // "CLUSTER: " + " (XX emails)"
             let query_max = w.saturating_sub(12); // "  Query:   "
             let label_max = w.saturating_sub(12); // "  Label:   "
             let subject_max = w.saturating_sub(6); // "  • "
 
-            out!("{}", line(&format!("CLUSTER: {} ({} emails)", truncate_str(&cluster_name, name_max), cluster.email_count())));
+            out!(
+                "{}",
+                line(&format!(
+                    "CLUSTER: {} ({} emails)",
+                    truncate_str(&cluster_name, name_max),
+                    cluster.email_count()
+                ))
+            );
             out!("{}", mid);
             out!("{}", line("Proposed filter rule:"));
-            out!("{}", line(&format!("  Query:   {}", truncate_str(&filter_query, query_max))));
-            out!("{}", line(&format!("  Label:   {}", truncate_str(&cluster.suggested_label, label_max))));
+            out!(
+                "{}",
+                line(&format!(
+                    "  Query:   {}",
+                    truncate_str(&filter_query, query_max)
+                ))
+            );
+            out!(
+                "{}",
+                line(&format!(
+                    "  Label:   {}",
+                    truncate_str(&cluster.suggested_label, label_max)
+                ))
+            );
             out!("{}", line(&format!("  Archive: {}", archive_status)));
             out!("{}", mid);
             out!("{}", line("Sample subjects:"));
@@ -343,26 +387,56 @@ impl ReviewSession {
             // Show existing filter comparison if applicable
             if cluster.existing_filter_id.is_some() {
                 let current_label = cluster.existing_filter_label.as_deref().unwrap_or("(none)");
-                let current_archive = if cluster.existing_filter_archive.unwrap_or(false) { "YES" } else { "NO" };
+                let current_archive = if cluster.existing_filter_archive.unwrap_or(false) {
+                    "YES"
+                } else {
+                    "NO"
+                };
 
                 // Format with colors based on differences
-                let (cur_label, prop_label) = format_field_pair(current_label, &cluster.suggested_label, colors::RED);
-                let (cur_archive, prop_archive) = format_field_pair(current_archive, archive_status, colors::BLUE);
+                let (cur_label, prop_label) =
+                    format_field_pair(current_label, &cluster.suggested_label, colors::RED);
+                let (cur_archive, prop_archive) =
+                    format_field_pair(current_archive, archive_status, colors::BLUE);
 
-                out!("{}", line("⚠ EXISTING FILTER - [S] keeps current, [Y] updates to proposed"));
+                out!(
+                    "{}",
+                    line("⚠ EXISTING FILTER - [S] keeps current, [Y] updates to proposed")
+                );
                 out!("{}", mid);
                 // Note: line() doesn't account for ANSI codes in length, so we format manually
-                let cur_line = format!("  Current:  Label: {:30}  Archive: {}", cur_label, cur_archive);
-                let prop_line = format!("  Proposed: Label: {:30}  Archive: {}", prop_label, prop_archive);
+                let cur_line = format!(
+                    "  Current:  Label: {:30}  Archive: {}",
+                    cur_label, cur_archive
+                );
+                let prop_line = format!(
+                    "  Proposed: Label: {:30}  Archive: {}",
+                    prop_label, prop_archive
+                );
                 out!("{}", line(&cur_line));
                 out!("{}", line(&prop_line));
                 out!("{}", mid);
-                out!("{}", line("[Y] Update filter  [N] Keep as-is  [S] Skip (keep current)"));
-                out!("{}", line("[D] DELETE filter  [E] Exclude permanently  [?] Help"));
-                out!("{}", line("[A] Toggle archive [L] Change label  [Shift+S] Skip all existing"));
+                out!(
+                    "{}",
+                    line("[Y] Update filter  [N] Keep as-is  [S] Skip (keep current)")
+                );
+                out!(
+                    "{}",
+                    line("[D] DELETE filter  [E] Exclude permanently  [?] Help")
+                );
+                out!(
+                    "{}",
+                    line("[A] Toggle archive [L] Change label  [Shift+S] Skip all existing")
+                );
             } else {
-                out!("{}", line("[Y] Create filter  [N] No filter  [S] Skip for now"));
-                out!("{}", line("[E] Exclude permanently  [A] Toggle archive  [L] Label"));
+                out!(
+                    "{}",
+                    line("[Y] Create filter  [N] No filter  [S] Skip for now")
+                );
+                out!(
+                    "{}",
+                    line("[E] Exclude permanently  [A] Toggle archive  [L] Label")
+                );
                 out!("{}", line("[?] Help"));
             }
         }
@@ -447,9 +521,7 @@ impl ReviewSession {
                 self.show_help()?;
                 Ok(SessionAction::Continue)
             }
-            KeyCode::Char('q') => {
-                Ok(SessionAction::Quit)
-            }
+            KeyCode::Char('q') => Ok(SessionAction::Quit),
             KeyCode::Char('w') | KeyCode::Char('W') => {
                 if self.current_index >= self.clusters.len() {
                     Ok(SessionAction::Finish)
@@ -609,7 +681,8 @@ impl ReviewSession {
                 let key = Self::cluster_key(cluster);
                 if let Some(decision) = self.decisions.get_mut(&key) {
                     // Check if archive setting changed from original
-                    let archive_changed = cluster.existing_filter_archive
+                    let archive_changed = cluster
+                        .existing_filter_archive
                         .map(|orig| orig != cluster.should_archive)
                         .unwrap_or(false);
                     decision.needs_filter_update = archive_changed;
@@ -668,14 +741,17 @@ impl ReviewSession {
                         });
 
                         // Check if label or archive changed from original
-                        let label_changed = cluster.existing_filter_label
+                        let label_changed = cluster
+                            .existing_filter_label
                             .as_ref()
                             .map(|orig| orig != &label)
                             .unwrap_or(false);
-                        let archive_changed = cluster.existing_filter_archive
+                        let archive_changed = cluster
+                            .existing_filter_archive
                             .map(|orig| orig != cluster.should_archive)
                             .unwrap_or(false);
-                        let needs_update = cluster.existing_filter_id.is_some() && (label_changed || archive_changed);
+                        let needs_update = cluster.existing_filter_id.is_some()
+                            && (label_changed || archive_changed);
 
                         let decision = ClusterDecision {
                             sender_domain: cluster.sender_domain.clone(),
@@ -737,8 +813,12 @@ impl ReviewSession {
         while self.current_index < self.clusters.len() {
             let cluster = &self.clusters[self.current_index];
             let key = Self::cluster_key(cluster);
-            if !self.decisions.contains_key(&key) ||
-               matches!(self.decisions.get(&key).map(|d| &d.action), Some(DecisionAction::Skip)) {
+            if !self.decisions.contains_key(&key)
+                || matches!(
+                    self.decisions.get(&key).map(|d| &d.action),
+                    Some(DecisionAction::Skip)
+                )
+            {
                 break;
             }
             self.current_index += 1;
@@ -771,7 +851,12 @@ impl ReviewSession {
 
     fn show_help(&self) -> Result<()> {
         let _ = terminal::disable_raw_mode();
-        let _ = execute!(io::stdout(), cursor::Show, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0));
+        let _ = execute!(
+            io::stdout(),
+            cursor::Show,
+            terminal::Clear(ClearType::All),
+            cursor::MoveTo(0, 0)
+        );
 
         let w = get_display_width();
         let line = |content: &str| {
@@ -871,7 +956,12 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", s.chars().take(max_len.saturating_sub(3)).collect::<String>())
+        format!(
+            "{}...",
+            s.chars()
+                .take(max_len.saturating_sub(3))
+                .collect::<String>()
+        )
     }
 }
 
@@ -907,7 +997,8 @@ fn format_field_pair(current: &str, proposed: &str, differ_color: &str) -> (Stri
 /// 1. First, create narrow clusters for repeated subject + sender combinations
 /// 2. Then create specific sender clusters (for senders with enough emails)
 /// 3. Finally, create domain-wide clusters for remaining emails
-/// This ensures automated emails with consistent subjects get their own granular filters.
+///
+///    This ensures automated emails with consistent subjects get their own granular filters.
 pub fn create_clusters(
     _messages: &[MessageMetadata],
     classifications: &[(MessageMetadata, Classification)],
@@ -927,7 +1018,8 @@ pub fn create_clusters(
     // Step 2: For each domain, do hierarchical clustering
     for (domain, domain_msgs) in domain_map {
         // Group by specific sender email within this domain
-        let mut sender_map: HashMap<String, Vec<(&MessageMetadata, &Classification)>> = HashMap::new();
+        let mut sender_map: HashMap<String, Vec<(&MessageMetadata, &Classification)>> =
+            HashMap::new();
         for (msg, class) in &domain_msgs {
             sender_map
                 .entry(msg.sender_email.clone())
@@ -944,7 +1036,8 @@ pub fn create_clusters(
             // Step 3a: Try to detect repeated subject patterns within this sender
             let subject_patterns = detect_subject_patterns(&sender_msgs, min_emails);
 
-            let mut sender_remaining: Vec<(&MessageMetadata, &Classification)> = sender_msgs.clone();
+            let mut sender_remaining: Vec<(&MessageMetadata, &Classification)> =
+                sender_msgs.clone();
 
             // Create clusters for subject patterns that meet threshold
             for (pattern, pattern_msgs) in subject_patterns {
@@ -953,7 +1046,7 @@ pub fn create_clusters(
                     let cluster = build_cluster_with_subject(
                         &domain,
                         &sender_email,
-                        true, // is_specific_sender
+                        true,   // is_specific_sender
                         vec![], // no exclusions
                         Some(pattern.clone()),
                         &pattern_msgs,
@@ -961,7 +1054,8 @@ pub fn create_clusters(
                     clusters.push(cluster);
 
                     // Remove these messages from sender_remaining
-                    let pattern_ids: HashSet<String> = pattern_msgs.iter().map(|(m, _)| m.id.clone()).collect();
+                    let pattern_ids: HashSet<String> =
+                        pattern_msgs.iter().map(|(m, _)| m.id.clone()).collect();
                     sender_remaining.retain(|(m, _)| !pattern_ids.contains(&m.id));
                 }
             }
@@ -974,7 +1068,7 @@ pub fn create_clusters(
                 let cluster = build_cluster(
                     &domain,
                     &sender_email,
-                    true, // is_specific_sender
+                    true,   // is_specific_sender
                     vec![], // no exclusions for specific sender clusters
                     &sender_remaining,
                 );
@@ -989,8 +1083,8 @@ pub fn create_clusters(
         if remaining_msgs.len() >= min_emails {
             let cluster = build_cluster(
                 &domain,
-                "", // no specific sender
-                false, // is domain cluster
+                "",                       // no specific sender
+                false,                    // is domain cluster
                 specific_senders.clone(), // exclude specific senders that have their own clusters
                 &remaining_msgs,
             );
@@ -1024,16 +1118,15 @@ fn detect_subject_patterns<'a>(
     msgs: &[(&'a MessageMetadata, &'a Classification)],
     min_threshold: usize,
 ) -> HashMap<String, Vec<(&'a MessageMetadata, &'a Classification)>> {
-    let mut pattern_map: HashMap<String, Vec<(&'a MessageMetadata, &'a Classification)>> = HashMap::new();
+    let mut pattern_map: HashMap<String, Vec<(&'a MessageMetadata, &'a Classification)>> =
+        HashMap::new();
 
     // Group by exact subject match first
-    let mut subject_groups: HashMap<String, Vec<(&'a MessageMetadata, &'a Classification)>> = HashMap::new();
+    let mut subject_groups: HashMap<String, Vec<(&'a MessageMetadata, &'a Classification)>> =
+        HashMap::new();
     for item in msgs {
         let subject = normalize_subject(&item.0.subject);
-        subject_groups
-            .entry(subject)
-            .or_default()
-            .push(*item);
+        subject_groups.entry(subject).or_default().push(*item);
     }
 
     // Only keep subjects that appear frequently enough
@@ -1082,7 +1175,14 @@ fn build_cluster(
     excluded_senders: Vec<String>,
     msgs: &[(&MessageMetadata, &Classification)],
 ) -> EmailCluster {
-    build_cluster_with_subject(domain, sender_email, is_specific_sender, excluded_senders, None, msgs)
+    build_cluster_with_subject(
+        domain,
+        sender_email,
+        is_specific_sender,
+        excluded_senders,
+        None,
+        msgs,
+    )
 }
 
 /// Build a single email cluster from a set of messages (with optional subject pattern)
@@ -1103,7 +1203,8 @@ fn build_cluster_with_subject(
         .collect();
 
     // Calculate average confidence
-    let avg_confidence: f32 = msgs.iter().map(|(_, c)| c.confidence).sum::<f32>() / msgs.len() as f32;
+    let avg_confidence: f32 =
+        msgs.iter().map(|(_, c)| c.confidence).sum::<f32>() / msgs.len() as f32;
 
     // Use most common category
     let mut category_counts: HashMap<EmailCategory, usize> = HashMap::new();
@@ -1241,14 +1342,20 @@ mod tests {
 
         // Verify one cluster is for QNAP notifications
         let qnap_cluster = clusters.iter().find(|c| {
-            c.subject_pattern.as_ref().map(|s| s.contains("QNAP")).unwrap_or(false)
+            c.subject_pattern
+                .as_ref()
+                .map(|s| s.contains("QNAP"))
+                .unwrap_or(false)
         });
         assert!(qnap_cluster.is_some());
         assert_eq!(qnap_cluster.unwrap().email_count(), 3);
 
         // Verify one cluster is for backup reports
         let backup_cluster = clusters.iter().find(|c| {
-            c.subject_pattern.as_ref().map(|s| s.contains("Backup")).unwrap_or(false)
+            c.subject_pattern
+                .as_ref()
+                .map(|s| s.contains("Backup"))
+                .unwrap_or(false)
         });
         assert!(backup_cluster.is_some());
         assert_eq!(backup_cluster.unwrap().email_count(), 3);
@@ -1280,7 +1387,10 @@ mod tests {
 
         // First should be subject-based (more specific)
         assert!(clusters[0].subject_pattern.is_some());
-        assert_eq!(clusters[0].subject_pattern.as_ref().unwrap(), "System Alert");
+        assert_eq!(
+            clusters[0].subject_pattern.as_ref().unwrap(),
+            "System Alert"
+        );
         assert_eq!(clusters[0].email_count(), 3);
 
         // Second should be sender-based (no subject pattern)
@@ -1314,7 +1424,10 @@ mod tests {
 
         // No prefix
         assert_eq!(normalize_subject("Normal Subject"), "Normal Subject");
-        assert_eq!(normalize_subject("Reply to your message"), "Reply to your message");
+        assert_eq!(
+            normalize_subject("Reply to your message"),
+            "Reply to your message"
+        );
     }
 
     #[test]

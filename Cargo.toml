@@ -1,6 +1,6 @@
 [package]
 name = "gmail-automation"
-version = "0.4.4"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.70"
 license = "MIT"
@@ -31,11 +31,11 @@ toml = "0.8"
 
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
+httpdate = "1.0"
 
 # Error handling
 anyhow = "1"
 thiserror = "1"
-backoff = { version = "0.4", features = ["tokio"] }
 
 # Logging
 tracing = "0.1"

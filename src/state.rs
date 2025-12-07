@@ -135,14 +135,15 @@ impl ProcessingState {
 
     /// Check if the run can be resumed
     pub fn can_resume(&self) -> bool {
-        !self.completed && matches!(
-            self.phase,
-            ProcessingPhase::Scanning
-                | ProcessingPhase::Classifying
-                | ProcessingPhase::CreatingLabels
-                | ProcessingPhase::CreatingFilters
-                | ProcessingPhase::ApplyingLabels
-        )
+        !self.completed
+            && matches!(
+                self.phase,
+                ProcessingPhase::Scanning
+                    | ProcessingPhase::Classifying
+                    | ProcessingPhase::CreatingLabels
+                    | ProcessingPhase::CreatingFilters
+                    | ProcessingPhase::ApplyingLabels
+            )
     }
 
     /// Get progress percentage
@@ -396,10 +397,7 @@ mod tests {
 
         // Verify persistence
         let loaded_state = ProcessingState::load(&state_path).await.unwrap();
-        assert!(matches!(
-            loaded_state.phase,
-            ProcessingPhase::Classifying
-        ));
+        assert!(matches!(loaded_state.phase, ProcessingPhase::Classifying));
     }
 
     #[tokio::test]
@@ -491,7 +489,9 @@ mod tests {
 
         let loaded_state = ProcessingState::load(&state_path).await.unwrap();
         assert_eq!(loaded_state.failed_message_ids.len(), 3);
-        assert!(loaded_state.failed_message_ids.contains(&"msg1".to_string()));
+        assert!(loaded_state
+            .failed_message_ids
+            .contains(&"msg1".to_string()));
     }
 
     #[tokio::test]
@@ -632,7 +632,7 @@ mod tests {
 
         for phase in phases {
             let json = serde_json::to_string(&phase).unwrap();
-            let deserialized: ProcessingPhase = serde_json::from_str(&json).unwrap();
+            let _deserialized: ProcessingPhase = serde_json::from_str(&json).unwrap();
             // Since we can't derive PartialEq on ProcessingPhase, just check serialization works
             assert!(!json.is_empty());
         }
@@ -659,7 +659,7 @@ mod tests {
 
         for op in operations {
             let json = serde_json::to_string(&op).unwrap();
-            let deserialized: RollbackOperation = serde_json::from_str(&json).unwrap();
+            let _deserialized: RollbackOperation = serde_json::from_str(&json).unwrap();
             assert!(!json.is_empty());
         }
     }

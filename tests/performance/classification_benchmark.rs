@@ -36,7 +36,11 @@ fn test_classification_baseline_10k() {
     // Generate test data
     println!("Generating 10,000 mock emails...");
     let messages = generate_mock_emails(10_000);
-    assert_eq!(messages.len(), 10_000, "Should generate exactly 10,000 messages");
+    assert_eq!(
+        messages.len(),
+        10_000,
+        "Should generate exactly 10,000 messages"
+    );
 
     // Create classifier
     let classifier = EmailClassifier::new("auto".to_string());
@@ -66,7 +70,8 @@ fn test_classification_baseline_10k() {
 
     // Print results
     println!("{}", format_benchmark_result(messages.len(), duration));
-    println!("  Success rate: {}/{} ({}%)",
+    println!(
+        "  Success rate: {}/{} ({}%)",
         success_count,
         messages.len(),
         (success_count as f64 / messages.len() as f64 * 100.0) as u32
@@ -126,7 +131,8 @@ fn test_classification_stress_15k() {
 
     // Print results
     println!("{}", format_benchmark_result(messages.len(), duration));
-    println!("  Success rate: {}/{} ({}%)",
+    println!(
+        "  Success rate: {}/{} ({}%)",
         success_count,
         messages.len(),
         (success_count as f64 / messages.len() as f64 * 100.0) as u32
@@ -182,7 +188,8 @@ fn test_classification_extreme_25k() {
 
     // Print results
     println!("{}", format_benchmark_result(messages.len(), duration));
-    println!("  Success rate: {}/{} ({}%)",
+    println!(
+        "  Success rate: {}/{} ({}%)",
         success_count,
         messages.len(),
         (success_count as f64 / messages.len() as f64 * 100.0) as u32
@@ -221,7 +228,8 @@ fn test_classification_category_distribution() {
     let start = Instant::now();
 
     for message in &messages {
-        let classification = classifier.classify(message)
+        let classification = classifier
+            .classify(message)
             .expect("Classification should succeed");
 
         let category_name = format!("{:?}", classification.category);
@@ -267,13 +275,15 @@ fn test_classification_consistency() {
     let mut second_results = Vec::new();
 
     for message in &messages {
-        let result1 = classifier.classify(message)
+        let result1 = classifier
+            .classify(message)
             .expect("First classification should succeed");
         first_results.push(result1);
     }
 
     for message in &messages {
-        let result2 = classifier.classify(message)
+        let result2 = classifier
+            .classify(message)
             .expect("Second classification should succeed");
         second_results.push(result2);
     }
@@ -283,13 +293,19 @@ fn test_classification_consistency() {
     for (r1, r2) in first_results.iter().zip(second_results.iter()) {
         if r1.category == r2.category
             && r1.suggested_label == r2.suggested_label
-            && r1.should_archive == r2.should_archive {
+            && r1.should_archive == r2.should_archive
+        {
             consistent_count += 1;
         }
     }
 
     let consistency_rate = (consistent_count as f64 / messages.len() as f64) * 100.0;
-    println!("\nConsistency: {}/{} ({:.1}%)", consistent_count, messages.len(), consistency_rate);
+    println!(
+        "\nConsistency: {}/{} ({:.1}%)",
+        consistent_count,
+        messages.len(),
+        consistency_rate
+    );
 
     // Should be 100% consistent (deterministic)
     assert_eq!(

@@ -39,10 +39,26 @@ unsafe impl GlobalAlloc for TrackingAllocator {
             eprintln!("\n\n========================================");
             eprintln!("MEMORY LIMIT EXCEEDED!");
             eprintln!("========================================");
-            eprintln!("Attempted allocation: {} bytes ({:.2} MB)", size, size as f64 / 1024.0 / 1024.0);
-            eprintln!("Current total: {} bytes ({:.2} GB)", new, new as f64 / 1024.0 / 1024.0 / 1024.0);
-            eprintln!("Limit: {} bytes ({:.2} GB)", MEMORY_LIMIT, MEMORY_LIMIT as f64 / 1024.0 / 1024.0 / 1024.0);
-            eprintln!("Peak before this: {} bytes ({:.2} GB)", peak, peak as f64 / 1024.0 / 1024.0 / 1024.0);
+            eprintln!(
+                "Attempted allocation: {} bytes ({:.2} MB)",
+                size,
+                size as f64 / 1024.0 / 1024.0
+            );
+            eprintln!(
+                "Current total: {} bytes ({:.2} GB)",
+                new,
+                new as f64 / 1024.0 / 1024.0 / 1024.0
+            );
+            eprintln!(
+                "Limit: {} bytes ({:.2} GB)",
+                MEMORY_LIMIT,
+                MEMORY_LIMIT as f64 / 1024.0 / 1024.0 / 1024.0
+            );
+            eprintln!(
+                "Peak before this: {} bytes ({:.2} GB)",
+                peak,
+                peak as f64 / 1024.0 / 1024.0 / 1024.0
+            );
             eprintln!("========================================\n");
 
             // Undo the allocation tracking since we're about to fail
@@ -75,7 +91,12 @@ unsafe impl GlobalAlloc for TrackingAllocator {
             // Update peak
             let mut peak = PEAK.load(Ordering::SeqCst);
             while new_total > peak {
-                match PEAK.compare_exchange_weak(peak, new_total, Ordering::SeqCst, Ordering::SeqCst) {
+                match PEAK.compare_exchange_weak(
+                    peak,
+                    new_total,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
                     Ok(_) => break,
                     Err(p) => peak = p,
                 }
@@ -86,8 +107,16 @@ unsafe impl GlobalAlloc for TrackingAllocator {
                 eprintln!("MEMORY LIMIT EXCEEDED IN REALLOC!");
                 eprintln!("========================================");
                 eprintln!("Realloc from {} to {} bytes", old_size, new_size);
-                eprintln!("Current total: {} bytes ({:.2} GB)", new_total, new_total as f64 / 1024.0 / 1024.0 / 1024.0);
-                eprintln!("Limit: {} bytes ({:.2} GB)", MEMORY_LIMIT, MEMORY_LIMIT as f64 / 1024.0 / 1024.0 / 1024.0);
+                eprintln!(
+                    "Current total: {} bytes ({:.2} GB)",
+                    new_total,
+                    new_total as f64 / 1024.0 / 1024.0 / 1024.0
+                );
+                eprintln!(
+                    "Limit: {} bytes ({:.2} GB)",
+                    MEMORY_LIMIT,
+                    MEMORY_LIMIT as f64 / 1024.0 / 1024.0 / 1024.0
+                );
                 eprintln!("========================================\n");
 
                 ALLOCATED.fetch_sub(diff, Ordering::SeqCst);

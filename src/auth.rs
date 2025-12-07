@@ -54,14 +54,12 @@ pub async fn validate_token_scopes(token_cache_path: &Path) -> Result<bool> {
     if let Some(arr) = token_data.as_array() {
         for entry in arr {
             if let Some(scopes_arr) = entry.get("scopes").and_then(|s| s.as_array()) {
-                let cached_scopes: Vec<&str> = scopes_arr
-                    .iter()
-                    .filter_map(|s| s.as_str())
-                    .collect();
+                let cached_scopes: Vec<&str> =
+                    scopes_arr.iter().filter_map(|s| s.as_str()).collect();
 
-                let has_all_scopes = REQUIRED_SCOPES.iter().all(|required| {
-                    cached_scopes.iter().any(|cached| cached == required)
-                });
+                let has_all_scopes = REQUIRED_SCOPES
+                    .iter()
+                    .all(|required| cached_scopes.iter().any(|cached| cached == required));
 
                 if has_all_scopes {
                     info!("Cached token has all required scopes");
@@ -75,9 +73,9 @@ pub async fn validate_token_scopes(token_cache_path: &Path) -> Result<bool> {
         for (scope_key, _token_info) in obj {
             let cached_scopes: Vec<&str> = scope_key.split(' ').collect();
 
-            let has_all_scopes = REQUIRED_SCOPES.iter().all(|required| {
-                cached_scopes.iter().any(|cached| cached == required)
-            });
+            let has_all_scopes = REQUIRED_SCOPES
+                .iter()
+                .all(|required| cached_scopes.iter().any(|cached| cached == required));
 
             if has_all_scopes {
                 info!("Cached token has all required scopes");
@@ -88,12 +86,16 @@ pub async fn validate_token_scopes(token_cache_path: &Path) -> Result<bool> {
 
     // No token with all required scopes found
     let required_list = REQUIRED_SCOPES.join(", ");
-    warn!("Cached token is missing required scopes. Required: {}", required_list);
+    warn!(
+        "Cached token is missing required scopes. Required: {}",
+        required_list
+    );
     Ok(false)
 }
 
 /// Type alias for Gmail Hub to simplify type signatures
-pub type GmailHub = Gmail<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>>;
+pub type GmailHub =
+    Gmail<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>>;
 
 /// Authenticate and initialize Gmail API hub with OAuth2
 ///
@@ -106,10 +108,7 @@ pub type GmailHub = Gmail<hyper_rustls::HttpsConnector<hyper_util::client::legac
 ///
 /// # Returns
 /// A configured Gmail hub ready for API calls
-pub async fn authenticate(
-    credentials_path: &Path,
-    token_cache_path: &Path,
-) -> Result<GmailHub> {
+pub async fn authenticate(credentials_path: &Path, token_cache_path: &Path) -> Result<GmailHub> {
     initialize_gmail_hub(credentials_path, token_cache_path).await
 }
 
@@ -144,8 +143,7 @@ pub async fn get_gmail_hub() -> Result<GmailHub> {
 pub async fn initialize_gmail_hub(
     credentials_path: &Path,
     token_cache_path: &Path,
-) -> Result<GmailHub>
-{
+) -> Result<GmailHub> {
     // Check if existing token has all required scopes
     // If not, delete it to force re-authentication with correct scopes
     if token_cache_path.exists() {
@@ -160,7 +158,10 @@ pub async fn initialize_gmail_hub(
                 }
             }
             Err(e) => {
-                warn!("Failed to validate token scopes: {}, will try to use existing token", e);
+                warn!(
+                    "Failed to validate token scopes: {}, will try to use existing token",
+                    e
+                );
             }
         }
     }
@@ -197,9 +198,7 @@ pub async fn initialize_gmail_hub(
         .build(
             hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
-                .map_err(|e| {
-                    GmailError::AuthError(format!("Failed to load TLS roots: {}", e))
-                })?
+                .map_err(|e| GmailError::AuthError(format!("Failed to load TLS roots: {}", e)))?
                 .https_or_http()
                 .enable_http1()
                 .build(),
@@ -255,8 +254,8 @@ pub fn load_credentials_from_env() -> Result<ApplicationSecret> {
         .map_err(|_| GmailError::ConfigError("GMAIL_CLIENT_ID not set".to_string()))?;
     let client_secret = env::var("GMAIL_CLIENT_SECRET")
         .map_err(|_| GmailError::ConfigError("GMAIL_CLIENT_SECRET not set".to_string()))?;
-    let redirect_uri = env::var("GMAIL_REDIRECT_URI")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let redirect_uri =
+        env::var("GMAIL_REDIRECT_URI").unwrap_or_else(|_| "http://localhost:8080".to_string());
 
     Ok(ApplicationSecret {
         client_id,
@@ -375,8 +374,7 @@ mod tests {
         assert_eq!(REQUIRED_SCOPES.len(), 3);
         assert!(REQUIRED_SCOPES.contains(&"https://www.googleapis.com/auth/gmail.modify"));
         assert!(REQUIRED_SCOPES.contains(&"https://www.googleapis.com/auth/gmail.labels"));
-        assert!(REQUIRED_SCOPES
-            .contains(&"https://www.googleapis.com/auth/gmail.settings.basic"));
+        assert!(REQUIRED_SCOPES.contains(&"https://www.googleapis.com/auth/gmail.settings.basic"));
 
         assert_eq!(READONLY_SCOPES.len(), 1);
         assert!(READONLY_SCOPES.contains(&"https://www.googleapis.com/auth/gmail.readonly"));
@@ -411,7 +409,9 @@ mod tests {
             }
         }]"#;
 
-        tokio::fs::write(temp_file.path(), token_json).await.unwrap();
+        tokio::fs::write(temp_file.path(), token_json)
+            .await
+            .unwrap();
 
         let result = validate_token_scopes(temp_file.path()).await;
         assert!(result.is_ok());
@@ -431,7 +431,9 @@ mod tests {
             }
         }"#;
 
-        tokio::fs::write(temp_file.path(), token_json).await.unwrap();
+        tokio::fs::write(temp_file.path(), token_json)
+            .await
+            .unwrap();
 
         let result = validate_token_scopes(temp_file.path()).await;
         assert!(result.is_ok());
@@ -454,7 +456,9 @@ mod tests {
             }
         }]"#;
 
-        tokio::fs::write(temp_file.path(), token_json).await.unwrap();
+        tokio::fs::write(temp_file.path(), token_json)
+            .await
+            .unwrap();
 
         let result = validate_token_scopes(temp_file.path()).await;
         assert!(result.is_ok());
@@ -465,7 +469,9 @@ mod tests {
     async fn test_validate_token_scopes_invalid_json() {
         let temp_file = NamedTempFile::new().unwrap();
 
-        tokio::fs::write(temp_file.path(), "not valid json").await.unwrap();
+        tokio::fs::write(temp_file.path(), "not valid json")
+            .await
+            .unwrap();
 
         let result = validate_token_scopes(temp_file.path()).await;
         assert!(result.is_err()); // Should return error for invalid JSON

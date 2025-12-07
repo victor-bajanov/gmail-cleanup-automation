@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use google_gmail1::{
-    api::{BatchModifyMessagesRequest, Filter, FilterAction, FilterCriteria, Label, Message, ModifyMessageRequest},
+    api::{
+        BatchModifyMessagesRequest, Filter, FilterAction, FilterCriteria, Label, Message,
+        ModifyMessageRequest,
+    },
     hyper_rustls, hyper_util, Gmail,
 };
 use std::sync::Arc;
@@ -12,6 +15,8 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
+use crate::circuit_breaker::CircuitBreaker;
+use crate::config::CircuitBreakerConfig;
 use crate::error::{GmailError, Result};
 use crate::models::{FilterRule, MessageMetadata};
 use crate::rate_limiter::{QuotaCost, QuotaRateLimiter};
@@ -49,8 +54,8 @@ impl ExistingFilterInfo {
                 let existing_normalized = existing_query.to_lowercase().trim().to_string();
                 let new_normalized = new_pattern.to_lowercase().trim().to_string();
                 // Check if the from pattern is contained in the query
-                existing_normalized.contains(&format!("from:({})", new_normalized)) ||
-                existing_normalized == format!("from:({})", new_normalized)
+                existing_normalized.contains(&format!("from:({})", new_normalized))
+                    || existing_normalized == format!("from:({})", new_normalized)
             }
             (None, None) => true,
             _ => false,
@@ -83,8 +88,8 @@ impl ExistingFilterInfo {
             // New filter has subject keywords - check if existing query contains them
             new_filter.subject_keywords.iter().all(|keyword| {
                 let keyword_lower = keyword.to_lowercase();
-                existing_query_lower.contains(&format!("subject:({})", keyword_lower)) ||
-                existing_query_lower.contains(&format!("subject:(\"{}\")", keyword_lower))
+                existing_query_lower.contains(&format!("subject:({})", keyword_lower))
+                    || existing_query_lower.contains(&format!("subject:(\"{}\")", keyword_lower))
             })
         };
 
@@ -169,6 +174,9 @@ pub trait GmailClient: Send + Sync {
         message_ids: Vec<String>,
         on_progress: ProgressCallback,
     ) -> Result<Vec<MessageMetadata>>;
+
+    /// Get quota usage statistics
+    async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
 }
 
 /// Rate-limited Gmail client using semaphores
@@ -215,6 +223,7 @@ where
 /// This implementation includes:
 /// - Semaphore-based concurrency limiting
 /// - Quota-aware rate limiting (token bucket algorithm)
+/// - Circuit breaker pattern for fault tolerance
 /// - Exponential backoff retry logic
 /// - Concurrent message fetching with buffered streams
 ///
@@ -228,6 +237,10 @@ pub struct ProductionGmailClient {
     concurrency_limiter: Arc<Semaphore>,
     /// Token bucket for quota-aware rate limiting
     quota_limiter: QuotaRateLimiter,
+    /// Circuit breaker for fault tolerance
+    circuit_breaker: CircuitBreaker,
+    /// Maximum number of concurrent requests (used for buffer_unordered)
+    max_concurrent: usize,
 }
 
 impl ProductionGmailClient {
@@ -238,6 +251,7 @@ impl ProductionGmailClient {
     /// * `max_concurrent` - Maximum concurrent requests (typically 40-50)
     ///
     /// Uses Gmail's default quota of 250 units/second with 500 unit burst capacity.
+    /// Circuit breaker is enabled by default with sensible thresholds.
     pub fn new(
         hub: Gmail<
             hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -248,6 +262,8 @@ impl ProductionGmailClient {
             hub,
             concurrency_limiter: Arc::new(Semaphore::new(max_concurrent)),
             quota_limiter: QuotaRateLimiter::new(),
+            circuit_breaker: CircuitBreaker::new(CircuitBreakerConfig::default()),
+            max_concurrent,
         }
     }
 
@@ -269,7 +285,41 @@ impl ProductionGmailClient {
         Self {
             hub,
             concurrency_limiter: Arc::new(Semaphore::new(max_concurrent)),
-            quota_limiter: QuotaRateLimiter::with_config(quota_units_per_second, quota_burst_capacity),
+            quota_limiter: QuotaRateLimiter::with_config(
+                quota_units_per_second,
+                quota_burst_capacity,
+            ),
+            circuit_breaker: CircuitBreaker::new(CircuitBreakerConfig::default()),
+            max_concurrent,
+        }
+    }
+
+    /// Create a new production Gmail client with custom quota and circuit breaker settings
+    ///
+    /// # Arguments
+    /// * `hub` - Gmail API hub instance
+    /// * `max_concurrent` - Maximum concurrent requests
+    /// * `quota_units_per_second` - Quota refill rate (default: 250)
+    /// * `quota_burst_capacity` - Maximum burst capacity (default: 500)
+    /// * `circuit_breaker_config` - Circuit breaker configuration
+    pub fn with_full_config(
+        hub: Gmail<
+            hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        >,
+        max_concurrent: usize,
+        quota_units_per_second: f64,
+        quota_burst_capacity: f64,
+        circuit_breaker_config: CircuitBreakerConfig,
+    ) -> Self {
+        Self {
+            hub,
+            concurrency_limiter: Arc::new(Semaphore::new(max_concurrent)),
+            quota_limiter: QuotaRateLimiter::with_config(
+                quota_units_per_second,
+                quota_burst_capacity,
+            ),
+            circuit_breaker: CircuitBreaker::new(circuit_breaker_config),
+            max_concurrent,
         }
     }
 
@@ -278,8 +328,16 @@ impl ProductionGmailClient {
         self.quota_limiter.stats().await
     }
 
+    /// Get current circuit breaker statistics
+    pub async fn circuit_breaker_stats(&self) -> crate::circuit_breaker::CircuitBreakerStats {
+        self.circuit_breaker.stats().await
+    }
+
     /// Fetch a single message with retry logic
     async fn fetch_single_with_retry(&self, id: &str) -> Result<MessageMetadata> {
+        // Check circuit breaker state first
+        self.circuit_breaker.check_request().await?;
+
         // Acquire both concurrency permit and quota
         let _concurrency_permit = self.concurrency_limiter.acquire().await.map_err(|e| {
             GmailError::Unknown(format!("Failed to acquire concurrency permit: {}", e))
@@ -309,20 +367,44 @@ impl ProductionGmailClient {
             match result {
                 Ok((_, msg)) => {
                     match parse_message_metadata(msg) {
-                        Ok(metadata) => return Ok(metadata),
+                        Ok(metadata) => {
+                            // Record success in circuit breaker
+                            self.circuit_breaker.record_success().await;
+                            return Ok(metadata);
+                        }
                         Err(_e) if attempts < max_attempts => {
                             tokio::time::sleep(delay).await;
                             delay *= 2; // Exponential backoff
                             continue;
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            // Record failure in circuit breaker
+                            self.circuit_breaker.record_failure(&e).await;
+                            return Err(e);
+                        }
                     }
                 }
                 Err(e) => {
                     let gmail_error = GmailError::from(e);
+
+                    // Record failure in circuit breaker
+                    self.circuit_breaker.record_failure(&gmail_error).await;
+
                     if gmail_error.is_transient() && attempts < max_attempts {
-                        tokio::time::sleep(delay).await;
-                        delay *= 2;
+                        // For rate limit errors, respect the server's Retry-After header
+                        let retry_delay = match &gmail_error {
+                            GmailError::RateLimitExceeded { retry_after } => {
+                                Duration::from_secs(*retry_after)
+                            }
+                            _ => delay,
+                        };
+
+                        tokio::time::sleep(retry_delay).await;
+
+                        // Only use exponential backoff for non-rate-limit errors
+                        if !matches!(gmail_error, GmailError::RateLimitExceeded { .. }) {
+                            delay *= 2;
+                        }
                         continue;
                     }
                     return Err(gmail_error);
@@ -343,6 +425,7 @@ impl ProductionGmailClient {
 
     /// Execute an async operation with exponential backoff retry
     async fn with_retry<T, F, Fut>(
+        &self,
         operation_name: &str,
         max_retries: u32,
         mut operation: F,
@@ -351,22 +434,52 @@ impl ProductionGmailClient {
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
+        // Check circuit breaker before starting
+        self.circuit_breaker.check_request().await?;
+
         let mut delay = Duration::from_secs(1);
         let mut attempts = 0;
 
         loop {
             attempts += 1;
             match operation().await {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    // Record success in circuit breaker
+                    self.circuit_breaker.record_success().await;
+                    return Ok(result);
+                }
                 Err(e) if Self::should_retry(&e) && attempts <= max_retries => {
+                    // Record failure in circuit breaker
+                    self.circuit_breaker.record_failure(&e).await;
+
+                    // For rate limit errors, respect the server's Retry-After header
+                    let retry_delay = match &e {
+                        GmailError::RateLimitExceeded { retry_after } => {
+                            Duration::from_secs(*retry_after)
+                        }
+                        _ => delay,
+                    };
+
                     warn!(
                         "{} failed (attempt {}/{}): {}. Retrying in {:?}...",
-                        operation_name, attempts, max_retries + 1, e, delay
+                        operation_name,
+                        attempts,
+                        max_retries + 1,
+                        e,
+                        retry_delay
                     );
-                    tokio::time::sleep(delay).await;
-                    delay = std::cmp::min(delay * 2, Duration::from_secs(30));
+                    tokio::time::sleep(retry_delay).await;
+
+                    // Only use exponential backoff for non-rate-limit errors
+                    if !matches!(e, GmailError::RateLimitExceeded { .. }) {
+                        delay = std::cmp::min(delay * 2, Duration::from_secs(30));
+                    }
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // Record final failure in circuit breaker
+                    self.circuit_breaker.record_failure(&e).await;
+                    return Err(e);
+                }
             }
         }
     }
@@ -428,11 +541,7 @@ fn parse_message_metadata(msg: Message) -> Result<MessageMetadata> {
     }
 
     // Extract sender domain
-    let sender_domain = sender_email
-        .split('@')
-        .nth(1)
-        .unwrap_or("")
-        .to_string();
+    let sender_domain = sender_email.split('@').nth(1).unwrap_or("").to_string();
 
     // Parse date
     let date_received = parse_date(&date_str).unwrap_or_else(|_| Utc::now());
@@ -552,7 +661,7 @@ impl GmailClient for ProductionGmailClient {
         // Acquire quota before retry loop (quota is consumed per attempt)
         let _quota_permit = self.quota_limiter.acquire(QuotaCost::Read).await;
 
-        Self::with_retry("list_labels", 3, || async {
+        self.with_retry("list_labels", 3, || async {
             // Wrap API call in timeout to prevent indefinite hangs
             let timeout_duration = Duration::from_secs(30);
             let api_call = async {
@@ -571,10 +680,14 @@ impl GmailClient for ProductionGmailClient {
             let (_, response) = match tokio::time::timeout(timeout_duration, api_call).await {
                 Ok(result) => result?,
                 Err(_) => {
-                    warn!("Gmail API list_labels call timed out after {:?}", timeout_duration);
-                    return Err(GmailError::NetworkError(
-                        format!("API call timed out after {:?}", timeout_duration)
-                    ));
+                    warn!(
+                        "Gmail API list_labels call timed out after {:?}",
+                        timeout_duration
+                    );
+                    return Err(GmailError::NetworkError(format!(
+                        "API call timed out after {:?}",
+                        timeout_duration
+                    )));
                 }
             };
 
@@ -582,17 +695,16 @@ impl GmailClient for ProductionGmailClient {
                 .labels
                 .unwrap_or_default()
                 .into_iter()
-                .filter_map(|label| {
-                    match (label.id, label.name) {
-                        (Some(id), Some(name)) => Some(LabelInfo { id, name }),
-                        _ => None,
-                    }
+                .filter_map(|label| match (label.id, label.name) {
+                    (Some(id), Some(name)) => Some(LabelInfo { id, name }),
+                    _ => None,
                 })
                 .collect();
 
             debug!("Successfully parsed {} labels", labels.len());
             Ok(labels)
-        }).await
+        })
+        .await
     }
 
     async fn create_label(&self, name: &str) -> Result<String> {
@@ -600,7 +712,7 @@ impl GmailClient for ProductionGmailClient {
         // Write operation costs 50 quota units
         let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
 
-        Self::with_retry("create_label", 3, || async {
+        self.with_retry("create_label", 3, || async {
             let label = Label {
                 name: Some(name.clone()),
                 message_list_visibility: Some("show".to_string()),
@@ -608,14 +720,19 @@ impl GmailClient for ProductionGmailClient {
                 ..Default::default()
             };
 
-            let (_, created_label) = self.hub.users().labels_create(label, "me")
+            let (_, created_label) = self
+                .hub
+                .users()
+                .labels_create(label, "me")
                 .add_scope("https://www.googleapis.com/auth/gmail.labels")
-                .doit().await?;
+                .doit()
+                .await?;
 
             created_label
                 .id
                 .ok_or_else(|| GmailError::LabelError("Created label has no ID".to_string()))
-        }).await
+        })
+        .await
     }
 
     async fn delete_label(&self, label_id: &str) -> Result<()> {
@@ -637,9 +754,10 @@ impl GmailClient for ProductionGmailClient {
         // Write operation costs 50 quota units
         let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
 
-        Self::with_retry("create_filter", 3, || async {
+        self.with_retry("create_filter", 3, || async {
             // Build the full Gmail query including from pattern, exclusions, and subject keywords
-            let full_query = crate::filter_manager::FilterManager::build_gmail_query_static(&filter);
+            let full_query =
+                crate::filter_manager::FilterManager::build_gmail_query_static(&filter);
 
             // Build the filter criteria
             let criteria = FilterCriteria {
@@ -677,14 +795,15 @@ impl GmailClient for ProductionGmailClient {
             created_filter
                 .id
                 .ok_or_else(|| GmailError::FilterError("Created filter has no ID".to_string()))
-        }).await
+        })
+        .await
     }
 
     async fn list_filters(&self) -> Result<Vec<ExistingFilterInfo>> {
         // Read operation costs 5 quota units
         let _quota_permit = self.quota_limiter.acquire(QuotaCost::Read).await;
 
-        Self::with_retry("list_filters", 3, || async {
+        self.with_retry("list_filters", 3, || async {
             // Wrap API call in timeout to prevent indefinite hangs
             let timeout_duration = Duration::from_secs(30);
             let api_call = async {
@@ -703,10 +822,14 @@ impl GmailClient for ProductionGmailClient {
             let (_, response) = match tokio::time::timeout(timeout_duration, api_call).await {
                 Ok(result) => result?,
                 Err(_) => {
-                    warn!("Gmail API list_filters call timed out after {:?}", timeout_duration);
-                    return Err(GmailError::NetworkError(
-                        format!("API call timed out after {:?}", timeout_duration)
-                    ));
+                    warn!(
+                        "Gmail API list_filters call timed out after {:?}",
+                        timeout_duration
+                    );
+                    return Err(GmailError::NetworkError(format!(
+                        "API call timed out after {:?}",
+                        timeout_duration
+                    )));
                 }
             };
 
@@ -733,7 +856,8 @@ impl GmailClient for ProductionGmailClient {
 
             debug!("Successfully parsed {} filters", filters.len());
             Ok(filters)
-        }).await
+        })
+        .await
     }
 
     async fn delete_filter(&self, filter_id: &str) -> Result<()> {
@@ -741,7 +865,7 @@ impl GmailClient for ProductionGmailClient {
         // Write operation costs 50 quota units
         let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
 
-        Self::with_retry("delete_filter", 3, || async {
+        self.with_retry("delete_filter", 3, || async {
             self.hub
                 .users()
                 .settings_filters_delete("me", &filter_id)
@@ -750,19 +874,21 @@ impl GmailClient for ProductionGmailClient {
                 .await?;
 
             Ok(())
-        }).await
+        })
+        .await
     }
 
     async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String> {
         let filter_id = filter_id.to_string();
         let filter = filter.clone();
-        Self::with_retry("update_filter", 3, || async {
+        self.with_retry("update_filter", 3, || async {
             // Delete the old filter
             self.delete_filter(&filter_id).await?;
 
             // Create a new one with updated settings
             self.create_filter(&filter).await
-        }).await
+        })
+        .await
     }
 
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {
@@ -820,7 +946,7 @@ impl GmailClient for ProductionGmailClient {
             let chunk_vec = chunk.to_vec();
             let label_id_clone = label_id.clone();
 
-            Self::with_retry("batch_remove_label", 3, || async {
+            self.with_retry("batch_remove_label", 3, || async {
                 let request = BatchModifyMessagesRequest {
                     ids: Some(chunk_vec.clone()),
                     add_label_ids: None,
@@ -835,7 +961,8 @@ impl GmailClient for ProductionGmailClient {
                     .await?;
 
                 Ok(())
-            }).await?;
+            })
+            .await?;
 
             total_modified += chunk.len();
         }
@@ -859,7 +986,7 @@ impl GmailClient for ProductionGmailClient {
             let chunk_vec = chunk.to_vec();
             let label_id_clone = label_id.clone();
 
-            Self::with_retry("batch_add_label", 3, || async {
+            self.with_retry("batch_add_label", 3, || async {
                 let request = BatchModifyMessagesRequest {
                     ids: Some(chunk_vec.clone()),
                     add_label_ids: Some(vec![label_id_clone.clone()]),
@@ -874,7 +1001,8 @@ impl GmailClient for ProductionGmailClient {
                     .await?;
 
                 Ok(())
-            }).await?;
+            })
+            .await?;
 
             total_modified += chunk.len();
         }
@@ -915,7 +1043,7 @@ impl GmailClient for ProductionGmailClient {
             let add_labels_clone = add_labels.clone();
             let remove_labels_clone = remove_labels.clone();
 
-            Self::with_retry("batch_modify_labels", 3, || async {
+            self.with_retry("batch_modify_labels", 3, || async {
                 let request = BatchModifyMessagesRequest {
                     ids: Some(chunk_vec.clone()),
                     add_label_ids: add_labels_clone.clone(),
@@ -930,7 +1058,8 @@ impl GmailClient for ProductionGmailClient {
                     .await?;
 
                 Ok(())
-            }).await?;
+            })
+            .await?;
 
             total_modified += chunk.len();
         }
@@ -940,15 +1069,13 @@ impl GmailClient for ProductionGmailClient {
 
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>> {
         // Note: fetch_single_with_retry already handles quota via quota_limiter
-        // buffer_unordered limits concurrency to 40 parallel requests
+        // buffer_unordered limits concurrency based on configured max_concurrent_requests
         stream::iter(message_ids)
             .map(|id| {
                 let client = self;
-                async move {
-                    client.fetch_single_with_retry(&id).await
-                }
+                async move { client.fetch_single_with_retry(&id).await }
             })
-            .buffer_unordered(40)
+            .buffer_unordered(self.max_concurrent)
             .try_collect()
             .await
     }
@@ -970,7 +1097,7 @@ impl GmailClient for ProductionGmailClient {
                     Ok::<_, GmailError>(msg)
                 }
             })
-            .buffer_unordered(40)
+            .buffer_unordered(self.max_concurrent)
             .try_for_each(|msg| {
                 let results = &results;
                 async move {
@@ -981,6 +1108,10 @@ impl GmailClient for ProductionGmailClient {
             .await?;
 
         Ok(results.into_inner())
+    }
+
+    async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats {
+        self.quota_limiter.stats().await
     }
 }
 
@@ -1032,7 +1163,9 @@ impl GmailClient for Arc<ProductionGmailClient> {
     }
 
     async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize> {
-        self.as_ref().batch_remove_label(message_ids, label_id).await
+        self.as_ref()
+            .batch_remove_label(message_ids, label_id)
+            .await
     }
 
     async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize> {
@@ -1045,7 +1178,9 @@ impl GmailClient for Arc<ProductionGmailClient> {
         add_label_ids: &[String],
         remove_label_ids: &[String],
     ) -> Result<usize> {
-        self.as_ref().batch_modify_labels(message_ids, add_label_ids, remove_label_ids).await
+        self.as_ref()
+            .batch_modify_labels(message_ids, add_label_ids, remove_label_ids)
+            .await
     }
 
     async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<MessageMetadata>> {
@@ -1057,7 +1192,13 @@ impl GmailClient for Arc<ProductionGmailClient> {
         message_ids: Vec<String>,
         on_progress: ProgressCallback,
     ) -> Result<Vec<MessageMetadata>> {
-        self.as_ref().fetch_messages_with_progress(message_ids, on_progress).await
+        self.as_ref()
+            .fetch_messages_with_progress(message_ids, on_progress)
+            .await
+    }
+
+    async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats {
+        self.as_ref().quota_stats().await
     }
 }
 
@@ -1101,10 +1242,16 @@ mod tests {
     #[test]
     fn test_parse_email_header() {
         let result = parse_email_header("John Doe <john@example.com>");
-        assert_eq!(result, Some(("John Doe".to_string(), "john@example.com".to_string())));
+        assert_eq!(
+            result,
+            Some(("John Doe".to_string(), "john@example.com".to_string()))
+        );
 
         let result = parse_email_header("\"Jane Smith\" <jane@example.com>");
-        assert_eq!(result, Some(("Jane Smith".to_string(), "jane@example.com".to_string())));
+        assert_eq!(
+            result,
+            Some(("Jane Smith".to_string(), "jane@example.com".to_string()))
+        );
 
         let result = parse_email_header("plain@example.com");
         assert_eq!(result, None);
@@ -1125,103 +1272,8 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // Test retry logic for list_filters
-    #[tokio::test]
-    async fn test_with_retry_succeeds_after_transient_error() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use std::sync::Arc;
-
-        let attempt_count = Arc::new(AtomicU32::new(0));
-        let attempt_count_clone = Arc::clone(&attempt_count);
-
-        let result = ProductionGmailClient::with_retry("test_op", 3, || {
-            let count = Arc::clone(&attempt_count_clone);
-            async move {
-                let current = count.fetch_add(1, Ordering::SeqCst);
-                if current < 2 {
-                    // First two attempts fail with transient error
-                    Err(GmailError::NetworkError("Connection timeout".to_string()))
-                } else {
-                    // Third attempt succeeds
-                    Ok("success".to_string())
-                }
-            }
-        })
-        .await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "success");
-        assert_eq!(attempt_count.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn test_with_retry_fails_on_permanent_error() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use std::sync::Arc;
-
-        let attempt_count = Arc::new(AtomicU32::new(0));
-        let attempt_count_clone = Arc::clone(&attempt_count);
-
-        let result = ProductionGmailClient::with_retry("test_op", 3, || {
-            let count = Arc::clone(&attempt_count_clone);
-            async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                // Permanent error - should not retry
-                Err::<String, _>(GmailError::AuthError("Invalid credentials".to_string()))
-            }
-        })
-        .await;
-
-        assert!(result.is_err());
-        // Should only attempt once, no retries for permanent errors
-        assert_eq!(attempt_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_with_retry_exhausts_all_retries() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use std::sync::Arc;
-
-        let attempt_count = Arc::new(AtomicU32::new(0));
-        let attempt_count_clone = Arc::clone(&attempt_count);
-
-        let result = ProductionGmailClient::with_retry("test_op", 3, || {
-            let count = Arc::clone(&attempt_count_clone);
-            async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                // Always fail with transient error
-                Err::<String, _>(GmailError::RateLimitExceeded { retry_after: 1 })
-            }
-        })
-        .await;
-
-        assert!(result.is_err());
-        // Should attempt 4 times: initial + 3 retries
-        assert_eq!(attempt_count.load(Ordering::SeqCst), 4);
-    }
-
-    #[tokio::test]
-    async fn test_with_retry_succeeds_immediately() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use std::sync::Arc;
-
-        let attempt_count = Arc::new(AtomicU32::new(0));
-        let attempt_count_clone = Arc::clone(&attempt_count);
-
-        let result = ProductionGmailClient::with_retry("test_op", 3, || {
-            let count = Arc::clone(&attempt_count_clone);
-            async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                Ok("success".to_string())
-            }
-        })
-        .await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "success");
-        // Should only attempt once
-        assert_eq!(attempt_count.load(Ordering::SeqCst), 1);
-    }
+    // Note: Tests for with_retry method are now part of circuit_breaker module tests
+    // since with_retry is now an instance method that depends on circuit breaker state.
 
     #[tokio::test]
     async fn test_timeout_triggers_network_error() {

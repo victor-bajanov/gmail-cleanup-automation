@@ -1,5 +1,4 @@
-///! Filter rule management with generation, deduplication, and retroactive application
-
+//! Filter rule management with generation, deduplication, and retroactive application
 use crate::client::GmailClient;
 use crate::error::{GmailError, Result};
 use crate::models::{Classification, EmailCategory, FilterRule, MessageMetadata};
@@ -70,10 +69,7 @@ impl FilterManager {
 
         for item in classifications {
             let domain = &item.0.sender_domain;
-            domain_groups
-                .entry(domain.clone())
-                .or_insert_with(Vec::new)
-                .push(item);
+            domain_groups.entry(domain.clone()).or_default().push(item);
         }
 
         let mut filters = Vec::new();
@@ -98,21 +94,23 @@ impl FilterManager {
 
             // Skip domains where user rejected (empty label means no filter wanted)
             if target_label.is_empty() {
-                debug!(
-                    "Skipping domain {} (user rejected - no label set)",
-                    domain
-                );
+                debug!("Skipping domain {} (user rejected - no label set)", domain);
                 continue;
             }
 
             // Determine should_archive from user's choices
-            let should_archive = messages.iter()
-                .filter(|(_, c)| c.should_archive)
-                .count() > messages.len() / 2;
+            let should_archive =
+                messages.iter().filter(|(_, c)| c.should_archive).count() > messages.len() / 2;
 
             // Build filter rule
-            if let Some(filter) = self.build_filter_rule(domain, pattern_analysis, category, target_label, should_archive, messages.len())
-            {
+            if let Some(filter) = self.build_filter_rule(
+                domain,
+                pattern_analysis,
+                category,
+                target_label,
+                should_archive,
+                messages.len(),
+            ) {
                 filters.push(filter);
             }
         }
@@ -144,7 +142,7 @@ impl FilterManager {
         for message in messages {
             domain_groups
                 .entry(message.sender_domain.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(message);
         }
 
@@ -165,15 +163,18 @@ impl FilterManager {
             // Determine should_archive based on category
             let should_archive = matches!(
                 category,
-                EmailCategory::Newsletter
-                    | EmailCategory::Marketing
-                    | EmailCategory::Notification
+                EmailCategory::Newsletter | EmailCategory::Marketing | EmailCategory::Notification
             );
 
             // Build filter (no suggested_label since no classifications)
-            if let Some(filter) =
-                self.build_filter_rule(domain, pattern_analysis, category, String::new(), should_archive, msgs.len())
-            {
+            if let Some(filter) = self.build_filter_rule(
+                domain,
+                pattern_analysis,
+                category,
+                String::new(),
+                should_archive,
+                msgs.len(),
+            ) {
                 filters.push(filter);
             }
         }
@@ -188,10 +189,7 @@ impl FilterManager {
         // Validate filter first
         self.validate_filter(filter)?;
 
-        info!(
-            "Creating filter for pattern: {:?}",
-            filter.from_pattern
-        );
+        info!("Creating filter for pattern: {:?}", filter.from_pattern);
 
         // Create via Gmail API
         let filter_id = self.client.create_filter(filter).await?;
@@ -372,11 +370,8 @@ impl FilterManager {
             let query = self.build_gmail_query(filter);
 
             // Find matching messages
-            let message_ids = self
-                .client
-                .list_message_ids(&query)
-                .await
-                .map_err(|e| {
+            let message_ids =
+                self.client.list_message_ids(&query).await.map_err(|e| {
                     GmailError::ApiError(format!("Failed to search messages: {}", e))
                 })?;
 
@@ -394,10 +389,16 @@ impl FilterManager {
                     .await
                 {
                     Ok(count) => {
-                        debug!("Applied label to {} messages for filter '{}'", count, filter.name);
+                        debug!(
+                            "Applied label to {} messages for filter '{}'",
+                            count, filter.name
+                        );
                     }
                     Err(e) => {
-                        warn!("Failed to batch apply label for filter '{}': {}", filter.name, e);
+                        warn!(
+                            "Failed to batch apply label for filter '{}': {}",
+                            filter.name, e
+                        );
                     }
                 }
             }
@@ -453,10 +454,7 @@ impl FilterManager {
         let mut results: HashMap<String, std::result::Result<String, String>> = HashMap::new();
         let mut success_count = 0;
 
-        info!(
-            "Creating {} filters (dry_run: {})",
-            total, dry_run
-        );
+        info!("Creating {} filters (dry_run: {})", total, dry_run);
 
         for filter in filters {
             let filter_name = filter.name.clone();
@@ -527,9 +525,7 @@ impl FilterManager {
             .client
             .list_message_ids(&query)
             .await
-            .map_err(|e| {
-                GmailError::ApiError(format!("Failed to search messages: {}", e))
-            })?;
+            .map_err(|e| GmailError::ApiError(format!("Failed to search messages: {}", e)))?;
 
         let count = message_ids.len();
         info!("Filter '{}' would match {} messages", filter.name, count);
@@ -610,10 +606,7 @@ impl FilterManager {
         let has_unsubscribe = (has_unsubscribe_count as f32 / messages.len() as f32) > 0.7;
 
         // Select most common keywords (limit to 3)
-        let top_keywords = subject_keywords
-            .into_iter()
-            .take(3)
-            .collect::<Vec<_>>();
+        let top_keywords = subject_keywords.into_iter().take(3).collect::<Vec<_>>();
 
         PatternAnalysis {
             domain: domain.to_string(),
@@ -649,10 +642,7 @@ impl FilterManager {
         let is_automated = (is_automated_count as f32 / messages.len() as f32) > 0.7;
         let has_unsubscribe = (has_unsubscribe_count as f32 / messages.len() as f32) > 0.7;
 
-        let top_keywords = subject_keywords
-            .into_iter()
-            .take(3)
-            .collect::<Vec<_>>();
+        let top_keywords = subject_keywords.into_iter().take(3).collect::<Vec<_>>();
 
         PatternAnalysis {
             domain: domain.to_string(),
@@ -672,7 +662,9 @@ impl FilterManager {
             .replace("fwd:", "");
 
         // Extract words, filter stop words and short words
-        let stop_words = ["the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for"];
+        let stop_words = [
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+        ];
 
         cleaned
             .split_whitespace()
@@ -704,10 +696,7 @@ impl FilterManager {
 
     /// Determines the dominant suggested_label from classified messages
     /// This reflects the user's choices from interactive review
-    fn determine_dominant_label(
-        &self,
-        messages: &[&(MessageMetadata, Classification)],
-    ) -> String {
+    fn determine_dominant_label(&self, messages: &[&(MessageMetadata, Classification)]) -> String {
         let mut label_counts: HashMap<String, usize> = HashMap::new();
 
         for (_, classification) in messages {
@@ -877,6 +866,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -956,6 +946,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -1000,6 +991,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -1050,6 +1042,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -1114,6 +1107,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -1162,8 +1156,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_filters_dry_run() {
-        use mockall::predicate::*;
         use async_trait::async_trait;
+        use mockall::predicate::*;
 
         mockall::mock! {
             pub TestGmailClient {}
@@ -1186,6 +1180,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -1254,6 +1249,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -1304,8 +1300,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_estimate_filter_matches() {
-        use mockall::predicate::*;
         use async_trait::async_trait;
+        use mockall::predicate::*;
 
         mockall::mock! {
             pub TestGmailClient {}
@@ -1328,6 +1324,7 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
@@ -1338,7 +1335,13 @@ mod tests {
             .expect_list_message_ids()
             .with(eq("from:(*@github.com)"))
             .times(1)
-            .returning(|_| Ok(vec!["msg1".to_string(), "msg2".to_string(), "msg3".to_string()]));
+            .returning(|_| {
+                Ok(vec![
+                    "msg1".to_string(),
+                    "msg2".to_string(),
+                    "msg3".to_string(),
+                ])
+            });
 
         let manager = FilterManager::new(Box::new(mock_client));
 
@@ -1384,25 +1387,24 @@ mod tests {
                 async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
                 async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
                 async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
             }
         }
 
         let mock_client = MockTestGmailClient::new();
         let manager = FilterManager::new(Box::new(mock_client));
 
-        let filters = vec![
-            FilterRule {
-                id: None,
-                name: "Test Filter 1".to_string(),
-                from_pattern: Some("*@test.com".to_string()),
-                is_specific_sender: false,
-                excluded_senders: vec![],
-                subject_keywords: vec![],
-                target_label_id: "label-1".to_string(),
-                should_archive: false,
-                estimated_matches: 10,
-            },
-        ];
+        let filters = vec![FilterRule {
+            id: None,
+            name: "Test Filter 1".to_string(),
+            from_pattern: Some("*@test.com".to_string()),
+            is_specific_sender: false,
+            excluded_senders: vec![],
+            subject_keywords: vec![],
+            target_label_id: "label-1".to_string(),
+            should_archive: false,
+            estimated_matches: 10,
+        }];
 
         let mut estimates = HashMap::new();
         estimates.insert("Test Filter 1".to_string(), 15);

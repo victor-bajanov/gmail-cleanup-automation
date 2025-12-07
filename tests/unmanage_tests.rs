@@ -80,7 +80,9 @@ fn test_prefix_matching_title_case_mismatch() {
 
     assert_eq!(result.len(), 2);
     assert!(result.iter().any(|l| l.name == "Automanaged/Newsletters"));
-    assert!(result.iter().any(|l| l.name == "Automanaged/Receipts/Amazon"));
+    assert!(result
+        .iter()
+        .any(|l| l.name == "Automanaged/Receipts/Amazon"));
 }
 
 #[test]
@@ -182,8 +184,14 @@ fn test_filter_identification_with_case_mismatch() {
 
     let mut label_id_to_name = HashMap::new();
     // Note: Gmail stores as "Automanaged" (title case), not "AutoManaged"
-    label_id_to_name.insert("label-1".to_string(), "Automanaged/Notifications/Github".to_string());
-    label_id_to_name.insert("label-2".to_string(), "Automanaged/Social/Linkedin".to_string());
+    label_id_to_name.insert(
+        "label-1".to_string(),
+        "Automanaged/Notifications/Github".to_string(),
+    );
+    label_id_to_name.insert(
+        "label-2".to_string(),
+        "Automanaged/Social/Linkedin".to_string(),
+    );
     label_id_to_name.insert("label-3".to_string(), "Personal".to_string());
 
     // Config has "AutoManaged" but labels are "Automanaged"
@@ -310,7 +318,10 @@ fn test_real_world_scenario() {
     assert_eq!(filters_to_delete.len(), 2); // f1 and f2, but not f3
 
     // Verify correct filters identified
-    let filter_ids: Vec<&str> = filters_to_delete.iter().map(|(id, _, _)| id.as_str()).collect();
+    let filter_ids: Vec<&str> = filters_to_delete
+        .iter()
+        .map(|(id, _, _)| id.as_str())
+        .collect();
     assert!(filter_ids.contains(&"f1"));
     assert!(filter_ids.contains(&"f2"));
     assert!(!filter_ids.contains(&"f3"));

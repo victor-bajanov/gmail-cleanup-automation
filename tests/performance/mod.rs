@@ -17,7 +17,8 @@ pub mod mock_generator;
 
 // Set the global allocator to track memory and panic at 8GB
 #[global_allocator]
-static ALLOCATOR: memory_tracking_allocator::TrackingAllocator = memory_tracking_allocator::TrackingAllocator;
+static ALLOCATOR: memory_tracking_allocator::TrackingAllocator =
+    memory_tracking_allocator::TrackingAllocator;
 
 #[cfg(test)]
 mod classification_benchmark;
@@ -194,14 +195,7 @@ struct SenderPrefixes;
 
 impl SenderPrefixes {
     fn newsletter() -> &'static [&'static str] {
-        &[
-            "newsletter",
-            "news",
-            "updates",
-            "digest",
-            "weekly",
-            "info",
-        ]
+        &["newsletter", "news", "updates", "digest", "weekly", "info"]
     }
 
     fn automated() -> &'static [&'static str] {
@@ -286,39 +280,20 @@ fn generate_sender_email(
             .choose(rng)
             .unwrap()
             .to_string(),
-        EmailCategory::Receipt | EmailCategory::Notification => SenderPrefixes::automated()
-            .choose(rng)
-            .unwrap()
-            .to_string(),
-        EmailCategory::Financial => SenderPrefixes::financial()
-            .choose(rng)
-            .unwrap()
-            .to_string(),
-        EmailCategory::Shipping => SenderPrefixes::shipping()
-            .choose(rng)
-            .unwrap()
-            .to_string(),
-        EmailCategory::Marketing => SenderPrefixes::marketing()
-            .choose(rng)
-            .unwrap()
-            .to_string(),
-        EmailCategory::Personal => SenderPrefixes::personal()
-            .choose(rng)
-            .unwrap()
-            .to_string(),
+        EmailCategory::Receipt | EmailCategory::Notification => {
+            SenderPrefixes::automated().choose(rng).unwrap().to_string()
+        }
+        EmailCategory::Financial => SenderPrefixes::financial().choose(rng).unwrap().to_string(),
+        EmailCategory::Shipping => SenderPrefixes::shipping().choose(rng).unwrap().to_string(),
+        EmailCategory::Marketing => SenderPrefixes::marketing().choose(rng).unwrap().to_string(),
+        EmailCategory::Personal => SenderPrefixes::personal().choose(rng).unwrap().to_string(),
         EmailCategory::Other => "contact".to_string(),
     };
 
     let email = format!("{}@{}", prefix, domain);
     let name = format!(
         "{} {}",
-        prefix
-            .chars()
-            .next()
-            .unwrap()
-            .to_uppercase()
-            .to_string()
-            + &prefix[1..],
+        prefix.chars().next().unwrap().to_uppercase().to_string() + &prefix[1..],
         domain.split('.').next().unwrap_or("Service")
     );
 
@@ -475,7 +450,9 @@ pub fn generate_random_emails(count: usize) -> Vec<MessageMetadata> {
             messages.reserve(BATCH_SIZE);
         }
         let domain = DOMAINS.choose(&mut rng).unwrap();
-        let category = category_pool.choose(&mut rng).unwrap_or(&EmailCategory::Other);
+        let category = category_pool
+            .choose(&mut rng)
+            .unwrap_or(&EmailCategory::Other);
         messages.push(generate_message(&mut rng, domain, *category, 90));
     }
 
@@ -565,7 +542,11 @@ pub fn generate_mixed_workload(count: usize) -> Vec<MessageMetadata> {
     let notification_count = safe_count * 20 / 100; // ~20% notifications
     let marketing_count = safe_count * 17 / 100; // ~17% marketing
     let personal_count = safe_count * 5 / 100; // ~5% personal
-    let allocated = newsletter_count + transactional_count + notification_count + marketing_count + personal_count;
+    let allocated = newsletter_count
+        + transactional_count
+        + notification_count
+        + marketing_count
+        + personal_count;
 
     // Hard bounds check to prevent runaway iteration
     assert!(
@@ -685,10 +666,7 @@ mod tests {
         // Check for variety in domains
         let unique_domains: std::collections::HashSet<_> =
             emails.iter().map(|e| &e.sender_domain).collect();
-        assert!(
-            unique_domains.len() > 5,
-            "Should have variety in domains"
-        );
+        assert!(unique_domains.len() > 5, "Should have variety in domains");
 
         // Check for variety in subjects
         let unique_subjects: std::collections::HashSet<_> =
@@ -750,13 +728,18 @@ mod tests {
         let emails = generate_random_emails(1000);
 
         let domain_counts: std::collections::HashMap<_, usize> =
-            emails.iter().fold(std::collections::HashMap::new(), |mut acc, e| {
-                *acc.entry(&e.sender_domain).or_insert(0) += 1;
-                acc
-            });
+            emails
+                .iter()
+                .fold(std::collections::HashMap::new(), |mut acc, e| {
+                    *acc.entry(&e.sender_domain).or_insert(0) += 1;
+                    acc
+                });
 
         // Should use multiple domains
-        assert!(domain_counts.len() >= 20, "Should use many different domains");
+        assert!(
+            domain_counts.len() >= 20,
+            "Should use many different domains"
+        );
 
         // No single domain should dominate excessively
         for (_, count) in domain_counts {
