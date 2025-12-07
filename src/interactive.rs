@@ -8,7 +8,7 @@ use crate::exclusions::ExclusionManager;
 use crate::models::{Classification, EmailCategory, MessageMetadata};
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{self, ClearType},
 };
@@ -196,9 +196,14 @@ impl ReviewSession {
             stdout.flush().map_err(|e| GmailError::Unknown(e.to_string()))?;
 
             // Wait for key input
+            // Only handle Press events to avoid key bounce on Windows
+            // (Windows sends Press, Repeat, and Release events for a single key press)
             if let Event::Key(key_event) = event::read()
                 .map_err(|e| GmailError::Unknown(format!("Input error: {}", e)))?
             {
+                if key_event.kind != KeyEventKind::Press {
+                    continue;
+                }
                 match self.handle_key(key_event)? {
                     SessionAction::Continue => continue,
                     SessionAction::Quit => break,
@@ -827,9 +832,15 @@ impl ReviewSession {
 
         let _ = io::stdout().flush();
 
-        // Wait for any key
+        // Wait for any key press (not release/repeat)
         let _ = terminal::enable_raw_mode();
-        let _ = event::read();
+        loop {
+            if let Ok(Event::Key(key_event)) = event::read() {
+                if key_event.kind == KeyEventKind::Press {
+                    break;
+                }
+            }
+        }
 
         Ok(())
     }
