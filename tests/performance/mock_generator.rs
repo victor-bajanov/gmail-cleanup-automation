@@ -566,14 +566,17 @@ pub fn print_memory_diagnostics() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_generate_mock_emails() {
         let messages = generate_mock_emails(100);
         assert_eq!(messages.len(), 100);
     }
 
     #[test]
+    #[serial]
     fn test_deterministic_generation() {
         let messages1 = generate_mock_emails_with_seed(50, 42);
         let messages2 = generate_mock_emails_with_seed(50, 42);
@@ -590,6 +593,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_different_seeds_produce_different_results() {
         let messages1 = generate_mock_emails_with_seed(50, 42);
         let messages2 = generate_mock_emails_with_seed(50, 99);
@@ -607,6 +611,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_category_distribution() {
         let messages = generate_mock_emails_with_seed(1000, 42);
 
@@ -633,6 +638,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_automated_flags() {
         let messages = generate_mock_emails_with_seed(100, 42);
 
@@ -648,6 +654,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_domain_variety() {
         let messages = generate_mock_emails_with_seed(200, 42);
 
@@ -661,6 +668,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_date_range() {
         let config = MockGeneratorConfig {
             seed: 42,
@@ -680,6 +688,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_custom_distribution() {
         let distribution = EmailDistribution {
             newsletter: 0.50,  // 50% newsletters
@@ -707,6 +716,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_message_id_format() {
         let messages = generate_mock_emails_with_seed(10, 42);
 
@@ -717,6 +727,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_sender_email_format() {
         let messages = generate_mock_emails_with_seed(100, 42);
 
@@ -732,6 +743,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_all_messages_have_recipients() {
         let messages = generate_mock_emails_with_seed(50, 42);
 
@@ -742,6 +754,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_all_messages_have_inbox_label() {
         let messages = generate_mock_emails_with_seed(50, 42);
 

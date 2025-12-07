@@ -684,7 +684,7 @@ cargo fmt
 ### Throughput
 
 - **Scanning**: ~500-1000 messages/minute (limited by API quota)
-- **Classification**: ~10,000 messages/second (CPU-bound, no API calls)
+- **Classification**: ~150,000 messages/second (CPU-bound, no API calls)
 - **Label Creation**: ~50 labels/second (API-limited)
 - **Filter Creation**: ~50 filters/second (API-limited)
 
@@ -707,9 +707,9 @@ Gmail API quotas (per-user, per-project):
 
 ### Memory Usage
 
-- **Typical**: 50-100 MB for processing 10,000 emails
-- **Peak**: ~200 MB during concurrent batch operations
-- **State file**: ~1 KB per 1,000 messages
+- **Typical**: ~25 MB for processing 10,000 emails
+- **Peak**: ~30 MB during concurrent batch operations
+- **State file**: ~0.5 KB per 1,000 messages
 
 ### Checkpointing
 

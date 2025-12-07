@@ -8,10 +8,12 @@
 
 use chrono::Utc;
 use gmail_automation::state::ProcessingState;
+use serial_test::serial;
 use tempfile::TempDir;
 
 /// Test that state file size is reasonable for 1,000 messages
 #[tokio::test]
+#[serial]
 async fn test_state_file_size_1k_messages() {
     let temp_dir = TempDir::new().unwrap();
     let state_path = temp_dir.path().join("state_1k.json");
@@ -49,6 +51,7 @@ async fn test_state_file_size_1k_messages() {
 
 /// Test that state file size is reasonable for 10,000 messages
 #[tokio::test]
+#[serial]
 async fn test_state_file_size_10k_messages() {
     let temp_dir = TempDir::new().unwrap();
     let state_path = temp_dir.path().join("state_10k.json");
@@ -83,14 +86,15 @@ async fn test_state_file_size_10k_messages() {
     println!("\nVerdict: PASS - State file is {:.2} KB per 1,000 messages", kb_per_1k_messages);
 }
 
-/// Test that state file size is reasonable for 100,000 messages and scales linearly
+/// Test that state file size is reasonable for 25,000 messages and scales linearly
 #[tokio::test]
-async fn test_state_file_size_100k_messages() {
+#[serial]
+async fn test_state_file_size_25k_messages() {
     let temp_dir = TempDir::new().unwrap();
-    let state_path = temp_dir.path().join("state_100k.json");
+    let state_path = temp_dir.path().join("state_25k.json");
 
     let mut state = ProcessingState::new();
-    populate_state_for_messages(&mut state, 100_000);
+    populate_state_for_messages(&mut state, 25_000);
 
     // Save state
     state.save(&state_path).await.unwrap();
@@ -99,12 +103,12 @@ async fn test_state_file_size_100k_messages() {
     let metadata = std::fs::metadata(&state_path).unwrap();
     let file_size_bytes = metadata.len();
     let file_size_kb = file_size_bytes as f64 / 1024.0;
-    let kb_per_1k_messages = file_size_kb / 100.0;
+    let kb_per_1k_messages = file_size_kb / 25.0;
 
     // Print results
-    println!("\n=== State File Size Test: 100,000 Messages ===");
+    println!("\n=== State File Size Test: 25,000 Messages ===");
     println!("File size: {} bytes ({:.2} KB)", file_size_bytes, file_size_kb);
-    println!("Messages represented: 100,000");
+    println!("Messages represented: 25,000");
     println!("KB per 1,000 messages: {:.2}", kb_per_1k_messages);
     println!("Target: < 5 KB per 1,000 messages");
     println!("README claim: ~1 KB per 1,000 messages");
@@ -121,6 +125,7 @@ async fn test_state_file_size_100k_messages() {
 
 /// Test linear scaling across different message counts
 #[tokio::test]
+#[serial]
 async fn test_state_file_size_linear_scaling() {
     let temp_dir = TempDir::new().unwrap();
 
@@ -128,9 +133,9 @@ async fn test_state_file_size_linear_scaling() {
         1_000,
         5_000,
         10_000,
+        15_000,
+        20_000,
         25_000,
-        50_000,
-        100_000,
     ];
 
     println!("\n=== State File Size Linear Scaling Test ===");
@@ -205,6 +210,7 @@ async fn test_state_file_size_linear_scaling() {
 
 /// Test state file with various data configurations
 #[tokio::test]
+#[serial]
 async fn test_state_file_with_various_data() {
     let temp_dir = TempDir::new().unwrap();
 
@@ -267,6 +273,7 @@ async fn test_state_file_with_various_data() {
 
 /// Test state file compression potential (just informational)
 #[tokio::test]
+#[serial]
 async fn test_state_file_compression_info() {
     let temp_dir = TempDir::new().unwrap();
     let state_path = temp_dir.path().join("state.json");

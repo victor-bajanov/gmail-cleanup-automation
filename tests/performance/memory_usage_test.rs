@@ -18,6 +18,7 @@
 
 use super::mock_generator::{generate_mock_emails, MockGenerator, MockGeneratorConfig};
 use gmail_automation::classifier::EmailClassifier;
+use serial_test::serial;
 use std::fs;
 
 /// Memory measurement structure
@@ -124,6 +125,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial]
     fn test_memory_measurement_works() {
         let mem = MemoryUsage::current();
 
@@ -143,6 +145,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_memory_usage_generating_10k_emails() {
         println!("\n\nTEST: Memory usage for generating 10,000 mock emails");
         println!("{}", "=".repeat(60));
@@ -187,6 +190,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_memory_usage_classifying_10k_emails() {
         println!("\n\nTEST: Memory usage for classifying 10,000 emails");
         println!("{}", "=".repeat(60));
@@ -244,6 +248,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_memory_usage_full_pipeline_10k_emails() {
         println!("\n\nTEST: Memory usage for complete pipeline (10,000 emails)");
         println!("{}", "=".repeat(60));
@@ -323,6 +328,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_memory_usage_batch_processing() {
         println!("\n\nTEST: Memory usage for batch processing (simulating concurrent operations)");
         println!("{}", "=".repeat(60));
@@ -410,6 +416,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_memory_usage_small_batch() {
         println!("\n\nTEST: Memory usage for small batch (1,000 emails)");
         println!("{}", "=".repeat(60));
@@ -455,6 +462,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_memory_cleanup_after_drop() {
         println!("\n\nTEST: Memory cleanup after dropping large collections");
         println!("{}", "=".repeat(60));

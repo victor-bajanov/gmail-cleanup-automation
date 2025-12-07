@@ -12,7 +12,12 @@
 //! Use `memory_limits::print_memory_diagnostics()` to see current memory availability.
 
 pub mod memory_limits;
+pub mod memory_tracking_allocator;
 pub mod mock_generator;
+
+// Set the global allocator to track memory and panic at 8GB
+#[global_allocator]
+static ALLOCATOR: memory_tracking_allocator::TrackingAllocator = memory_tracking_allocator::TrackingAllocator;
 
 #[cfg(test)]
 mod classification_benchmark;
@@ -554,17 +559,22 @@ pub fn generate_mixed_workload(count: usize) -> Vec<MessageMetadata> {
     messages.reserve(safe_count.min(BATCH_SIZE));
 
     // Split into chunks to simulate realistic patterns
-    let newsletter_count = safe_count / 3; // Morning/evening newsletter bursts
-    let transactional_count = safe_count / 5; // Receipts, shipping
-    let notification_count = safe_count / 4; // Notifications spread throughout
-    let marketing_count = safe_count / 6; // Marketing waves
-    let personal_count = safe_count / 10; // Occasional personal
-    let remaining = safe_count
-        - newsletter_count
-        - transactional_count
-        - notification_count
-        - marketing_count
-        - personal_count;
+    // Use percentages that sum to <100% so remaining is always positive
+    let newsletter_count = safe_count * 33 / 100; // ~33% newsletters
+    let transactional_count = safe_count * 15 / 100; // ~15% receipts/shipping
+    let notification_count = safe_count * 20 / 100; // ~20% notifications
+    let marketing_count = safe_count * 17 / 100; // ~17% marketing
+    let personal_count = safe_count * 5 / 100; // ~5% personal
+    let allocated = newsletter_count + transactional_count + notification_count + marketing_count + personal_count;
+
+    // Hard bounds check to prevent runaway iteration
+    assert!(
+        allocated <= safe_count,
+        "BUG: allocated {} exceeds safe_count {}",
+        allocated,
+        safe_count
+    );
+    let remaining = safe_count - allocated;
 
     // Generate newsletters (older, clustered)
     for _ in 0..newsletter_count {
@@ -654,8 +664,10 @@ fn reserve_if_needed<T>(vec: &mut Vec<T>, batch_size: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_generate_random_emails() {
         let emails = generate_random_emails(100);
         assert_eq!(emails.len(), 100);
@@ -688,15 +700,17 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_generate_newsletter_emails() {
         let emails = generate_newsletter_emails(50);
         assert_eq!(emails.len(), 50);
 
-        // Most should have unsubscribe headers
+        // Most should have unsubscribe headers (~80% probability per email)
         let with_unsubscribe = emails.iter().filter(|e| e.has_unsubscribe).count();
         assert!(
-            with_unsubscribe > 40,
-            "Most newsletters should have unsubscribe"
+            with_unsubscribe > 30,
+            "Most newsletters should have unsubscribe, got {}/50",
+            with_unsubscribe
         );
 
         // All should be automated
@@ -706,6 +720,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_generate_mixed_workload() {
         let emails = generate_mixed_workload(100);
         assert_eq!(emails.len(), 100);
@@ -730,6 +745,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_domain_variety() {
         let emails = generate_random_emails(1000);
 
@@ -752,6 +768,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_email_metadata_validity() {
         let emails = generate_random_emails(10);
 
