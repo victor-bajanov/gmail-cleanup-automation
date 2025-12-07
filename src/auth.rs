@@ -49,13 +49,20 @@ pub async fn validate_token_scopes(token_cache_path: &Path) -> Result<bool> {
     // yup-oauth2 stores tokens with a key that is the sorted, space-joined scopes
     // Check if we have a token entry that covers all required scopes
     if let Some(obj) = token_data.as_object() {
+        info!("Token file contains {} keys", obj.len());
         for (scope_key, _token_info) in obj {
+            info!("Found token with scope key: {}", scope_key);
             // The scope key is space-separated scopes
             let cached_scopes: Vec<&str> = scope_key.split(' ').collect();
+            info!("Parsed {} scopes from key", cached_scopes.len());
 
             // Check if all required scopes are present in this token
             let has_all_scopes = REQUIRED_SCOPES.iter().all(|required| {
-                cached_scopes.iter().any(|cached| cached == required)
+                let found = cached_scopes.iter().any(|cached| cached == required);
+                if !found {
+                    info!("Missing required scope: {}", required);
+                }
+                found
             });
 
             if has_all_scopes {
@@ -63,6 +70,8 @@ pub async fn validate_token_scopes(token_cache_path: &Path) -> Result<bool> {
                 return Ok(true);
             }
         }
+    } else {
+        warn!("Token file is not a JSON object");
     }
 
     // No token with all required scopes found
