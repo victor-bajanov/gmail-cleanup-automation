@@ -46,23 +46,37 @@ pub async fn validate_token_scopes(token_cache_path: &Path) -> Result<bool> {
     let token_data: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| GmailError::AuthError(format!("Failed to parse token cache: {}", e)))?;
 
-    // yup-oauth2 stores tokens with a key that is the sorted, space-joined scopes
-    // Check if we have a token entry that covers all required scopes
-    if let Some(obj) = token_data.as_object() {
-        info!("Token file contains {} keys", obj.len());
-        for (scope_key, _token_info) in obj {
-            info!("Found token with scope key: {}", scope_key);
-            // The scope key is space-separated scopes
-            let cached_scopes: Vec<&str> = scope_key.split(' ').collect();
-            info!("Parsed {} scopes from key", cached_scopes.len());
+    // yup-oauth2 v12+ stores tokens as an array of objects with "scopes" and "token" fields
+    // Earlier versions used an object keyed by space-joined scope strings
+    // We need to handle both formats for compatibility
 
-            // Check if all required scopes are present in this token
-            let has_all_scopes = REQUIRED_SCOPES.iter().all(|required| {
-                let found = cached_scopes.iter().any(|cached| cached == required);
-                if !found {
-                    info!("Missing required scope: {}", required);
+    // Try new format first: array of {scopes: [...], token: {...}}
+    if let Some(arr) = token_data.as_array() {
+        for entry in arr {
+            if let Some(scopes_arr) = entry.get("scopes").and_then(|s| s.as_array()) {
+                let cached_scopes: Vec<&str> = scopes_arr
+                    .iter()
+                    .filter_map(|s| s.as_str())
+                    .collect();
+
+                let has_all_scopes = REQUIRED_SCOPES.iter().all(|required| {
+                    cached_scopes.iter().any(|cached| cached == required)
+                });
+
+                if has_all_scopes {
+                    info!("Cached token has all required scopes");
+                    return Ok(true);
                 }
-                found
+            }
+        }
+    }
+    // Fall back to old format: object keyed by space-joined scopes
+    else if let Some(obj) = token_data.as_object() {
+        for (scope_key, _token_info) in obj {
+            let cached_scopes: Vec<&str> = scope_key.split(' ').collect();
+
+            let has_all_scopes = REQUIRED_SCOPES.iter().all(|required| {
+                cached_scopes.iter().any(|cached| cached == required)
             });
 
             if has_all_scopes {
@@ -70,8 +84,6 @@ pub async fn validate_token_scopes(token_cache_path: &Path) -> Result<bool> {
                 return Ok(true);
             }
         }
-    } else {
-        warn!("Token file is not a JSON object");
     }
 
     // No token with all required scopes found
@@ -382,10 +394,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_token_scopes_valid_token() {
+    async fn test_validate_token_scopes_valid_token_v12_format() {
         let temp_file = NamedTempFile::new().unwrap();
 
-        // Simulate yup-oauth2 token storage format with all required scopes
+        // yup-oauth2 v12+ format: array of objects with "scopes" array
+        let token_json = r#"[{
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/gmail.labels",
+                "https://www.googleapis.com/auth/gmail.settings.basic"
+            ],
+            "token": {
+                "access_token": "test_token",
+                "refresh_token": "test_refresh",
+                "expires_at": [2025, 341, 14, 20, 36, 401496809, 0, 0, 0]
+            }
+        }]"#;
+
+        tokio::fs::write(temp_file.path(), token_json).await.unwrap();
+
+        let result = validate_token_scopes(temp_file.path()).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // Should return true for valid scopes
+    }
+
+    #[tokio::test]
+    async fn test_validate_token_scopes_valid_token_legacy_format() {
+        let temp_file = NamedTempFile::new().unwrap();
+
+        // Legacy yup-oauth2 format: object keyed by space-joined scopes
         let token_json = r#"{
             "https://www.googleapis.com/auth/gmail.labels https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.settings.basic": {
                 "access_token": "test_token",
@@ -402,17 +439,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_token_scopes_missing_scope() {
+    async fn test_validate_token_scopes_missing_scope_v12_format() {
         let temp_file = NamedTempFile::new().unwrap();
 
         // Token with only some required scopes (missing gmail.settings.basic)
-        let token_json = r#"{
-            "https://www.googleapis.com/auth/gmail.labels https://www.googleapis.com/auth/gmail.modify": {
+        let token_json = r#"[{
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/gmail.labels"
+            ],
+            "token": {
                 "access_token": "test_token",
-                "token_type": "Bearer",
-                "expires_in": 3600
+                "refresh_token": "test_refresh"
             }
-        }"#;
+        }]"#;
 
         tokio::fs::write(temp_file.path(), token_json).await.unwrap();
 
