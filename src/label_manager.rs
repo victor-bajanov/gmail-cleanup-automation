@@ -715,6 +715,7 @@ impl LabelManager {
             .iter()
             .flat_map(|f| &f.add_label_ids)
             .collect();
+        let used_label_count = used_label_ids.len();
 
         // Collect all required parent paths
         let mut required_parents: HashSet<String> = HashSet::new();
@@ -748,12 +749,18 @@ impl LabelManager {
         let mut parents_sorted: Vec<String> = required_parents.into_iter().collect();
         parents_sorted.sort_by_key(|p| p.matches('/').count());
 
+        info!(
+            "Hierarchy check: {} labels used by filters, {} unique parent paths to verify",
+            used_label_count,
+            parents_sorted.len()
+        );
+
         // Create missing parent labels
         let mut created_labels: Vec<(String, String)> = Vec::new();
 
-        for parent_path in parents_sorted {
+        for parent_path in &parents_sorted {
             // Check if parent already exists in cache (case-insensitive)
-            if !self.cache_contains(&parent_path) {
+            if !self.cache_contains(parent_path) {
                 info!("Creating missing parent label: {}", parent_path);
 
                 // Remove the prefix from the parent path since get_or_create_label adds it
