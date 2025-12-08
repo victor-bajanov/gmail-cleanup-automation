@@ -588,6 +588,7 @@ pub async fn run_pipeline(
     if state.can_resume() {
         // Declare variables early for proper scoping across resume paths
         let mut review_decisions: Vec<ClusterDecision> = Vec::new();
+        let mut review_mode_completed = false; // Track if review was completed (not aborted with Q)
         let mut classifications: Vec<(MessageMetadata, Classification)> = Vec::new();
         let mut existing_filters: Vec<ExistingFilterInfo> = Vec::new();
         let mut category_counts: HashMap<String, usize> = HashMap::new();
@@ -888,6 +889,17 @@ pub async fn run_pipeline(
                     // Create new reporter after interactive mode (reuse same MultiProgress for tracing coordination)
                     reporter = ProgressReporter::with_multi_progress(multi);
 
+                    // If user pressed Q or Ctrl-C (empty decisions), abort the operation
+                    if decisions.is_empty() {
+                        println!("\nReview cancelled. No filters will be created.");
+                        return Err(GmailError::OperationCancelled(
+                            "User cancelled review".to_string(),
+                        ));
+                    }
+
+                    // Mark review as completed (user pressed W with decisions)
+                    review_mode_completed = true;
+
                     // Apply user decisions to classifications
                     for decision in &decisions {
                         if matches!(decision.action, DecisionAction::Skip) {
@@ -1080,15 +1092,16 @@ pub async fn run_pipeline(
                 }
             }
 
-            if !review_decisions.is_empty() {
-                // When review mode was used, only create labels for accepted clusters
+            if review_mode_completed {
+                // When review mode was completed, only create labels for accepted clusters
+                // (review_decisions may be empty if all items were skipped - that's intentional)
                 for decision in &review_decisions {
                     if !decision.label.is_empty() {
                         unique_labels.insert(decision.label.clone());
                     }
                 }
-            } else {
-                // Fallback: collect from classifications for domains above threshold
+            } else if !review {
+                // No review mode: collect from classifications for domains above threshold
                 let threshold = config.classification.minimum_emails_for_label;
                 let domains_above_threshold: std::collections::HashSet<String> = domain_counts
                     .iter()
@@ -1177,8 +1190,10 @@ pub async fn run_pipeline(
 
             let mut filter_manager = FilterManager::new(Box::new(client.clone()));
 
-            // Generate filters: from review decisions if available, otherwise from classifications
-            let filters: Vec<FilterRule> = if !review_decisions.is_empty() {
+            // Generate filters: from review decisions if review was completed, otherwise from classifications
+            // Note: review_mode_completed means user pressed W (finish), not Q (quit)
+            // If all items were skipped, review_decisions is empty but we still don't fall back
+            let filters: Vec<FilterRule> = if review_mode_completed {
                 // Convert user decisions directly to filter rules
                 // Filter out Reject/Delete decisions without existing filters (they don't need new filters)
                 // Keep Accept and Custom decisions for filter creation
@@ -1224,12 +1239,15 @@ pub async fn run_pipeline(
                         }
                     })
                     .collect()
-            } else {
-                // No review, generate from classifications
+            } else if !review {
+                // No review mode requested, generate from classifications
                 filter_manager.generate_filters_from_classifications(
                     &classifications,
                     config.classification.minimum_emails_for_label,
                 )
+            } else {
+                // Review mode requested but no clusters met threshold, create empty filter list
+                Vec::new()
             };
 
             // Use progress bar instead of spinner since we're iterating
