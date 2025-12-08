@@ -268,8 +268,12 @@ pub struct Report {
     pub orphaned_filters_found: usize,
     /// Number of filters deleted during cleanup
     pub filters_deleted: usize,
+    /// Details of filters to be deleted: (pattern, label_name)
+    pub filters_to_delete: Vec<(String, String)>,
     /// Number of orphaned labels deleted
     pub orphaned_labels_deleted: usize,
+    /// Names of orphaned labels to be deleted
+    pub orphaned_labels_to_delete: Vec<String>,
     /// Number of messages that had labels removed during cleanup
     pub messages_cleaned: usize,
     pub classification_breakdown: Vec<(String, usize, f32)>,
@@ -383,6 +387,34 @@ impl Report {
                 md.push_str("These are auto-managed filters that either:\n");
                 md.push_str("- Have no matching emails in the scan period (orphaned)\n");
                 md.push_str("- Match a pattern in the permanent exclusion list\n\n");
+
+                if !self.filters_to_delete.is_empty() {
+                    md.push_str("| Pattern | Label |\n");
+                    md.push_str("|---------|-------|\n");
+                    for (pattern, label) in &self.filters_to_delete {
+                        let escaped_pattern = pattern.replace('|', "\\|");
+                        let escaped_label = label.replace('|', "\\|");
+                        md.push_str(&format!("| {} | {} |\n", escaped_pattern, escaped_label));
+                    }
+                    md.push('\n');
+                }
+            }
+
+            // Orphaned labels to delete section
+            if self.orphaned_labels_deleted > 0 {
+                md.push_str("### Labels to Delete\n\n");
+                md.push_str(&format!(
+                    "**{} orphaned labels would be deleted.**\n\n",
+                    self.orphaned_labels_deleted
+                ));
+                md.push_str("These are auto-managed labels not used by any filter.\n\n");
+
+                if !self.orphaned_labels_to_delete.is_empty() {
+                    for label in &self.orphaned_labels_to_delete {
+                        md.push_str(&format!("- `{}`\n", label));
+                    }
+                    md.push('\n');
+                }
             }
 
             // Actions summary
@@ -405,6 +437,12 @@ impl Report {
                 md.push_str(&format!(
                     "- **Filters that would be deleted:** {}\n",
                     self.filters_deleted
+                ));
+            }
+            if self.orphaned_labels_deleted > 0 {
+                md.push_str(&format!(
+                    "- **Labels that would be deleted:** {}\n",
+                    self.orphaned_labels_deleted
                 ));
             }
             md.push('\n');
@@ -772,7 +810,9 @@ pub async fn run_pipeline(
         // Cleanup statistics tracking
         let mut orphaned_filters_found = 0;
         let mut filters_deleted = 0;
+        let mut filters_to_delete_details: Vec<(String, String)> = Vec::new();
         let mut orphaned_labels_deleted = 0;
+        let mut orphaned_labels_to_delete_names: Vec<String> = Vec::new();
         let mut messages_cleaned = 0;
 
         // Handle resume from CreatingFilters or CreatingLabels phase
@@ -1505,6 +1545,30 @@ pub async fn run_pipeline(
                         &decision.sender_domain
                     };
 
+                    // Build pattern string for report
+                    let pattern = if decision.is_specific_sender {
+                        if let Some(subject) = &decision.subject_pattern {
+                            format!("{} (subject: {})", decision.sender_email, subject)
+                        } else {
+                            decision.sender_email.clone()
+                        }
+                    } else if let Some(subject) = &decision.subject_pattern {
+                        format!("*@{} (subject: {})", decision.sender_domain, subject)
+                    } else {
+                        format!("*@{}", decision.sender_domain)
+                    };
+
+                    // Look up label name from existing filter
+                    let label_name = existing_filters
+                        .iter()
+                        .find(|f| &f.id == existing_id)
+                        .and_then(|f| f.add_label_ids.first())
+                        .and_then(|label_id| label_id_to_name_for_deletion.get(label_id))
+                        .cloned()
+                        .unwrap_or_else(|| "unknown".to_string());
+
+                    filters_to_delete_details.push((pattern, label_name));
+
                     if !dry_run {
                         info!(
                             "Deleting filter for '{}' (ID: {}) - user requested deletion",
@@ -1688,7 +1752,7 @@ pub async fn run_pipeline(
                             match client.delete_filter(existing_id).await {
                                 Ok(_) => {
                                     info!("Successfully deleted filter");
-                                    filters_deleted += 1;
+                                    // Note: filters_deleted was already counted in the delete_decisions loop
                                 }
                                 Err(e) => warn!("Failed to delete filter: {}", e),
                             }
@@ -1826,10 +1890,15 @@ pub async fn run_pipeline(
             ));
             state.checkpoint(&cli.state_file).await?;
 
-            // Cleanup orphaned labels (auto-managed labels not used by any filter)
-            if !dry_run {
-                // Refresh the list of existing filters after our changes
-                let current_filters = client.list_filters().await.unwrap_or_default();
+            // Detect orphaned labels (auto-managed labels not used by any filter)
+            // In dry-run mode we detect and count; in live mode we also delete
+            {
+                // For dry-run, use existing_filters; for live mode, refresh after our changes
+                let current_filters = if dry_run {
+                    existing_filters.clone()
+                } else {
+                    client.list_filters().await.unwrap_or_default()
+                };
 
                 let mut label_manager =
                     LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
@@ -1842,27 +1911,33 @@ pub async fn run_pipeline(
 
                 if !orphaned_labels.is_empty() {
                     info!("Found {} orphaned labels to clean up", orphaned_labels.len());
+                    orphaned_labels_deleted = orphaned_labels.len();
+                    orphaned_labels_to_delete_names = orphaned_labels
+                        .iter()
+                        .map(|(_, name)| name.clone())
+                        .collect();
 
-                    // Remove labels from messages before deleting them
-                    for (label_id, label_name) in &orphaned_labels {
-                        match label_manager.remove_label_from_all_messages(label_id).await {
-                            Ok(count) => {
-                                if count > 0 {
-                                    info!("Removed label '{}' from {} messages", label_name, count);
-                                    messages_cleaned += count;
+                    if !dry_run {
+                        // Remove labels from messages before deleting them
+                        for (label_id, label_name) in &orphaned_labels {
+                            match label_manager.remove_label_from_all_messages(label_id).await {
+                                Ok(count) => {
+                                    if count > 0 {
+                                        info!("Removed label '{}' from {} messages", label_name, count);
+                                        messages_cleaned += count;
+                                    }
                                 }
+                                Err(e) => warn!("Failed to remove label '{}' from messages: {}", label_name, e),
                             }
-                            Err(e) => warn!("Failed to remove label '{}' from messages: {}", label_name, e),
                         }
-                    }
 
-                    // Delete the orphaned labels
-                    match label_manager.cleanup_orphaned_labels(&orphaned_labels).await {
-                        Ok(count) => {
-                            info!("Deleted {} orphaned labels", count);
-                            orphaned_labels_deleted = count;
+                        // Delete the orphaned labels
+                        match label_manager.cleanup_orphaned_labels(&orphaned_labels).await {
+                            Ok(count) => {
+                                info!("Deleted {} orphaned labels", count);
+                            }
+                            Err(e) => warn!("Failed to delete some orphaned labels: {}", e),
                         }
-                        Err(e) => warn!("Failed to delete some orphaned labels: {}", e),
                     }
                 }
             }
@@ -1970,7 +2045,9 @@ pub async fn run_pipeline(
             messages_archived: messages_archived_count,
             orphaned_filters_found,
             filters_deleted,
+            filters_to_delete: filters_to_delete_details,
             orphaned_labels_deleted,
+            orphaned_labels_to_delete: orphaned_labels_to_delete_names,
             messages_cleaned,
             classification_breakdown,
             top_senders,
