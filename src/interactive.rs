@@ -43,6 +43,10 @@ pub struct EmailCluster {
     pub existing_filter_label: Option<String>,
     /// Original archive setting from existing filter (for detecting changes)
     pub existing_filter_archive: Option<bool>,
+    /// Source of this cluster (email scan or synthetic from orphaned filter)
+    pub source: ClusterSource,
+    /// Default action for this cluster (None for Accept, Some(Delete) for orphaned)
+    pub default_action: Option<DecisionAction>,
 }
 
 impl EmailCluster {
@@ -83,6 +87,18 @@ pub enum DecisionAction {
     Delete,
     /// Permanently exclude this cluster from future reviews (saved to exclusions file)
     Exclude,
+}
+
+/// Source of a cluster - whether from email scan or synthetic (orphaned filter)
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ClusterSource {
+    /// Cluster created from scanning emails
+    #[default]
+    EmailScan,
+    /// Synthetic cluster from an orphaned auto-managed filter (no matching emails found)
+    OrphanedFilter,
+    /// Synthetic cluster from a filter matching an excluded pattern
+    ExcludedPattern,
 }
 
 /// Entry in the undo history
@@ -283,6 +299,34 @@ impl ReviewSession {
         out!("{}", line(&progress_text));
         out!("{}", mid);
 
+        // Show banner for orphaned/excluded clusters
+        if self.current_index < self.clusters.len() {
+            let cluster = &self.clusters[self.current_index];
+            match cluster.source {
+                ClusterSource::OrphanedFilter => {
+                    let banner_top = format!("┌─ ORPHANED FILTER {}", "─".repeat(w.saturating_sub(19)));
+                    let banner_mid = "│ No matching emails found in scan period - DELETE recommended";
+                    let banner_bottom = format!("└{}", "─".repeat(w + 1));
+                    out!("{}", banner_top);
+                    out!("{}", line(banner_mid));
+                    out!("{}", banner_bottom);
+                    out!("{}", mid);
+                }
+                ClusterSource::ExcludedPattern => {
+                    let banner_top = format!("┌─ EXCLUDED PATTERN {}", "─".repeat(w.saturating_sub(20)));
+                    let banner_mid = "│ Filter matches permanently excluded pattern - DELETE recommended";
+                    let banner_bottom = format!("└{}", "─".repeat(w + 1));
+                    out!("{}", banner_top);
+                    out!("{}", line(banner_mid));
+                    out!("{}", banner_bottom);
+                    out!("{}", mid);
+                }
+                ClusterSource::EmailScan => {
+                    // Normal cluster, no banner
+                }
+            }
+        }
+
         if self.current_index >= self.clusters.len() {
             // All done - show summary
             out!("{}", line(""));
@@ -370,16 +414,26 @@ impl ReviewSession {
             );
             out!("{}", line(&format!("  Archive: {}", archive_status)));
             out!("{}", mid);
-            out!("{}", line("Sample subjects:"));
 
-            for subject in cluster.sample_subjects.iter().take(4) {
-                let truncated = truncate_str(subject, subject_max);
-                out!("{}", line(&format!("  • {}", truncated)));
-            }
+            // Show sample subjects or "No recent emails" message
+            if cluster.sample_subjects.is_empty() {
+                out!("{}", line("Sample subjects:"));
+                out!("{}", line("  (No recent emails found)"));
+                // Pad remaining lines to maintain layout
+                for _ in 0..3 {
+                    out!("{}", line(""));
+                }
+            } else {
+                out!("{}", line("Sample subjects:"));
+                for subject in cluster.sample_subjects.iter().take(4) {
+                    let truncated = truncate_str(subject, subject_max);
+                    out!("{}", line(&format!("  • {}", truncated)));
+                }
 
-            // Pad remaining lines if fewer than 4 subjects
-            for _ in cluster.sample_subjects.len()..4 {
-                out!("{}", line(""));
+                // Pad remaining lines if fewer than 4 subjects
+                for _ in cluster.sample_subjects.len()..4 {
+                    out!("{}", line(""));
+                }
             }
 
             out!("{}", mid);
@@ -416,18 +470,28 @@ impl ReviewSession {
                 out!("{}", line(&cur_line));
                 out!("{}", line(&prop_line));
                 out!("{}", mid);
-                out!(
-                    "{}",
-                    line("[Y] Update filter  [N] Keep as-is  [S] Skip (keep current)")
-                );
-                out!(
-                    "{}",
-                    line("[D] DELETE filter  [E] Exclude permanently  [?] Help")
-                );
-                out!(
-                    "{}",
-                    line("[A] Toggle archive [L] Change label  [Shift+S] Skip all existing")
-                );
+
+                // Check if default action is Delete (for orphaned/excluded)
+                if matches!(cluster.default_action, Some(DecisionAction::Delete)) {
+                    out!(
+                        "{}",
+                        line("[Enter/D] DELETE filter  [Y] Keep  [E] Exclude permanently")
+                    );
+                    out!("{}", line("[S] Skip for now  [?] Help"));
+                } else {
+                    out!(
+                        "{}",
+                        line("[Y] Update filter  [N] Keep as-is  [S] Skip (keep current)")
+                    );
+                    out!(
+                        "{}",
+                        line("[D] DELETE filter  [E] Exclude permanently  [?] Help")
+                    );
+                    out!(
+                        "{}",
+                        line("[A] Toggle archive [L] Change label  [Shift+S] Skip all existing")
+                    );
+                }
             } else {
                 out!(
                     "{}",
@@ -455,7 +519,15 @@ impl ReviewSession {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
                 if self.current_index < self.clusters.len() {
-                    self.accept_current();
+                    let cluster = &self.clusters[self.current_index];
+                    // For orphaned/excluded clusters with Delete default, Enter triggers delete
+                    if key.code == KeyCode::Enter
+                        && matches!(cluster.default_action, Some(DecisionAction::Delete))
+                    {
+                        self.delete_current();
+                    } else {
+                        self.accept_current();
+                    }
                     self.advance();
                 }
                 Ok(SessionAction::Continue)
@@ -1257,6 +1329,8 @@ fn build_cluster_with_subject(
         existing_filter_label_id: None, // Will be set by caller after matching against existing filters
         existing_filter_label: None, // Will be set by caller after matching against existing filters
         existing_filter_archive: None, // Will be set by caller after matching against existing filters
+        source: ClusterSource::EmailScan,
+        default_action: None,
     }
 }
 
@@ -1461,6 +1535,8 @@ mod tests {
             existing_filter_label_id: None,
             existing_filter_label: None,
             existing_filter_archive: None,
+            source: ClusterSource::EmailScan,
+            default_action: None,
         };
 
         assert_eq!(cluster.email_count(), 2);

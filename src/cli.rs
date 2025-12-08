@@ -264,6 +264,14 @@ pub struct Report {
     pub filters_created: usize,
     pub messages_modified: usize,
     pub messages_archived: usize,
+    /// Number of orphaned auto-managed filters found
+    pub orphaned_filters_found: usize,
+    /// Number of filters deleted during cleanup
+    pub filters_deleted: usize,
+    /// Number of orphaned labels deleted
+    pub orphaned_labels_deleted: usize,
+    /// Number of messages that had labels removed during cleanup
+    pub messages_cleaned: usize,
     pub classification_breakdown: Vec<(String, usize, f32)>,
     pub top_senders: Vec<(String, usize, String)>,
     /// Examples per category: category -> [(sender_email, subject)]
@@ -434,6 +442,24 @@ impl Report {
                 "- **Messages kept in inbox:** {}\n\n",
                 self.emails_scanned - self.messages_archived
             ));
+
+            // Cleanup section (only show if any cleanup happened)
+            if self.orphaned_filters_found > 0 || self.filters_deleted > 0 || self.orphaned_labels_deleted > 0 {
+                md.push_str("## Cleanup Operations\n\n");
+                if self.orphaned_filters_found > 0 {
+                    md.push_str(&format!("- **Orphaned filters found:** {}\n", self.orphaned_filters_found));
+                }
+                if self.filters_deleted > 0 {
+                    md.push_str(&format!("- **Filters deleted:** {}\n", self.filters_deleted));
+                }
+                if self.orphaned_labels_deleted > 0 {
+                    md.push_str(&format!("- **Orphaned labels deleted:** {}\n", self.orphaned_labels_deleted));
+                }
+                if self.messages_cleaned > 0 {
+                    md.push_str(&format!("- **Messages cleaned (labels removed):** {}\n", self.messages_cleaned));
+                }
+                md.push('\n');
+            }
         }
 
         md.push_str("## Top Senders\n\n");
@@ -474,7 +500,7 @@ use crate::error::{GmailError, Result};
 use crate::exclusions::ExclusionManager;
 use crate::filter_manager::FilterManager;
 use crate::interactive::{
-    create_clusters, ClusterDecision, DecisionAction, EmailCluster, ReviewSession,
+    create_clusters, ClusterDecision, ClusterSource, DecisionAction, EmailCluster, ReviewSession,
 };
 use crate::label_manager::LabelManager;
 use crate::models::{Classification, FilterRule, MessageMetadata};
@@ -499,6 +525,131 @@ fn cluster_key(cluster: &EmailCluster) -> String {
         base
     }
 }
+
+/// Find auto-managed filters that have no matching cluster from the email scan
+fn find_orphaned_auto_managed_filters<'a>(
+    existing_filters: &'a [ExistingFilterInfo],
+    clusters: &[EmailCluster],
+    label_prefix: &str,
+    label_id_to_name: &HashMap<String, String>,
+) -> Vec<&'a ExistingFilterInfo> {
+    // Get set of filter IDs that are already matched to clusters
+    let matched_filter_ids: std::collections::HashSet<_> = clusters
+        .iter()
+        .filter_map(|c| c.existing_filter_id.as_ref())
+        .collect();
+
+    // Find auto-managed filters not in the matched set
+    existing_filters
+        .iter()
+        .filter(|f| {
+            f.is_auto_managed(label_prefix, label_id_to_name)
+                && !matched_filter_ids.contains(&f.id)
+        })
+        .collect()
+}
+
+/// Find auto-managed filters whose pattern matches the exclusion list
+fn find_excluded_pattern_filters<'a>(
+    existing_filters: &'a [ExistingFilterInfo],
+    exclusion_manager: &ExclusionManager,
+    label_prefix: &str,
+    label_id_to_name: &HashMap<String, String>,
+) -> Vec<&'a ExistingFilterInfo> {
+    existing_filters
+        .iter()
+        .filter(|f| {
+            if !f.is_auto_managed(label_prefix, label_id_to_name) {
+                return false;
+            }
+            if let Some(key) = f.to_cluster_key() {
+                exclusion_manager.is_excluded(&key)
+            } else {
+                false
+            }
+        })
+        .collect()
+}
+
+/// Create synthetic clusters for orphaned or excluded-pattern filters
+/// These will appear in review with DELETE as the default action
+fn create_synthetic_clusters(
+    filters: &[&ExistingFilterInfo],
+    label_id_to_name: &HashMap<String, String>,
+    source: ClusterSource,
+) -> Vec<EmailCluster> {
+    use crate::models::EmailCategory;
+
+    filters
+        .iter()
+        .filter_map(|filter| {
+            // Parse the query to extract from pattern and subject
+            let query = filter.query.as_ref()?;
+            let query_lower = query.to_lowercase();
+
+            // Extract from pattern
+            let from_start = query_lower.find("from:(")?;
+            let from_content_start = from_start + 6;
+            let from_end = query_lower[from_content_start..].find(')')? + from_content_start;
+            let from_pattern = query[from_content_start..from_end].trim().to_string();
+
+            // Parse from pattern to get domain and email
+            let (sender_domain, sender_email, is_specific_sender) = if from_pattern.starts_with("*@") {
+                // Domain pattern: *@domain.com
+                let domain = from_pattern[2..].split_whitespace().next().unwrap_or(&from_pattern[2..]);
+                (domain.to_string(), String::new(), false)
+            } else {
+                // Specific sender: email@domain.com
+                let email = from_pattern.split_whitespace().next().unwrap_or(&from_pattern);
+                let domain = email.split('@').nth(1).unwrap_or("unknown");
+                (domain.to_string(), email.to_string(), true)
+            };
+
+            // Extract subject pattern if present
+            let subject_pattern = if let Some(subj_start) = query_lower.find("subject:(") {
+                let subj_content_start = subj_start + 9;
+                if let Some(subj_rel_end) = query_lower[subj_content_start..].find(')') {
+                    let subj_end = subj_rel_end + subj_content_start;
+                    Some(query[subj_content_start..subj_end].trim().trim_matches('"').to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Get label name from filter
+            let label_name = filter.add_label_ids.first()
+                .and_then(|id| label_id_to_name.get(id))
+                .cloned()
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            // Check if filter archives (removes INBOX label)
+            let should_archive = filter.remove_label_ids.iter().any(|l| l == "INBOX");
+
+            Some(EmailCluster {
+                sender_domain,
+                sender_email,
+                is_specific_sender,
+                excluded_senders: Vec::new(),
+                subject_pattern,
+                message_ids: Vec::new(), // No messages - synthetic cluster
+                suggested_category: EmailCategory::Other,
+                suggested_label: label_name.clone(),
+                confidence: 1.0,
+                sample_subjects: Vec::new(),
+                should_archive,
+                existing_filter_id: Some(filter.id.clone()),
+                existing_filter_label_id: filter.add_label_ids.first().cloned(),
+                existing_filter_label: Some(label_name),
+                existing_filter_archive: Some(should_archive),
+                source: source.clone(),
+                default_action: Some(DecisionAction::Delete),
+            })
+        })
+        .collect()
+}
+
 use std::sync::Arc;
 
 /// Load review decisions from a JSON file
@@ -598,6 +749,12 @@ pub async fn run_pipeline(
         let mut existing_label_names: Vec<String> = Vec::new();
         let mut labels_created = 0;
         let mut filters_created = 0;
+
+        // Cleanup statistics tracking
+        let mut orphaned_filters_found = 0;
+        let mut filters_deleted = 0;
+        let mut orphaned_labels_deleted = 0;
+        let mut messages_cleaned = 0;
 
         // Handle resume from CreatingFilters or CreatingLabels phase
         if resume
@@ -861,6 +1018,53 @@ pub async fn run_pipeline(
                             break; // Found a match, stop looking
                         }
                     }
+                }
+
+                // Detect orphaned and excluded-pattern auto-managed filters
+                // These will be shown in review with DELETE as default action
+                let label_id_to_name_for_detection: HashMap<String, String> = preloaded_label_manager
+                    .get_label_cache()
+                    .iter()
+                    .map(|(name, id)| (id.clone(), name.clone()))
+                    .collect();
+
+                let orphaned_filters = find_orphaned_auto_managed_filters(
+                    &existing_filters,
+                    &clusters,
+                    &config.labels.prefix,
+                    &label_id_to_name_for_detection,
+                );
+
+                let excluded_pattern_filters = find_excluded_pattern_filters(
+                    &existing_filters,
+                    &exclusion_manager,
+                    &config.labels.prefix,
+                    &label_id_to_name_for_detection,
+                );
+
+                // Track orphaned filters count
+                orphaned_filters_found = orphaned_filters.len() + excluded_pattern_filters.len();
+
+                // Create synthetic clusters for orphaned filters
+                if !orphaned_filters.is_empty() {
+                    info!("Found {} orphaned auto-managed filters", orphaned_filters.len());
+                    let orphaned_clusters = create_synthetic_clusters(
+                        &orphaned_filters,
+                        &label_id_to_name_for_detection,
+                        ClusterSource::OrphanedFilter,
+                    );
+                    clusters.extend(orphaned_clusters);
+                }
+
+                // Create synthetic clusters for excluded pattern filters
+                if !excluded_pattern_filters.is_empty() {
+                    info!("Found {} filters matching excluded patterns", excluded_pattern_filters.len());
+                    let excluded_clusters = create_synthetic_clusters(
+                        &excluded_pattern_filters,
+                        &label_id_to_name_for_detection,
+                        ClusterSource::ExcludedPattern,
+                    );
+                    clusters.extend(excluded_clusters);
                 }
 
                 if !clusters.is_empty() {
@@ -1283,6 +1487,12 @@ pub async fn run_pipeline(
                 decision_map.insert(key, decision);
             }
 
+            // Build label ID -> name map for deletion cleanup (inverse of label_name_to_id)
+            let label_id_to_name_for_deletion: HashMap<String, String> = label_name_to_id
+                .iter()
+                .map(|(name, id)| (id.clone(), name.clone()))
+                .collect();
+
             for filter in &filters {
                 filter_bar
                     .set_message(format!("Processing: {}", truncate_string(&filter.name, 40)));
@@ -1344,8 +1554,39 @@ pub async fn run_pipeline(
                                 "Deleting existing filter '{}' (ID: {}) - user requested deletion",
                                 filter.name, existing_id
                             );
+
+                            // Remove label from messages before deleting filter
+                            // Look up the label ID from the existing filter
+                            if let Some(filter_id) = decision.and_then(|d| d.existing_filter_id.as_ref()) {
+                                if let Some(existing_filter) = existing_filters.iter().find(|f| &f.id == filter_id) {
+                                    if let Some(label_id) = existing_filter.add_label_ids.first() {
+                                        let label_name = label_id_to_name_for_deletion
+                                            .get(label_id)
+                                            .map(|s| s.as_str())
+                                            .unwrap_or("unknown");
+
+                                        // Search for messages with this label and remove it
+                                        let query = format!("label:{}", label_id);
+                                        if let Ok(msg_ids) = client.list_message_ids(&query).await {
+                                            if !msg_ids.is_empty() {
+                                                info!("Removing label '{}' from {} messages", label_name, msg_ids.len());
+                                                messages_cleaned += msg_ids.len();
+                                                let labels_to_remove = vec![label_id.clone()];
+                                                let empty: Vec<String> = vec![];
+                                                for chunk in msg_ids.chunks(1000) {
+                                                    let _ = client.batch_modify_labels(chunk, &empty, &labels_to_remove).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             match client.delete_filter(existing_id).await {
-                                Ok(_) => info!("Successfully deleted filter"),
+                                Ok(_) => {
+                                    info!("Successfully deleted filter");
+                                    filters_deleted += 1;
+                                }
                                 Err(e) => warn!("Failed to delete filter: {}", e),
                             }
                             filters_skipped += 1;
@@ -1482,6 +1723,47 @@ pub async fn run_pipeline(
             ));
             state.checkpoint(&cli.state_file).await?;
 
+            // Cleanup orphaned labels (auto-managed labels not used by any filter)
+            if !dry_run {
+                // Refresh the list of existing filters after our changes
+                let current_filters = client.list_filters().await.unwrap_or_default();
+
+                let mut label_manager =
+                    LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
+                let _ = label_manager.load_existing_labels().await;
+
+                let orphaned_labels = label_manager.find_orphaned_labels(
+                    &current_filters,
+                    &config.labels.prefix,
+                );
+
+                if !orphaned_labels.is_empty() {
+                    info!("Found {} orphaned labels to clean up", orphaned_labels.len());
+
+                    // Remove labels from messages before deleting them
+                    for (label_id, label_name) in &orphaned_labels {
+                        match label_manager.remove_label_from_all_messages(label_id).await {
+                            Ok(count) => {
+                                if count > 0 {
+                                    info!("Removed label '{}' from {} messages", label_name, count);
+                                    messages_cleaned += count;
+                                }
+                            }
+                            Err(e) => warn!("Failed to remove label '{}' from messages: {}", label_name, e),
+                        }
+                    }
+
+                    // Delete the orphaned labels
+                    match label_manager.cleanup_orphaned_labels(&orphaned_labels).await {
+                        Ok(count) => {
+                            info!("Deleted {} orphaned labels", count);
+                            orphaned_labels_deleted = count;
+                        }
+                        Err(e) => warn!("Failed to delete some orphaned labels: {}", e),
+                    }
+                }
+            }
+
             (filters_created, planned_filters, total_labeled)
         } else {
             (0, Vec::new(), 0)
@@ -1583,6 +1865,10 @@ pub async fn run_pipeline(
             },
             messages_modified: messages_labeled,
             messages_archived: messages_archived_count,
+            orphaned_filters_found,
+            filters_deleted,
+            orphaned_labels_deleted,
+            messages_cleaned,
             classification_breakdown,
             top_senders,
             category_examples,

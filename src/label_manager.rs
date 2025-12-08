@@ -641,6 +641,89 @@ impl LabelManager {
         self.apply_labels_to_messages(message_label_map, archive)
             .await
     }
+
+    /// Find labels under the auto-managed prefix that are not used by any filter
+    /// Returns Vec of (label_id, label_name) pairs
+    pub fn find_orphaned_labels(
+        &self,
+        existing_filters: &[crate::client::ExistingFilterInfo],
+        prefix: &str,
+    ) -> Vec<(String, String)> {
+        let prefix_lower = prefix.to_lowercase();
+
+        // Collect all label IDs used by filters
+        let used_label_ids: std::collections::HashSet<_> = existing_filters
+            .iter()
+            .flat_map(|f| &f.add_label_ids)
+            .collect();
+
+        // Find labels starting with prefix that are not used
+        self.label_cache
+            .iter()
+            .filter(|(name, id)| {
+                name.to_lowercase().starts_with(&prefix_lower)
+                    && !used_label_ids.contains(id)
+            })
+            .map(|(name, id)| (id.clone(), name.clone()))
+            .collect()
+    }
+
+    /// Delete orphaned labels - returns count of successfully deleted labels
+    pub async fn cleanup_orphaned_labels(
+        &mut self,
+        orphaned: &[(String, String)],
+    ) -> crate::error::Result<usize> {
+        let mut deleted_count = 0;
+
+        // Sort by name length descending to delete children before parents
+        let mut sorted: Vec<_> = orphaned.to_vec();
+        sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+        for (label_id, label_name) in sorted {
+            match self.client.delete_label(&label_id).await {
+                Ok(()) => {
+                    info!("Deleted orphaned label: {}", label_name);
+                    // Remove from cache
+                    self.label_cache.retain(|_, id| id != &label_id);
+                    deleted_count += 1;
+                }
+                Err(e) => {
+                    warn!("Failed to delete label {}: {}", label_name, e);
+                }
+            }
+        }
+
+        Ok(deleted_count)
+    }
+
+    /// Remove a label from all messages that have it
+    /// Returns the number of messages modified
+    pub async fn remove_label_from_all_messages(
+        &self,
+        label_id: &str,
+    ) -> crate::error::Result<usize> {
+        // Search for messages with this label
+        let query = format!("label:{}", label_id);
+        let message_ids = self.client.list_message_ids(&query).await?;
+
+        if message_ids.is_empty() {
+            return Ok(0);
+        }
+
+        info!("Removing label from {} messages", message_ids.len());
+
+        // Batch remove the label (Gmail allows up to 1000 per call)
+        let labels_to_remove = vec![label_id.to_string()];
+        let labels_to_add: Vec<String> = vec![];
+
+        for chunk in message_ids.chunks(1000) {
+            self.client
+                .batch_modify_labels(chunk, &labels_to_add, &labels_to_remove)
+                .await?;
+        }
+
+        Ok(message_ids.len())
+    }
 }
 
 #[cfg(test)]

@@ -109,6 +109,49 @@ impl ExistingFilterInfo {
 
         label_matches && archive_matches
     }
+
+    /// Check if this filter is auto-managed (has a label starting with the given prefix)
+    /// Uses case-insensitive comparison for the prefix
+    pub fn is_auto_managed(&self, prefix: &str, label_id_to_name: &std::collections::HashMap<String, String>) -> bool {
+        let prefix_lower = prefix.to_lowercase();
+        self.add_label_ids.iter().any(|id| {
+            label_id_to_name.get(id)
+                .map(|name| name.to_lowercase().starts_with(&prefix_lower))
+                .unwrap_or(false)
+        })
+    }
+
+    /// Extract cluster key from filter query for matching against exclusion list
+    /// Returns None if the query doesn't have a recognizable from pattern
+    pub fn to_cluster_key(&self) -> Option<String> {
+        let query = self.query.as_ref()?;
+        let query_lower = query.to_lowercase();
+
+        // Extract from pattern: "from:(*@domain.com)" or "from:(email@domain.com)"
+        let from_start = query_lower.find("from:(")?;
+        let from_content_start = from_start + 6; // len of "from:("
+        let from_end = query_lower[from_content_start..].find(')')? + from_content_start;
+        let from_pattern = &query[from_content_start..from_end].trim();
+
+        // Handle exclusions in from pattern (take first part before space or -from)
+        let from_clean = from_pattern
+            .split_whitespace()
+            .next()
+            .unwrap_or(from_pattern)
+            .trim();
+
+        // Check for subject pattern
+        if let Some(subj_start) = query_lower.find("subject:(") {
+            let subj_content_start = subj_start + 9; // len of "subject:("
+            if let Some(subj_rel_end) = query_lower[subj_content_start..].find(')') {
+                let subj_end = subj_rel_end + subj_content_start;
+                let subject = query[subj_content_start..subj_end].trim().trim_matches('"');
+                return Some(format!("{}|subject:{}", from_clean, subject));
+            }
+        }
+
+        Some(from_clean.to_string())
+    }
 }
 
 /// Trait defining Gmail client operations for easier testing
