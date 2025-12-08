@@ -787,6 +787,13 @@ impl ReviewSession {
             if let Some(cluster) = self.clusters.get(self.current_index) {
                 let key = Self::cluster_key(cluster);
 
+                // Save to history for undo
+                self.history.push(HistoryEntry {
+                    index: self.current_index,
+                    cluster: cluster.clone(),
+                    decision: self.decisions.get(&key).cloned(),
+                });
+
                 let decision = ClusterDecision {
                     sender_domain: cluster.sender_domain.clone(),
                     sender_email: cluster.sender_email.clone(),
