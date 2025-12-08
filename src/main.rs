@@ -223,6 +223,25 @@ async fn run() -> Result<()> {
             println!("Filters created: {}", report.filters_created);
             println!("Messages modified: {}", report.messages_modified);
             println!("Messages archived: {}", report.messages_archived);
+            // Cleanup stats
+            if report.hierarchy_labels_created > 0 || report.orphaned_labels_deleted > 0
+                || report.filters_deleted > 0 || report.messages_cleaned > 0
+            {
+                println!("----------------------------------------");
+                println!("Cleanup:");
+                if report.hierarchy_labels_created > 0 {
+                    println!("  Hierarchy labels repaired: {}", report.hierarchy_labels_created);
+                }
+                if report.orphaned_labels_deleted > 0 {
+                    println!("  Orphaned labels deleted: {}", report.orphaned_labels_deleted);
+                }
+                if report.filters_deleted > 0 {
+                    println!("  Filters deleted: {}", report.filters_deleted);
+                }
+                if report.messages_cleaned > 0 {
+                    println!("  Messages cleaned: {}", report.messages_cleaned);
+                }
+            }
             println!("========================================");
 
             Ok(())
