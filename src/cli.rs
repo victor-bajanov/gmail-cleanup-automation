@@ -373,6 +373,18 @@ impl Report {
                 }
             }
 
+            // Filters to delete section
+            if self.filters_deleted > 0 {
+                md.push_str("### Filters to Delete\n\n");
+                md.push_str(&format!(
+                    "**{} orphaned/excluded filters would be deleted.**\n\n",
+                    self.filters_deleted
+                ));
+                md.push_str("These are auto-managed filters that either:\n");
+                md.push_str("- Have no matching emails in the scan period (orphaned)\n");
+                md.push_str("- Match a pattern in the permanent exclusion list\n\n");
+            }
+
             // Actions summary
             md.push_str("### Actions Summary\n\n");
             md.push_str(&format!(
@@ -384,11 +396,18 @@ impl Report {
                 planned.messages_to_archive
             ));
             md.push_str(&format!(
-                "- **Messages that would stay in inbox:** {}\n\n",
+                "- **Messages that would stay in inbox:** {}\n",
                 planned
                     .messages_to_label
                     .saturating_sub(planned.messages_to_archive)
             ));
+            if self.filters_deleted > 0 {
+                md.push_str(&format!(
+                    "- **Filters that would be deleted:** {}\n",
+                    self.filters_deleted
+                ));
+            }
+            md.push('\n');
         }
 
         md.push_str("## Classification Results\n\n");
@@ -1453,6 +1472,90 @@ pub async fn run_pipeline(
                 // Review mode requested but no clusters met threshold, create empty filter list
                 Vec::new()
             };
+
+            // Process Delete/Reject/Exclude decisions separately (they're not in the filters Vec)
+            // These are orphaned filters or filters the user explicitly wants to delete
+            let delete_decisions: Vec<_> = review_decisions
+                .iter()
+                .filter(|d| {
+                    matches!(
+                        d.action,
+                        DecisionAction::Reject | DecisionAction::Delete | DecisionAction::Exclude
+                    ) && d.existing_filter_id.is_some()
+                })
+                .collect();
+
+            if !delete_decisions.is_empty() {
+                info!(
+                    "Processing {} filter deletion decisions",
+                    delete_decisions.len()
+                );
+
+                // Build label ID -> name map for cleanup messages (inverse of label_name_to_id)
+                let label_id_to_name_for_deletion: HashMap<String, String> = label_name_to_id
+                    .iter()
+                    .map(|(name, id)| (id.clone(), name.clone()))
+                    .collect();
+
+                for decision in &delete_decisions {
+                    let existing_id = decision.existing_filter_id.as_ref().unwrap();
+                    let filter_desc = if decision.is_specific_sender {
+                        &decision.sender_email
+                    } else {
+                        &decision.sender_domain
+                    };
+
+                    if !dry_run {
+                        info!(
+                            "Deleting filter for '{}' (ID: {}) - user requested deletion",
+                            filter_desc, existing_id
+                        );
+
+                        // Remove label from messages before deleting filter
+                        if let Some(label_id) = existing_filters
+                            .iter()
+                            .find(|f| &f.id == existing_id)
+                            .and_then(|f| f.add_label_ids.first())
+                        {
+                            let label_name = label_id_to_name_for_deletion
+                                .get(label_id)
+                                .map(|s| s.as_str())
+                                .unwrap_or("unknown");
+
+                            // Search for messages with this label and remove it
+                            let query = format!("label:{}", label_id);
+                            if let Ok(msg_ids) = client.list_message_ids(&query).await {
+                                if !msg_ids.is_empty() {
+                                    info!(
+                                        "Removing label '{}' from {} messages",
+                                        label_name,
+                                        msg_ids.len()
+                                    );
+                                    messages_cleaned += msg_ids.len();
+                                    let labels_to_remove = vec![label_id.clone()];
+                                    let empty: Vec<String> = vec![];
+                                    for chunk in msg_ids.chunks(1000) {
+                                        let _ = client
+                                            .batch_modify_labels(chunk, &empty, &labels_to_remove)
+                                            .await;
+                                    }
+                                }
+                            }
+                        }
+
+                        match client.delete_filter(existing_id).await {
+                            Ok(_) => {
+                                info!("Successfully deleted filter for '{}'", filter_desc);
+                                filters_deleted += 1;
+                            }
+                            Err(e) => warn!("Failed to delete filter: {}", e),
+                        }
+                    } else {
+                        // Dry run: just count the planned deletion
+                        filters_deleted += 1;
+                    }
+                }
+            }
 
             // Use progress bar instead of spinner since we're iterating
             let filter_bar = reporter.add_progress_bar(
