@@ -177,6 +177,7 @@ async fn run() -> Result<()> {
             no_review,
             resume,
             ignore_exclusions,
+            ref apply_decisions,
         } => {
             tracing::info!("Starting full pipeline run");
             if dry_run {
@@ -191,6 +192,9 @@ async fn run() -> Result<()> {
             if ignore_exclusions {
                 println!("Running with exclusions IGNORED - all clusters will be shown");
             }
+            if let Some(ref path) = apply_decisions {
+                println!("Applying decisions from: {:?}", path);
+            }
 
             // Run the complete pipeline (clone the inner MultiProgress, not the Arc)
             // Review mode is enabled by default; pass !no_review
@@ -202,6 +206,7 @@ async fn run() -> Result<()> {
                 !no_review,
                 resume,
                 ignore_exclusions,
+                apply_decisions.clone(),
                 (*multi_progress).clone(),
             )
             .await?;

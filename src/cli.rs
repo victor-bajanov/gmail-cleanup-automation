@@ -72,6 +72,11 @@ pub enum Commands {
         /// Ignore saved exclusions (show all clusters, including previously excluded ones)
         #[arg(long)]
         ignore_exclusions: bool,
+
+        /// Apply decisions from a file (skips scanning and review)
+        /// Use this to re-apply decisions from a previous dry-run or to rerun decisions
+        #[arg(long, value_name = "FILE")]
+        apply_decisions: Option<PathBuf>,
     },
 
     /// Rollback changes from a previous run
@@ -753,6 +758,7 @@ pub async fn run_pipeline(
     review: bool,
     resume: bool,
     ignore_exclusions: bool,
+    apply_decisions_file: Option<PathBuf>,
     multi_progress: MultiProgress,
 ) -> Result<Report> {
     let mut reporter = ProgressReporter::with_multi_progress(multi_progress);
@@ -868,12 +874,106 @@ pub async fn run_pipeline(
             );
         }
 
-        // Step 5 & 6: Scan and classify emails (skip if resuming from later phases)
-        if !resume
-            || matches!(
-                state.phase,
-                ProcessingPhase::Scanning | ProcessingPhase::Classifying
-            )
+        // Handle --apply-decisions: load decisions from file and skip scanning/classification/review
+        let applying_decisions = apply_decisions_file.is_some();
+        if let Some(ref decisions_path) = apply_decisions_file {
+            // Check for conflicting options
+            if resume {
+                return Err(GmailError::StateError(
+                    "Cannot use --apply-decisions with --resume".to_string(),
+                ));
+            }
+
+            // Load decisions from file
+            let decisions_spinner =
+                reporter.add_spinner(&format!("Loading decisions from {:?}...", decisions_path));
+
+            if !decisions_path.exists() {
+                return Err(GmailError::StateError(format!(
+                    "Decisions file not found: {:?}",
+                    decisions_path
+                )));
+            }
+
+            review_decisions = load_decisions(decisions_path).await?;
+
+            if review_decisions.is_empty() {
+                return Err(GmailError::StateError(
+                    "Decisions file is empty or contains no valid decisions".to_string(),
+                ));
+            }
+
+            reporter.finish_spinner(
+                &decisions_spinner,
+                &format!("Loaded {} decisions from file", review_decisions.len()),
+            );
+
+            // Mark review as completed since we're applying existing decisions
+            review_mode_completed = true;
+
+            // Load existing filters from Gmail for deduplication and deletion
+            let existing_filters_spinner =
+                reporter.add_spinner("Loading existing Gmail filters...");
+            existing_filters = client.list_filters().await.unwrap_or_else(|e| {
+                warn!("Failed to load existing filters: {}", e);
+                Vec::new()
+            });
+            reporter.finish_spinner(
+                &existing_filters_spinner,
+                &format!("Found {} existing filters", existing_filters.len()),
+            );
+
+            // Load existing labels to build label name -> ID mapping
+            let label_spinner = reporter.add_spinner("Loading existing labels...");
+            let mut label_manager =
+                LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
+            let existing_label_count = label_manager.load_existing_labels().await?;
+
+            // Build label name -> ID mapping from the label cache
+            for (name, id) in label_manager.get_label_cache() {
+                label_name_to_id.insert(name.clone(), id.clone());
+            }
+
+            reporter.finish_spinner(
+                &label_spinner,
+                &format!("Loaded {} existing labels", existing_label_count),
+            );
+
+            // Initialize fresh state for this run
+            state = ProcessingState::new();
+            state.run_id = run_id.clone();
+            state.phase = ProcessingPhase::CreatingLabels;
+            state.save(&cli.state_file).await?;
+
+            let create_count = review_decisions
+                .iter()
+                .filter(|d| matches!(d.action, DecisionAction::Accept | DecisionAction::Custom(_)))
+                .count();
+            let delete_count = review_decisions
+                .iter()
+                .filter(|d| {
+                    matches!(
+                        d.action,
+                        DecisionAction::Reject | DecisionAction::Delete | DecisionAction::Exclude
+                    )
+                })
+                .count();
+
+            info!(
+                "Applying {} decisions ({} to create, {} to delete)",
+                review_decisions.len(),
+                create_count,
+                delete_count
+            );
+        }
+
+        // Step 5 & 6: Scan and classify emails (skip if resuming from later phases or applying decisions)
+        if !applying_decisions
+            && (!resume
+                || matches!(
+                    state.phase,
+                    ProcessingPhase::Scanning | ProcessingPhase::Classifying
+                ))
         {
             state.phase = ProcessingPhase::Scanning;
             state.save(&cli.state_file).await?;
