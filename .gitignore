@@ -40,3 +40,4 @@ checkpoint.json
 # Test artifacts
 /tests/fixtures/generated/
 assets/
+scripts/

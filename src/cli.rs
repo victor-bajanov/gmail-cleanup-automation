@@ -281,6 +281,8 @@ pub struct Report {
     pub orphaned_labels_to_delete: Vec<String>,
     /// Number of messages that had labels removed during cleanup
     pub messages_cleaned: usize,
+    /// Number of hierarchy labels created to repair missing parents
+    pub hierarchy_labels_created: usize,
     pub classification_breakdown: Vec<(String, usize, f32)>,
     pub top_senders: Vec<(String, usize, String)>,
     /// Examples per category: category -> [(sender_email, subject)]
@@ -519,6 +521,9 @@ impl Report {
                 }
                 if self.messages_cleaned > 0 {
                     md.push_str(&format!("- **Messages cleaned (labels removed):** {}\n", self.messages_cleaned));
+                }
+                if self.hierarchy_labels_created > 0 {
+                    md.push_str(&format!("- **Hierarchy labels created:** {}\n", self.hierarchy_labels_created));
                 }
                 md.push('\n');
             }
@@ -820,6 +825,7 @@ pub async fn run_pipeline(
         let mut orphaned_labels_deleted = 0;
         let mut orphaned_labels_to_delete_names: Vec<String> = Vec::new();
         let mut messages_cleaned = 0;
+        let mut hierarchy_labels_created = 0;
 
         // Handle resume from CreatingFilters or CreatingLabels phase
         if resume
@@ -1990,6 +1996,28 @@ pub async fn run_pipeline(
             ));
             state.checkpoint(&cli.state_file).await?;
 
+            // Ensure label hierarchy is complete (repair missing parent labels)
+            // This must run before orphaned label detection to avoid treating
+            // newly created hierarchy labels as orphaned
+            if !dry_run {
+                let mut label_manager =
+                    LabelManager::new(Box::new(client.clone()), config.labels.prefix.clone());
+                let _ = label_manager.load_existing_labels().await;
+
+                // For hierarchy repair, use the updated filters from Gmail
+                let current_filters = client.list_filters().await.unwrap_or_default();
+
+                match label_manager.ensure_label_hierarchy(&current_filters, &config.labels.prefix).await {
+                    Ok(created) => {
+                        if !created.is_empty() {
+                            hierarchy_labels_created = created.len();
+                            info!("Created {} missing hierarchy labels: {:?}", created.len(), created);
+                        }
+                    }
+                    Err(e) => warn!("Failed to ensure label hierarchy: {}", e),
+                }
+            }
+
             // Detect orphaned labels (auto-managed labels not used by any filter)
             // In dry-run mode we detect and count; in live mode we also delete
             {
@@ -2149,6 +2177,7 @@ pub async fn run_pipeline(
             orphaned_labels_deleted,
             orphaned_labels_to_delete: orphaned_labels_to_delete_names,
             messages_cleaned,
+            hierarchy_labels_created,
             classification_breakdown,
             top_senders,
             category_examples,

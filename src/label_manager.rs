@@ -657,15 +657,132 @@ impl LabelManager {
             .flat_map(|f| &f.add_label_ids)
             .collect();
 
-        // Find labels starting with prefix that are not used
+        // Build reverse lookup from label_id to label_name
+        let id_to_name: HashMap<&String, &String> = self.label_cache
+            .iter()
+            .map(|(name, id)| (id, name))
+            .collect();
+
+        // Collect all required label names (directly used labels + their parent paths)
+        let mut required_label_names: HashSet<String> = HashSet::new();
+
+        for used_id in used_label_ids.iter() {
+            if let Some(label_name) = id_to_name.get(used_id) {
+                // Add the label itself
+                required_label_names.insert(label_name.to_lowercase());
+
+                // Add all parent paths
+                // For "automanaged/receipts/amazon", add "automanaged/receipts" and "automanaged"
+                let parts: Vec<&str> = label_name.split('/').collect();
+                for i in 1..parts.len() {
+                    let parent_path = parts[..i].join("/");
+                    required_label_names.insert(parent_path.to_lowercase());
+                }
+            }
+        }
+
+        // Find labels starting with prefix that are not required
         self.label_cache
             .iter()
-            .filter(|(name, id)| {
-                name.to_lowercase().starts_with(&prefix_lower)
-                    && !used_label_ids.contains(id)
+            .filter(|(name, _id)| {
+                let name_lower = name.to_lowercase();
+                name_lower.starts_with(&prefix_lower)
+                    && !required_label_names.contains(&name_lower)
             })
             .map(|(name, id)| (id.clone(), name.clone()))
             .collect()
+    }
+
+    /// Ensure all parent hierarchy labels exist for used labels
+    /// This repairs any missing parent labels that are needed for Gmail's nested display
+    /// Returns Vec of (label_id, label_name) pairs of labels that were created
+    pub async fn ensure_label_hierarchy(
+        &mut self,
+        existing_filters: &[crate::client::ExistingFilterInfo],
+        prefix: &str,
+    ) -> crate::error::Result<Vec<(String, String)>> {
+        let prefix_lower = prefix.to_lowercase();
+
+        // Build reverse lookup from label_id to label_name
+        let id_to_name: HashMap<&String, &String> = self
+            .label_cache
+            .iter()
+            .map(|(name, id)| (id, name))
+            .collect();
+
+        // Collect all label IDs used by filters
+        let used_label_ids: HashSet<&String> = existing_filters
+            .iter()
+            .flat_map(|f| &f.add_label_ids)
+            .collect();
+
+        // Collect all required parent paths
+        let mut required_parents: HashSet<String> = HashSet::new();
+
+        for used_id in used_label_ids {
+            if let Some(label_name) = id_to_name.get(used_id) {
+                let label_name_lower = label_name.to_lowercase();
+
+                // Only process labels that start with the prefix
+                if !label_name_lower.starts_with(&prefix_lower) {
+                    continue;
+                }
+
+                // Split by '/' and check if more than 1 level deep under prefix
+                let parts: Vec<&str> = label_name.split('/').collect();
+
+                // For each parent path (except the label itself), check if it exists
+                for i in 1..parts.len() {
+                    let parent_path = parts[..i].join("/");
+                    let parent_path_lower = parent_path.to_lowercase();
+
+                    // Only consider parents that start with the prefix
+                    if parent_path_lower.starts_with(&prefix_lower) {
+                        required_parents.insert(parent_path);
+                    }
+                }
+            }
+        }
+
+        // Sort parents by path length (shortest first) to ensure parents exist before children
+        let mut parents_sorted: Vec<String> = required_parents.into_iter().collect();
+        parents_sorted.sort_by_key(|p| p.matches('/').count());
+
+        // Create missing parent labels
+        let mut created_labels: Vec<(String, String)> = Vec::new();
+
+        for parent_path in parents_sorted {
+            // Check if parent already exists in cache (case-insensitive)
+            if !self.cache_contains(&parent_path) {
+                info!("Creating missing parent label: {}", parent_path);
+
+                // Remove the prefix from the parent path since get_or_create_label adds it
+                let parent_without_prefix = if parent_path.to_lowercase().starts_with(&prefix_lower) {
+                    let prefix_len = prefix.len();
+                    if parent_path.len() > prefix_len && parent_path.chars().nth(prefix_len) == Some('/') {
+                        parent_path[prefix_len + 1..].to_string()
+                    } else {
+                        parent_path.clone()
+                    }
+                } else {
+                    parent_path.clone()
+                };
+
+                // Create the parent label
+                match self.get_or_create_label(&parent_without_prefix).await {
+                    Ok(label_id) => {
+                        // get_or_create_label already updates the cache
+                        created_labels.push((label_id, parent_path.clone()));
+                        info!("Created parent label: {}", parent_path);
+                    }
+                    Err(e) => {
+                        warn!("Failed to create parent label '{}': {}", parent_path, e);
+                    }
+                }
+            }
+        }
+
+        Ok(created_labels)
     }
 
     /// Delete orphaned labels - returns count of successfully deleted labels
@@ -1060,5 +1177,138 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 2);
+    }
+
+    #[test]
+    fn test_find_orphaned_labels_preserves_hierarchy_parents() {
+        use async_trait::async_trait;
+
+        mockall::mock! {
+            pub TestGmailClient {}
+
+            #[async_trait]
+            impl crate::client::GmailClient for TestGmailClient {
+                async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
+                async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
+                async fn create_label(&self, name: &str) -> Result<String>;
+                async fn delete_label(&self, label_id: &str) -> Result<()>;
+                async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &crate::models::FilterRule) -> Result<String>;
+                async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
+                async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
+            }
+        }
+
+        let mock_client = MockTestGmailClient::new();
+        let mut manager = LabelManager::new(Box::new(mock_client), "automanaged".to_string());
+
+        // Setup: Create a label cache with a hierarchy
+        manager.cache_insert("automanaged".to_string(), "label-id-root".to_string());
+        manager.cache_insert("automanaged/receipts".to_string(), "label-id-receipts".to_string());
+        manager.cache_insert("automanaged/receipts/amazon".to_string(), "label-id-amazon".to_string());
+
+        // Create an ExistingFilterInfo that uses only the deepest label
+        let filter = crate::client::ExistingFilterInfo {
+            id: "filter-1".to_string(),
+            query: Some("from:amazon.com".to_string()),
+            from: None,
+            to: None,
+            subject: None,
+            add_label_ids: vec!["label-id-amazon".to_string()],
+            remove_label_ids: vec![],
+        };
+
+        let filters = vec![filter];
+
+        // Call find_orphaned_labels
+        let orphaned = manager.find_orphaned_labels(&filters, "automanaged");
+
+        // Assert: Neither automanaged nor automanaged/receipts is in the orphaned list
+        // They are hierarchy parents of automanaged/receipts/amazon which is used
+        let orphaned_names: Vec<String> = orphaned.iter().map(|(_, name)| name.clone()).collect();
+
+        assert!(!orphaned_names.contains(&"automanaged".to_string()),
+            "Root label should not be orphaned - it's a parent of a used label");
+        assert!(!orphaned_names.contains(&"automanaged/receipts".to_string()),
+            "Parent label should not be orphaned - it's a parent of a used label");
+        assert!(!orphaned_names.contains(&"automanaged/receipts/amazon".to_string()),
+            "Used label should not be orphaned");
+    }
+
+    #[test]
+    fn test_find_orphaned_labels_finds_truly_orphaned() {
+        use async_trait::async_trait;
+
+        mockall::mock! {
+            pub TestGmailClient {}
+
+            #[async_trait]
+            impl crate::client::GmailClient for TestGmailClient {
+                async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
+                async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
+                async fn create_label(&self, name: &str) -> Result<String>;
+                async fn delete_label(&self, label_id: &str) -> Result<()>;
+                async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &crate::models::FilterRule) -> Result<String>;
+                async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
+                async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
+            }
+        }
+
+        let mock_client = MockTestGmailClient::new();
+        let mut manager = LabelManager::new(Box::new(mock_client), "automanaged".to_string());
+
+        // Setup: Create a label cache with both used and unused labels
+        manager.cache_insert("automanaged".to_string(), "label-id-root".to_string());
+        manager.cache_insert("automanaged/used".to_string(), "label-id-used".to_string());
+        manager.cache_insert("automanaged/unused".to_string(), "label-id-unused".to_string());
+
+        // Create an ExistingFilterInfo that uses only automanaged/used
+        let filter = crate::client::ExistingFilterInfo {
+            id: "filter-1".to_string(),
+            query: Some("from:example.com".to_string()),
+            from: None,
+            to: None,
+            subject: None,
+            add_label_ids: vec!["label-id-used".to_string()],
+            remove_label_ids: vec![],
+        };
+
+        let filters = vec![filter];
+
+        // Call find_orphaned_labels
+        let orphaned = manager.find_orphaned_labels(&filters, "automanaged");
+
+        // Assert: automanaged/unused IS in the orphaned list
+        let orphaned_names: Vec<String> = orphaned.iter().map(|(_, name)| name.clone()).collect();
+
+        assert!(orphaned_names.contains(&"automanaged/unused".to_string()),
+            "Unused label should be orphaned - it's not a parent of any used label");
+
+        // automanaged should not be orphaned (it's a parent of automanaged/used)
+        assert!(!orphaned_names.contains(&"automanaged".to_string()),
+            "Root label should not be orphaned - it's a parent of a used label");
+
+        // automanaged/used should not be orphaned (it's actively used)
+        assert!(!orphaned_names.contains(&"automanaged/used".to_string()),
+            "Used label should not be orphaned");
     }
 }
