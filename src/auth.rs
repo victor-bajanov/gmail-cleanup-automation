@@ -295,6 +295,7 @@ pub async fn secure_token_file(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::NamedTempFile;
 
     #[tokio::test]
@@ -341,6 +342,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_credentials_from_env() {
         env::set_var("GMAIL_CLIENT_ID", "test-id");
         env::set_var("GMAIL_CLIENT_SECRET", "test-secret");
@@ -357,6 +359,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_credentials_from_env_default_redirect() {
         env::set_var("GMAIL_CLIENT_ID", "test-id");
         env::set_var("GMAIL_CLIENT_SECRET", "test-secret");
