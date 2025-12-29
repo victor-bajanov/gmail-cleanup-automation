@@ -67,7 +67,9 @@ pub mod client;
 pub mod config;
 pub mod error;
 pub mod exclusions;
+pub mod filter_ast;
 pub mod filter_manager;
+pub mod filter_overlap;
 pub mod interactive;
 pub mod label_manager;
 pub mod models;
@@ -115,4 +117,16 @@ pub use cli::{Cli, Commands, ProgressReporter, Report};
 // Interactive review types
 pub use interactive::{
     create_clusters, ClusterDecision, DecisionAction, EmailCluster, ReviewSession,
+};
+
+// Filter AST types
+pub use filter_ast::{
+    DomainPattern, EmailPattern, ExclusionClause, Filter, FilterActions, FilterExpr, FromClause,
+    SubjectClause, SubjectMatchMode,
+};
+
+// Filter overlap detection types
+pub use filter_overlap::{
+    AnalysisResult, ConflictSeverity, ConflictType, FilterConflict, FilterOverlapAnalyzer,
+    PatternRelation,
 };

@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "src-tauri"]
+resolver = "2"
+
 [package]
 name = "gmail-automation"
 version = "0.6.2"
