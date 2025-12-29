@@ -3,8 +3,9 @@
 //! This module wraps the gmail_automation library types and provides
 //! thread-safe state management for the Tauri application.
 
+use crate::commands::clusters::GuiDecision;
 use gmail_automation::{
-    CircuitBreakerConfig, Classification, ClusterDecision, Config, EmailCluster, FilterRule,
+    Classification, Config, EmailCluster, FilterRule,
     MessageMetadata, ProcessingState, ProductionGmailClient,
 };
 use parking_lot::RwLock;
@@ -35,10 +36,10 @@ pub struct AppState {
     pub classifications: RwLock<Vec<(MessageMetadata, Classification)>>,
     /// Email clusters for review
     pub clusters: RwLock<Vec<EmailCluster>>,
-    /// User decisions on clusters
-    pub decisions: RwLock<Vec<ClusterDecision>>,
+    /// User decisions on clusters (GUI-specific, tracks by index)
+    pub gui_decisions: RwLock<Vec<GuiDecision>>,
     /// Decision history for undo
-    pub decision_history: RwLock<Vec<ClusterDecision>>,
+    pub gui_decision_history: RwLock<Vec<GuiDecision>>,
     /// Proposed filter rules
     pub proposed_filters: RwLock<Vec<FilterRule>>,
     /// Existing Gmail filters (fetched from API)
@@ -62,8 +63,8 @@ impl AppState {
             messages: RwLock::new(Vec::new()),
             classifications: RwLock::new(Vec::new()),
             clusters: RwLock::new(Vec::new()),
-            decisions: RwLock::new(Vec::new()),
-            decision_history: RwLock::new(Vec::new()),
+            gui_decisions: RwLock::new(Vec::new()),
+            gui_decision_history: RwLock::new(Vec::new()),
             proposed_filters: RwLock::new(Vec::new()),
             existing_filters: RwLock::new(Vec::new()),
             label_cache: RwLock::new(HashMap::new()),
@@ -146,20 +147,20 @@ impl AppState {
         self.clusters.read().clone()
     }
 
-    /// Adds a decision
-    pub fn add_decision(&self, decision: ClusterDecision) {
-        let mut decisions = self.decisions.write();
-        let mut history = self.decision_history.write();
+    /// Adds a GUI decision
+    pub fn add_gui_decision(&self, decision: GuiDecision) {
+        let mut decisions = self.gui_decisions.write();
+        let mut history = self.gui_decision_history.write();
 
         // Add to history for undo
         history.push(decision.clone());
         decisions.push(decision);
     }
 
-    /// Undoes the last decision
-    pub fn undo_last_decision(&self) -> Option<ClusterDecision> {
-        let mut decisions = self.decisions.write();
-        let mut history = self.decision_history.write();
+    /// Undoes the last GUI decision
+    pub fn undo_last_gui_decision(&self) -> Option<GuiDecision> {
+        let mut decisions = self.gui_decisions.write();
+        let mut history = self.gui_decision_history.write();
 
         if let Some(undone) = history.pop() {
             // Find and remove from decisions
@@ -175,15 +176,15 @@ impl AppState {
         }
     }
 
-    /// Gets all decisions
-    pub fn get_decisions(&self) -> Vec<ClusterDecision> {
-        self.decisions.read().clone()
+    /// Gets all GUI decisions
+    pub fn get_gui_decisions(&self) -> Vec<GuiDecision> {
+        self.gui_decisions.read().clone()
     }
 
-    /// Clears all decisions
-    pub fn clear_decisions(&self) {
-        self.decisions.write().clear();
-        self.decision_history.write().clear();
+    /// Clears all GUI decisions
+    pub fn clear_gui_decisions(&self) {
+        self.gui_decisions.write().clear();
+        self.gui_decision_history.write().clear();
     }
 
     /// Sets proposed filters
@@ -221,7 +222,7 @@ impl AppState {
         self.clear_messages();
         self.classifications.write().clear();
         self.clusters.write().clear();
-        self.clear_decisions();
+        self.clear_gui_decisions();
         self.proposed_filters.write().clear();
     }
 
@@ -230,7 +231,7 @@ impl AppState {
         SessionStats {
             message_count: self.messages.read().len(),
             cluster_count: self.clusters.read().len(),
-            decision_count: self.decisions.read().len(),
+            decision_count: self.gui_decisions.read().len(),
             proposed_filter_count: self.proposed_filters.read().len(),
             existing_filter_count: self.existing_filters.read().len(),
         }

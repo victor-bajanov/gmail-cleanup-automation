@@ -1,10 +1,9 @@
 //! Filter management commands
 
+use crate::commands::clusters::GuiDecision;
 use crate::events::{AppHandleExt, FilterOperation, FilterProgress};
 use crate::state::AppState;
-use gmail_automation::{
-    client::ExistingFilterInfo, DecisionAction, FilterManager, FilterRule, GmailClient,
-};
+use gmail_automation::{DecisionAction, FilterManager, FilterRule, GmailClient};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
@@ -102,11 +101,10 @@ pub async fn get_existing_filters(
             query: f.query.clone().unwrap_or_default(),
             label: f
                 .add_label_ids
-                .as_ref()
-                .and_then(|ids| ids.first())
+                .first()
                 .cloned()
                 .unwrap_or_default(),
-            archive: f.should_archive,
+            archive: false, // ExistingFilterInfo doesn't track this
             estimated_matches: 0,
             is_proposed: false,
             change_type: FilterChangeType::Unchanged,
@@ -123,12 +121,21 @@ pub async fn get_existing_filters(
     Ok(views)
 }
 
+/// Helper to build sender pattern from cluster
+fn build_sender_pattern(cluster: &gmail_automation::EmailCluster) -> String {
+    if cluster.is_specific_sender && !cluster.sender_email.is_empty() {
+        cluster.sender_email.clone()
+    } else {
+        format!("*@{}", cluster.sender_domain)
+    }
+}
+
 /// Generates proposed filters from decisions
 #[tauri::command]
 pub async fn generate_proposed_filters(
     state: State<'_, AppState>,
 ) -> Result<Vec<FilterView>, String> {
-    let decisions = state.get_decisions();
+    let decisions = state.get_gui_decisions();
     let clusters = state.get_clusters();
     let config = state.get_config();
 
@@ -138,7 +145,7 @@ pub async fn generate_proposed_filters(
 
     let label_prefix = config
         .as_ref()
-        .map(|c| c.label.prefix.clone())
+        .map(|c| c.labels.prefix.clone())
         .unwrap_or_else(|| "AutoManaged".to_string());
 
     let mut filters = Vec::new();
@@ -148,7 +155,7 @@ pub async fn generate_proposed_filters(
         match &decision.action {
             DecisionAction::Reject
             | DecisionAction::Skip
-            | DecisionAction::ExcludeForever
+            | DecisionAction::Exclude
             | DecisionAction::Delete => continue,
             _ => {}
         }
@@ -156,22 +163,23 @@ pub async fn generate_proposed_filters(
         if let Some(cluster) = clusters.get(decision.cluster_index) {
             // Determine label
             let label = match &decision.action {
-                DecisionAction::CustomLabel(l) => l.clone(),
+                DecisionAction::Custom(l) => l.clone(),
                 _ => decision.target_label.clone(),
             };
+
+            let sender_pattern = build_sender_pattern(cluster);
 
             // Build filter rule
             let filter = FilterRule {
                 id: None,
-                name: format!("{} -> {}", cluster.sender_pattern, label),
-                from_pattern: Some(cluster.sender_pattern.clone()),
-                is_specific_sender: cluster.sender_pattern.contains('@')
-                    && !cluster.sender_pattern.starts_with('*'),
-                excluded_senders: vec![],
+                name: format!("{} -> {}", sender_pattern, label),
+                from_pattern: Some(sender_pattern.clone()),
+                is_specific_sender: cluster.is_specific_sender,
+                excluded_senders: cluster.excluded_senders.clone(),
                 subject_keywords: vec![],
                 target_label_id: label.clone(),
                 should_archive: decision.should_archive,
-                estimated_matches: cluster.messages.len(),
+                estimated_matches: cluster.message_ids.len(),
             };
 
             filters.push(filter);
@@ -207,7 +215,7 @@ pub async fn compare_filters(
     let existing = state.get_existing_filters();
     let proposed = state.get_proposed_filters();
 
-    let mut existing_views: Vec<FilterView> = existing
+    let existing_views: Vec<FilterView> = existing
         .iter()
         .map(|f| {
             let query = f.query.clone().unwrap_or_default();
@@ -227,11 +235,10 @@ pub async fn compare_filters(
                 query,
                 label: f
                     .add_label_ids
-                    .as_ref()
-                    .and_then(|ids| ids.first())
+                    .first()
                     .cloned()
                     .unwrap_or_default(),
-                archive: f.should_archive,
+                archive: false, // ExistingFilterInfo doesn't track this
                 estimated_matches: 0,
                 is_proposed: false,
                 change_type: if has_proposed_match {
@@ -327,7 +334,9 @@ pub async fn apply_filters(
     let mut created = 0;
     let mut errors = Vec::new();
 
-    let mut manager = FilterManager::new(Box::new(client.as_ref().clone()));
+    // Create FilterManager - clone the client for ownership
+    let client_clone = (*client).clone();
+    let mut manager = FilterManager::new(Box::new(client_clone));
 
     for (i, filter) in proposed.iter().enumerate() {
         app.events().emit_filter_progress(FilterProgress {

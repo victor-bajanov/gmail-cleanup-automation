@@ -182,10 +182,9 @@ pub async fn initialize_client(state: State<'_, AppState>) -> Result<bool, Strin
         gmail_automation::Config {
             scan: gmail_automation::ScanConfig::default(),
             classification: gmail_automation::ClassificationConfig::default(),
-            label: gmail_automation::LabelConfig::default(),
+            labels: gmail_automation::LabelConfig::default(),
             execution: gmail_automation::ExecutionConfig::default(),
             circuit_breaker: gmail_automation::CircuitBreakerConfig::default(),
-            claude_agents: None,
         }
     });
 

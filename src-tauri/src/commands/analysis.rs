@@ -2,12 +2,9 @@
 
 use crate::state::AppState;
 use gmail_automation::{
-    filter_ast::{Filter, FilterActions, FilterExpr},
-    filter_overlap::{
-        AnalysisResult, ConflictSeverity, ConflictType, FilterConflict, FilterOverlapAnalyzer,
-        PatternRelation,
-    },
-    FilterManager, GmailClient,
+    filter_ast::{Filter, FilterActions},
+    filter_overlap::{FilterConflict, FilterOverlapAnalyzer},
+    FilterManager,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -69,20 +66,16 @@ pub async fn analyze_filter_overlaps(
             let expr = gmail_automation::filter_overlap::parse_gmail_query(&query);
             let label = f
                 .add_label_ids
-                .as_ref()
-                .and_then(|ids| ids.first())
+                .first()
                 .cloned()
                 .unwrap_or_default();
 
+            // ExistingFilterInfo doesn't track archive status, default to just label
             Filter::new(
                 &f.id,
                 format!("Existing: {}", &f.id),
                 expr,
-                if f.should_archive {
-                    FilterActions::label_and_archive(&label)
-                } else {
-                    FilterActions::with_label(&label)
-                },
+                FilterActions::with_label(&label),
             )
         })
         .collect();

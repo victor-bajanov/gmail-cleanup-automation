@@ -1,10 +1,8 @@
 //! Settings commands for configuration management
 
-use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::State;
 
 /// Application settings that can be configured by the user
 #[derive(Debug, Clone, Serialize, Deserialize)]

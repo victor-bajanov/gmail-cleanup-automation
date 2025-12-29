@@ -3,8 +3,7 @@
 use crate::events::{AppHandleExt, ScanPhase, ScanProgress};
 use crate::state::AppState;
 use gmail_automation::{
-    create_clusters, Classification, EmailCategory, EmailClassifier, EmailCluster, GmailClient,
-    MessageMetadata,
+    create_clusters, EmailClassifier, GmailClient, MessageMetadata,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -95,10 +94,14 @@ pub async fn scan_emails(
         message: Some(format!("Fetching {} messages...", total)),
     });
 
-    // Create progress callback
+    // Create progress callback (no-argument callback for rate limiting feedback)
     let app_clone = app.clone();
-    let progress_callback: gmail_automation::client::ProgressCallback = Arc::new(move |current, total_cb| {
-        app_clone.events().scan_fetching(current, total_cb);
+    let total_for_callback = total;
+    let progress_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let progress_counter_clone = progress_counter.clone();
+    let progress_callback: gmail_automation::client::ProgressCallback = Arc::new(move || {
+        let current = progress_counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        app_clone.events().scan_fetching(current, total_for_callback);
     });
 
     let messages = client
@@ -116,7 +119,35 @@ pub async fn scan_emails(
     let unique_domains: std::collections::HashSet<_> =
         messages.iter().map(|m| m.sender_domain.clone()).collect();
 
-    // Phase 3: Create clusters
+    // Phase 3: Classify messages (needed for clustering)
+    events.emit_scan_progress(ScanProgress {
+        phase: ScanPhase::Classifying,
+        current: 0,
+        total: fetched_count,
+        message: Some("Classifying messages...".to_string()),
+    });
+
+    let config = state.get_config();
+    let label_prefix = config
+        .as_ref()
+        .map(|c| c.labels.prefix.clone())
+        .unwrap_or_else(|| "AutoManaged".to_string());
+    let classifier = gmail_automation::EmailClassifier::new(&label_prefix);
+
+    let mut classifications = Vec::new();
+    for (i, msg) in messages.iter().enumerate() {
+        if let Ok(classification) = classifier.classify(msg) {
+            classifications.push((msg.clone(), classification));
+        }
+        if i % 100 == 0 {
+            events.scan_classifying(i, fetched_count);
+        }
+    }
+
+    // Store classifications
+    state.set_classifications(classifications.clone());
+
+    // Phase 4: Create clusters
     events.emit_scan_progress(ScanProgress {
         phase: ScanPhase::Clustering,
         current: 0,
@@ -124,7 +155,7 @@ pub async fn scan_emails(
         message: Some("Creating clusters...".to_string()),
     });
 
-    let clusters = create_clusters(&messages, options.min_cluster_size);
+    let clusters = create_clusters(&messages, &classifications, options.min_cluster_size);
     let cluster_count = clusters.len();
 
     tracing::info!("Created {} clusters", cluster_count);
@@ -132,7 +163,7 @@ pub async fn scan_emails(
     // Store clusters in state
     state.set_clusters(clusters);
 
-    // Phase 4: Complete
+    // Phase 5: Complete
     events.scan_complete(fetched_count);
 
     Ok(ScanResult {
@@ -205,7 +236,7 @@ pub async fn classify_messages(
     // Get label prefix from config
     let label_prefix = config
         .as_ref()
-        .map(|c| c.label.prefix.clone())
+        .map(|c| c.labels.prefix.clone())
         .unwrap_or_else(|| "AutoManaged".to_string());
 
     // Create classifier
@@ -214,8 +245,9 @@ pub async fn classify_messages(
     // Classify each message
     let mut classifications = Vec::new();
     for (i, msg) in messages.iter().enumerate() {
-        let classification = classifier.classify(msg);
-        classifications.push((msg.clone(), classification));
+        if let Ok(classification) = classifier.classify(msg) {
+            classifications.push((msg.clone(), classification));
+        }
 
         if i % 100 == 0 {
             events.scan_classifying(i, total);
