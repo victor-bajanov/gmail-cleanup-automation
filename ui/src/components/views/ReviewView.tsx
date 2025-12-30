@@ -23,6 +23,15 @@ const ReviewView: Component = () => {
 
   // Load clusters and select first undecided
   onMount(async () => {
+    // Match existing filters to clusters first
+    // This populates has_existing_filter, existing_filter_label, etc.
+    try {
+      const matchResult = await api.matchExistingFilters();
+      console.log(`Matched ${matchResult.matched_count} existing filters, ${matchResult.new_count} new`);
+    } catch (e) {
+      console.warn('Failed to match existing filters:', e);
+    }
+
     const clusters = await api.getClusters();
     review.setClusters(clusters);
 

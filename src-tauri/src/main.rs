@@ -51,6 +51,7 @@ fn main() {
             commands::get_domain_stats,
             commands::classify_messages,
             commands::clear_scan_data,
+            commands::match_existing_filters,
             // Cluster commands
             commands::get_clusters,
             commands::get_cluster,

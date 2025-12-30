@@ -7,6 +7,7 @@ import type {
   AuthStatus,
   ScanOptions,
   ScanResult,
+  MatchResult,
   DomainStat,
   MessageMetadata,
   ClusterView,
@@ -68,6 +69,10 @@ export async function classifyMessages(): Promise<number> {
 
 export async function clearScanData(): Promise<void> {
   return invoke<void>('clear_scan_data');
+}
+
+export async function matchExistingFilters(): Promise<MatchResult> {
+  return invoke<MatchResult>('match_existing_filters');
 }
 
 // ============ Cluster Commands ============

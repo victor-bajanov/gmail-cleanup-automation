@@ -4,6 +4,7 @@ use crate::events::{AppHandleExt, ScanPhase, ScanProgress};
 use crate::state::AppState;
 use gmail_automation::{
     create_clusters, EmailClassifier, GmailClient, MessageMetadata,
+    client::ExistingFilterInfo,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -269,4 +270,149 @@ pub async fn clear_scan_data(state: State<'_, AppState>) -> Result<(), String> {
     state.set_classifications(Vec::new());
     state.set_clusters(Vec::new());
     Ok(())
+}
+
+/// Result of matching existing filters to clusters
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchResult {
+    /// Number of clusters with existing filters
+    pub matched_count: usize,
+    /// Number of new clusters (no existing filter)
+    pub new_count: usize,
+    /// Total clusters
+    pub total_count: usize,
+}
+
+/// Matches existing Gmail filters to clusters
+/// This populates existing_filter_id, existing_filter_label, and existing_filter_archive
+/// on clusters that have matching filters in Gmail
+#[tauri::command]
+pub async fn match_existing_filters(
+    state: State<'_, AppState>,
+) -> Result<MatchResult, String> {
+    let client = state
+        .get_client()
+        .ok_or("Gmail client not initialized. Please authenticate first.")?;
+
+    // Fetch existing filters from Gmail
+    let existing_filters = client
+        .list_filters()
+        .await
+        .map_err(|e| format!("Failed to fetch filters: {}", e))?;
+
+    // Store in state for later use
+    state.set_existing_filters(existing_filters.clone());
+
+    // Get label mapping for resolving label IDs to names
+    let labels = client
+        .list_labels()
+        .await
+        .map_err(|e| format!("Failed to fetch labels: {}", e))?;
+
+    let label_map: std::collections::HashMap<String, String> = labels
+        .into_iter()
+        .map(|l| (l.id, l.name))
+        .collect();
+
+    // Get current clusters and match them
+    let mut clusters = state.get_clusters();
+    let mut matched_count = 0;
+
+    for cluster in &mut clusters {
+        if let Some((filter_id, label_id, archive)) = find_matching_filter(cluster, &existing_filters) {
+            cluster.existing_filter_id = Some(filter_id);
+            cluster.existing_filter_label_id = label_id.clone();
+            cluster.existing_filter_label = label_id.and_then(|id| label_map.get(&id).cloned());
+            cluster.existing_filter_archive = Some(archive);
+            matched_count += 1;
+        }
+    }
+
+    let total_count = clusters.len();
+    let new_count = total_count - matched_count;
+
+    // Update clusters in state
+    state.set_clusters(clusters);
+
+    tracing::info!(
+        "Matched {} existing filters to clusters ({} new, {} total)",
+        matched_count, new_count, total_count
+    );
+
+    Ok(MatchResult {
+        matched_count,
+        new_count,
+        total_count,
+    })
+}
+
+/// Helper to build sender pattern from cluster
+fn build_sender_pattern(cluster: &gmail_automation::EmailCluster) -> String {
+    if cluster.is_specific_sender && !cluster.sender_email.is_empty() {
+        cluster.sender_email.clone()
+    } else {
+        format!("*@{}", cluster.sender_domain)
+    }
+}
+
+/// Find a matching existing filter for a cluster
+/// Returns (filter_id, label_id, archive) if found
+fn find_matching_filter(
+    cluster: &gmail_automation::EmailCluster,
+    existing_filters: &[ExistingFilterInfo],
+) -> Option<(String, Option<String>, bool)> {
+    let from_pattern = build_sender_pattern(cluster);
+
+    for existing in existing_filters {
+        let existing_query = match &existing.query {
+            Some(q) => q.to_lowercase(),
+            None => continue,
+        };
+
+        // Check if the from pattern matches
+        let new_normalized = from_pattern.to_lowercase();
+
+        // Gmail uses "from:(*@domain.com)" or "from:(email@domain.com)" format
+        // Extract the actual pattern from the query
+        let existing_clean = existing_query
+            .replace("from:(", "")
+            .replace(")", "")
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        let from_matches = existing_clean == new_normalized
+            || existing_query.contains(&format!("from:({})", new_normalized));
+
+        if !from_matches {
+            continue;
+        }
+
+        // Check if subject pattern matches
+        let existing_has_subject = existing_query.contains("subject:(");
+        let subject_matches = match &cluster.subject_pattern {
+            Some(pattern) => {
+                // Cluster has subject pattern - existing filter must have matching subject
+                let pattern_lower = pattern.to_lowercase();
+                existing_query.contains(&format!("subject:({})", pattern_lower))
+                    || existing_query.contains(&format!("subject:(\"{}\")", pattern_lower))
+            }
+            None => {
+                // Cluster has no subject pattern - existing filter should not have subject
+                // (to avoid matching domain-wide cluster to subject-specific filter)
+                !existing_has_subject
+            }
+        };
+
+        if from_matches && subject_matches {
+            let label_id = existing.add_label_ids.first().cloned();
+            let archive = existing.remove_label_ids.iter().any(|l| l == "INBOX");
+
+            return Some((existing.id.clone(), label_id, archive));
+        }
+    }
+
+    None
 }

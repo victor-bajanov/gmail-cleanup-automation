@@ -21,6 +21,12 @@ export interface ScanResult {
   unique_domains: number;
 }
 
+export interface MatchResult {
+  matched_count: number;
+  new_count: number;
+  total_count: number;
+}
+
 export interface ScanProgress {
   phase: 'listing' | 'fetching' | 'classifying' | 'clustering' | 'complete';
   current: number;
