@@ -40,8 +40,10 @@ pub struct ClusterView {
     pub sample_senders: Vec<String>,
     /// Whether this cluster has an existing filter
     pub has_existing_filter: bool,
-    /// Existing filter info (if any)
+    /// Existing filter label (if any)
     pub existing_filter_label: Option<String>,
+    /// Existing filter archive setting (if any)
+    pub existing_filter_archive: Option<bool>,
     /// Whether this cluster has been decided
     pub decided: bool,
     /// Decision action (if decided)
@@ -74,6 +76,7 @@ impl From<&EmailCluster> for ClusterView {
             },
             has_existing_filter: cluster.existing_filter_id.is_some(),
             existing_filter_label: cluster.existing_filter_label.clone(),
+            existing_filter_archive: cluster.existing_filter_archive,
             decided: false,
             decision: None,
         }
@@ -97,6 +100,10 @@ pub struct ReviewSummary {
     pub excluded: usize,
     /// Remaining to review
     pub remaining: usize,
+    /// Clusters with existing filters
+    pub existing_filters: usize,
+    /// Remaining existing filters (not yet decided)
+    pub existing_remaining: usize,
 }
 
 /// Gets all clusters for review
@@ -269,6 +276,19 @@ pub async fn get_review_summary(state: State<'_, AppState>) -> Result<ReviewSumm
         .filter(|(i, _)| !decided_indices.contains(i))
         .count();
 
+    // Count clusters with existing filters
+    let existing_filters = clusters
+        .iter()
+        .filter(|c| c.existing_filter_id.is_some())
+        .count();
+
+    // Count remaining existing filters (not yet decided)
+    let existing_remaining = clusters
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| c.existing_filter_id.is_some() && !decided_indices.contains(i))
+        .count();
+
     Ok(ReviewSummary {
         total: clusters.len(),
         accepted,
@@ -277,6 +297,8 @@ pub async fn get_review_summary(state: State<'_, AppState>) -> Result<ReviewSumm
         deleted,
         excluded,
         remaining,
+        existing_filters,
+        existing_remaining,
     })
 }
 
@@ -309,4 +331,44 @@ pub async fn get_next_undecided_cluster(state: State<'_, AppState>) -> Result<Op
     }
 
     Ok(None)
+}
+
+/// Skips all undecided clusters that have existing filters
+/// Returns the number of clusters skipped
+#[tauri::command]
+pub async fn skip_all_existing(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let clusters = state.get_clusters();
+    let decisions = state.get_gui_decisions();
+
+    let decided_indices: std::collections::HashSet<_> =
+        decisions.iter().map(|d| d.cluster_index).collect();
+
+    let mut skipped_count = 0;
+
+    for (i, cluster) in clusters.iter().enumerate() {
+        // Only skip if it has an existing filter and hasn't been decided yet
+        if cluster.existing_filter_id.is_some() && !decided_indices.contains(&i) {
+            let decision = GuiDecision {
+                cluster_index: i,
+                action: DecisionAction::Skip,
+                should_archive: cluster.should_archive,
+                target_label: cluster.suggested_label.clone(),
+            };
+
+            state.add_gui_decision(decision);
+            skipped_count += 1;
+
+            // Emit event for each skipped cluster
+            app.events().emit_cluster(ClusterEvent {
+                event_type: ClusterEventType::DecisionMade,
+                cluster_index: i,
+                data: None,
+            });
+        }
+    }
+
+    Ok(skipped_count)
 }

@@ -60,6 +60,7 @@ fn main() {
             commands::get_decisions,
             commands::clear_decisions,
             commands::get_next_undecided_cluster,
+            commands::skip_all_existing,
             // Filter commands
             commands::get_existing_filters,
             commands::generate_proposed_filters,

@@ -59,6 +59,7 @@ export interface ClusterView {
   sample_senders: string[];
   has_existing_filter: boolean;
   existing_filter_label?: string;
+  existing_filter_archive?: boolean;
   decided: boolean;
   decision?: string;
 }
@@ -78,6 +79,8 @@ export interface ReviewSummary {
   deleted: number;
   excluded: number;
   remaining: number;
+  existing_filters: number;
+  existing_remaining: number;
 }
 
 export interface ClusterDecision {

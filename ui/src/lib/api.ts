@@ -104,6 +104,10 @@ export async function getNextUndecidedCluster(): Promise<number | null> {
   return invoke<number | null>('get_next_undecided_cluster');
 }
 
+export async function skipAllExisting(): Promise<number> {
+  return invoke<number>('skip_all_existing');
+}
+
 // ============ Filter Commands ============
 
 export async function getExistingFilters(): Promise<FilterView[]> {
