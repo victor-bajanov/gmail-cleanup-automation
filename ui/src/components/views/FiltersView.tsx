@@ -66,10 +66,15 @@ const FiltersView: Component = () => {
     }
   };
 
-  const handleHideFilter = async (filterId: string) => {
+  const handleHideFilter = async (
+    filterId: string,
+    filterName: string,
+    filterQuery: string,
+    filterLabel: string
+  ) => {
     setHidingInProgress(filterId);
     try {
-      await api.hideFilter(filterId);
+      await api.hideFilter(filterId, filterName, filterQuery, filterLabel);
       await loadHiddenFilters();
       // Reload analysis after hiding
       const analysisResult = await api.analyzeFilterOverlaps(false, autoManagedOnly());
@@ -349,7 +354,12 @@ const FiltersView: Component = () => {
                             </Show>
                             {/* Hide button for Filter A */}
                             <button
-                              onClick={() => handleHideFilter(conflict.filter_a_id)}
+                              onClick={() => handleHideFilter(
+                                conflict.filter_a_id,
+                                conflict.filter_a_name,
+                                conflict.filter_a_query,
+                                conflict.filter_a_label
+                              )}
                               disabled={hidingInProgress() === conflict.filter_a_id}
                               class="absolute top-2 right-2 text-xs px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors opacity-0 group-hover:opacity-100"
                               title="Hide this filter from analysis"
@@ -369,7 +379,12 @@ const FiltersView: Component = () => {
                             </Show>
                             {/* Hide button for Filter B */}
                             <button
-                              onClick={() => handleHideFilter(conflict.filter_b_id)}
+                              onClick={() => handleHideFilter(
+                                conflict.filter_b_id,
+                                conflict.filter_b_name,
+                                conflict.filter_b_query,
+                                conflict.filter_b_label
+                              )}
                               disabled={hidingInProgress() === conflict.filter_b_id}
                               class="absolute top-2 right-2 text-xs px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors opacity-0 group-hover:opacity-100"
                               title="Hide this filter from analysis"

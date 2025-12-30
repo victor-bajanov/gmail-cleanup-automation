@@ -1,7 +1,8 @@
 //! Analysis commands for filter overlap detection and coverage
 
 use crate::commands::hidden_filters::{
-    add_hidden_filter, clear_all_hidden_filters, remove_hidden_filter, save_hidden_filters,
+    add_hidden_filter, clear_all_hidden_filters, get_hidden_filter_list, remove_hidden_filter,
+    HiddenFilterInfo,
 };
 use crate::state::AppState;
 use gmail_automation::{
@@ -61,7 +62,7 @@ pub async fn analyze_filter_overlaps(
 ) -> Result<AnalysisView, String> {
     let existing = state.get_existing_filters();
     let proposed = state.get_proposed_filters();
-    let hidden_filters = state.get_hidden_filters();
+    let hidden_filters = state.get_hidden_filter_ids();
 
     // Get the label prefix from config for determining "auto-managed" filters
     let label_prefix = state
@@ -284,10 +285,20 @@ pub async fn analyze_filter_overlaps(
 
 /// Hides a filter from the overlap analysis results
 #[tauri::command]
-pub async fn hide_filter(filter_id: String, state: State<'_, AppState>) -> Result<bool, String> {
-    state.with_hidden_filters_mut(|data| {
-        add_hidden_filter(data, filter_id)
-    })?;
+pub async fn hide_filter(
+    filter_id: String,
+    filter_name: String,
+    filter_query: String,
+    filter_label: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let info = HiddenFilterInfo {
+        id: filter_id,
+        name: filter_name,
+        query: filter_query,
+        label: filter_label,
+    };
+    state.with_hidden_filters_mut(|data| add_hidden_filter(data, info))?;
     Ok(true)
 }
 
@@ -300,108 +311,11 @@ pub async fn unhide_filter(filter_id: String, state: State<'_, AppState>) -> Res
     Ok(true)
 }
 
-/// Hidden filter info with full details for display
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HiddenFilterInfo {
-    pub id: String,
-    pub name: String,
-    pub query: String,
-    pub label: String,
-}
-
 /// Gets the list of hidden filters with full details
 #[tauri::command]
 pub async fn get_hidden_filters(state: State<'_, AppState>) -> Result<Vec<HiddenFilterInfo>, String> {
-    let hidden_ids = state.get_hidden_filters();
-    let existing = state.get_existing_filters();
-    let proposed = state.get_proposed_filters();
-
-    // Build label ID -> name map for resolving cryptic label IDs
-    let label_map: HashMap<String, String> = if let Some(client) = state.get_client() {
-        match client.list_labels().await {
-            Ok(labels) => labels.into_iter().map(|l| (l.id, l.name)).collect(),
-            Err(e) => {
-                tracing::warn!("Failed to fetch labels for hidden filter display: {}", e);
-                HashMap::new()
-            }
-        }
-    } else {
-        HashMap::new()
-    };
-
-    let resolve_label = |label_id: &str| -> String {
-        label_map.get(label_id).cloned().unwrap_or_else(|| label_id.to_string())
-    };
-
-    let mut result = Vec::new();
-
-    for filter_id in hidden_ids {
-        // Try to find in existing filters
-        if let Some(f) = existing.iter().find(|f| f.id == filter_id) {
-            // Build query from all available criteria
-            let mut parts = Vec::new();
-            if let Some(from) = &f.from {
-                parts.push(format!("from:({})", from));
-            }
-            if let Some(to) = &f.to {
-                parts.push(format!("to:({})", to));
-            }
-            if let Some(subject) = &f.subject {
-                parts.push(format!("subject:({})", subject));
-            }
-            if let Some(q) = &f.query {
-                if !q.is_empty() {
-                    parts.push(q.clone());
-                }
-            }
-            let query = parts.join(" ");
-
-            let label_id = f.add_label_ids.first().cloned().unwrap_or_default();
-            let label_name = resolve_label(&label_id);
-
-            let name = if query.is_empty() {
-                format!("Filter ({}...)", &filter_id[..8.min(filter_id.len())])
-            } else {
-                query.clone()
-            };
-
-            result.push(HiddenFilterInfo {
-                id: filter_id,
-                name,
-                query,
-                label: label_name,
-            });
-            continue;
-        }
-
-        // Try to find in proposed filters
-        if filter_id.starts_with("proposed-") {
-            if let Ok(idx) = filter_id.trim_start_matches("proposed-").parse::<usize>() {
-                if let Some(f) = proposed.get(idx) {
-                    let query = FilterManager::build_gmail_query_static(f);
-                    let label_name = resolve_label(&f.target_label_id);
-
-                    result.push(HiddenFilterInfo {
-                        id: filter_id,
-                        name: f.name.clone(),
-                        query,
-                        label: label_name,
-                    });
-                    continue;
-                }
-            }
-        }
-
-        // Fallback: just show the ID
-        result.push(HiddenFilterInfo {
-            id: filter_id.clone(),
-            name: format!("Unknown filter ({}...)", &filter_id[..8.min(filter_id.len())]),
-            query: String::new(),
-            label: String::new(),
-        });
-    }
-
-    Ok(result)
+    let filters = state.with_hidden_filters_mut(|data| get_hidden_filter_list(data));
+    Ok(filters)
 }
 
 /// Clears all hidden filters

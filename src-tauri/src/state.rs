@@ -4,7 +4,7 @@
 //! thread-safe state management for the Tauri application.
 
 use crate::commands::clusters::GuiDecision;
-use crate::commands::hidden_filters::{load_hidden_filters, HiddenFiltersData};
+use crate::commands::hidden_filters::{get_hidden_filter_ids, load_hidden_filters, HiddenFiltersData};
 use gmail_automation::{
     Classification, Config, EmailCluster, FilterRule,
     MessageMetadata, ProcessingState, ProductionGmailClient,
@@ -105,7 +105,7 @@ impl AppState {
 
         // Load hidden filters from disk
         let hidden_filters_data = load_hidden_filters();
-        tracing::debug!("Loaded {} hidden filters from disk", hidden_filters_data.hidden_filter_ids.len());
+        tracing::debug!("Loaded {} hidden filters from disk", hidden_filters_data.hidden_filters.len());
 
         Self {
             credentials_path: RwLock::new(gmail_dir.join("credentials.json")),
@@ -277,9 +277,9 @@ impl AppState {
         self.label_cache.read().get(name).cloned()
     }
 
-    /// Gets the set of hidden filter IDs
-    pub fn get_hidden_filters(&self) -> HashSet<String> {
-        self.hidden_filters.read().hidden_filter_ids.clone()
+    /// Gets the set of hidden filter IDs (for overlap filtering)
+    pub fn get_hidden_filter_ids(&self) -> HashSet<String> {
+        get_hidden_filter_ids(&self.hidden_filters.read())
     }
 
     /// Gets mutable access to hidden filters data for modifications

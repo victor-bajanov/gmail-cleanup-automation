@@ -4,15 +4,24 @@
 //! has chosen to hide from the overlap analysis results.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+
+/// Hidden filter info with full details for display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HiddenFilterInfo {
+    pub id: String,
+    pub name: String,
+    pub query: String,
+    pub label: String,
+}
 
 /// Hidden filters data structure for JSON persistence
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HiddenFiltersData {
-    /// Set of filter IDs that are hidden from overlap analysis
-    pub hidden_filter_ids: HashSet<String>,
+    /// Map of filter ID to full filter info for hidden filters
+    pub hidden_filters: HashMap<String, HiddenFilterInfo>,
 }
 
 /// Gets the path to the hidden filters JSON file
@@ -59,25 +68,35 @@ pub fn save_hidden_filters(data: &HiddenFiltersData) -> Result<(), String> {
     fs::write(&path, content)
         .map_err(|e| format!("Failed to write hidden filters: {}", e))?;
 
-    tracing::debug!("Saved {} hidden filters to {:?}", data.hidden_filter_ids.len(), path);
+    tracing::debug!("Saved {} hidden filters to {:?}", data.hidden_filters.len(), path);
 
     Ok(())
 }
 
-/// Adds a filter ID to the hidden set and persists
-pub fn add_hidden_filter(data: &mut HiddenFiltersData, filter_id: String) -> Result<(), String> {
-    data.hidden_filter_ids.insert(filter_id);
+/// Adds a filter with full info to the hidden set and persists
+pub fn add_hidden_filter(data: &mut HiddenFiltersData, info: HiddenFilterInfo) -> Result<(), String> {
+    data.hidden_filters.insert(info.id.clone(), info);
     save_hidden_filters(data)
 }
 
 /// Removes a filter ID from the hidden set and persists
 pub fn remove_hidden_filter(data: &mut HiddenFiltersData, filter_id: &str) -> Result<(), String> {
-    data.hidden_filter_ids.remove(filter_id);
+    data.hidden_filters.remove(filter_id);
     save_hidden_filters(data)
 }
 
 /// Clears all hidden filters and persists
 pub fn clear_all_hidden_filters(data: &mut HiddenFiltersData) -> Result<(), String> {
-    data.hidden_filter_ids.clear();
+    data.hidden_filters.clear();
     save_hidden_filters(data)
+}
+
+/// Gets the set of hidden filter IDs (for filtering in overlap analysis)
+pub fn get_hidden_filter_ids(data: &HiddenFiltersData) -> std::collections::HashSet<String> {
+    data.hidden_filters.keys().cloned().collect()
+}
+
+/// Gets all hidden filter info for display
+pub fn get_hidden_filter_list(data: &HiddenFiltersData) -> Vec<HiddenFilterInfo> {
+    data.hidden_filters.values().cloned().collect()
 }

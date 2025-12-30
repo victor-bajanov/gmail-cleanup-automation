@@ -132,8 +132,13 @@ export async function analyzeFilterOverlaps(includeInfo?: boolean, autoManagedOn
   return invoke<AnalysisView>('analyze_filter_overlaps', { includeInfo, autoManagedOnly });
 }
 
-export async function hideFilter(filterId: string): Promise<boolean> {
-  return invoke<boolean>('hide_filter', { filterId });
+export async function hideFilter(
+  filterId: string,
+  filterName: string,
+  filterQuery: string,
+  filterLabel: string
+): Promise<boolean> {
+  return invoke<boolean>('hide_filter', { filterId, filterName, filterQuery, filterLabel });
 }
 
 export async function unhideFilter(filterId: string): Promise<boolean> {
