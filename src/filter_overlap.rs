@@ -85,6 +85,9 @@ impl PatternRelation {
 pub enum ConflictType {
     /// Filters match overlapping emails
     Overlap,
+    /// Theoretical overlap: filters on orthogonal dimensions (FROM-only vs SUBJECT-only)
+    /// These rarely conflict in practice since they target different email characteristics
+    TheoreticalOverlap,
     /// One filter is completely redundant (covered by another)
     Redundancy,
     /// Filters apply different labels to same emails
@@ -100,11 +103,17 @@ impl ConflictType {
     pub fn name(&self) -> &str {
         match self {
             ConflictType::Overlap => "Overlap",
+            ConflictType::TheoreticalOverlap => "Theoretical Overlap",
             ConflictType::Redundancy => "Redundancy",
             ConflictType::LabelConflict => "Label Conflict",
             ConflictType::ArchiveConflict => "Archive Conflict",
             ConflictType::ExclusionConflict => "Exclusion Conflict",
         }
+    }
+
+    /// Returns true if this is a theoretical overlap (orthogonal dimensions)
+    pub fn is_theoretical(&self) -> bool {
+        matches!(self, ConflictType::TheoreticalOverlap)
     }
 }
 
@@ -711,43 +720,92 @@ impl FilterOverlapAnalyzer {
             }
 
             PatternRelation::Overlaps { description } => {
+                // Check if this is a theoretical overlap (orthogonal dimensions)
+                // One filter is FROM-only, the other is SUBJECT-only
+                let is_orthogonal = self.is_orthogonal_dimensions(&filter_a.expr, &filter_b.expr);
+
                 // Partial overlap
                 if let Some(action_conflict) =
                     filter_a.actions.conflicts_with(&filter_b.actions)
                 {
+                    // Even with action conflicts, orthogonal dimensions are less severe
+                    let (conflict_type, severity) = if is_orthogonal {
+                        (ConflictType::TheoreticalOverlap, ConflictSeverity::Info)
+                    } else {
+                        (ConflictType::LabelConflict, ConflictSeverity::Error)
+                    };
+
                     Some(
                         FilterConflict::new(
                             filter_a,
                             filter_b,
-                            ConflictType::LabelConflict,
-                            ConflictSeverity::Error,
+                            conflict_type,
+                            severity,
                             format!(
-                                "Overlapping filters with conflicting actions ({}): {}",
+                                "{}overlapping filters with conflicting actions ({}): {}",
+                                if is_orthogonal { "Theoretically " } else { "" },
                                 description,
                                 action_conflict.describe()
                             ),
                         )
-                        .with_suggestions(vec![
-                            "Add exclusions to separate the filters".to_string(),
-                            "Merge filters if they should have same behavior".to_string(),
-                        ]),
+                        .with_suggestions(if is_orthogonal {
+                            vec![
+                                "Filters target different email characteristics (FROM vs SUBJECT) - unlikely to conflict in practice".to_string(),
+                            ]
+                        } else {
+                            vec![
+                                "Add exclusions to separate the filters".to_string(),
+                                "Merge filters if they should have same behavior".to_string(),
+                            ]
+                        }),
                     )
                 } else {
+                    let (conflict_type, description_text) = if is_orthogonal {
+                        (
+                            ConflictType::TheoreticalOverlap,
+                            format!("Filters on orthogonal dimensions (FROM vs SUBJECT) - theoretical overlap only"),
+                        )
+                    } else {
+                        (
+                            ConflictType::Overlap,
+                            format!("Filters overlap ({})", description),
+                        )
+                    };
+
                     Some(
                         FilterConflict::new(
                             filter_a,
                             filter_b,
-                            ConflictType::Overlap,
+                            conflict_type,
                             ConflictSeverity::Info,
-                            format!("Filters overlap ({})", description),
+                            description_text,
                         )
-                        .with_suggestions(vec![
-                            "Consider if overlap is intentional".to_string(),
-                        ]),
+                        .with_suggestions(if is_orthogonal {
+                            vec![
+                                "These filters target different email characteristics and rarely conflict in practice".to_string(),
+                            ]
+                        } else {
+                            vec![
+                                "Consider if overlap is intentional".to_string(),
+                            ]
+                        }),
                     )
                 }
             }
         }
+    }
+
+    /// Checks if two filters are on orthogonal dimensions
+    /// (one is FROM-only, the other is SUBJECT-only)
+    fn is_orthogonal_dimensions(&self, expr_a: &FilterExpr, expr_b: &FilterExpr) -> bool {
+        let a_has_from = expr_a.from_clause.is_some();
+        let a_has_subject = expr_a.subject_clause.is_some();
+        let b_has_from = expr_b.from_clause.is_some();
+        let b_has_subject = expr_b.subject_clause.is_some();
+
+        // Orthogonal: A has FROM but no SUBJECT, B has SUBJECT but no FROM (or vice versa)
+        (a_has_from && !a_has_subject && !b_has_from && b_has_subject)
+            || (!a_has_from && a_has_subject && b_has_from && !b_has_subject)
     }
 }
 

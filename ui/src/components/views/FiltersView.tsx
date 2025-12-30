@@ -9,9 +9,25 @@ const FiltersView: Component = () => {
   const [applyResult, setApplyResult] = createSignal<{ success: boolean; message: string } | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [autoManagedOnly, setAutoManagedOnly] = createSignal(false);
+  const [showTheoretical, setShowTheoretical] = createSignal(false);
   const [hiddenFilters, setHiddenFilters] = createSignal<HiddenFilterInfo[]>([]);
   const [showHiddenModal, setShowHiddenModal] = createSignal(false);
   const [hidingInProgress, setHidingInProgress] = createSignal<string | null>(null);
+
+  // Filter conflicts to exclude theoretical overlaps unless toggle is on
+  const visibleConflicts = () => {
+    const all = analysis()?.conflicts ?? [];
+    if (showTheoretical()) {
+      return all;
+    }
+    return all.filter(c => c.conflict_type !== 'Theoretical Overlap');
+  };
+
+  // Count theoretical conflicts for display
+  const theoreticalCount = () => {
+    const all = analysis()?.conflicts ?? [];
+    return all.filter(c => c.conflict_type === 'Theoretical Overlap').length;
+  };
 
   onMount(async () => {
     await loadHiddenFilters();
@@ -304,6 +320,20 @@ const FiltersView: Component = () => {
                   Auto-Managed Only
                 </button>
               </div>
+
+              {/* Theoretical Overlaps Toggle */}
+              <Show when={theoreticalCount() > 0}>
+                <button
+                  onClick={() => setShowTheoretical(!showTheoretical())}
+                  class="text-sm px-3 py-1.5 rounded-lg transition-colors"
+                  classList={{
+                    'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300': showTheoretical(),
+                    'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white': !showTheoretical(),
+                  }}
+                >
+                  {showTheoretical() ? 'Hide' : 'Show'} Theoretical ({theoreticalCount()})
+                </button>
+              </Show>
             </div>
           </div>
 
@@ -311,15 +341,20 @@ const FiltersView: Component = () => {
             {analysis()!.summary}
           </p>
 
-          <Show when={analysis()!.error_count > 0 || analysis()!.warning_count > 0}>
+          <Show when={analysis()!.error_count > 0 || analysis()!.warning_count > 0 || (showTheoretical() && theoreticalCount() > 0)}>
             <div class="space-y-3">
-              <For each={analysis()!.conflicts.filter(c => c.severity !== 'Info')}>
-                {(conflict) => (
+              <For each={visibleConflicts().filter(c =>
+                c.severity !== 'Info' || (showTheoretical() && c.conflict_type === 'Theoretical Overlap')
+              )}>
+                {(conflict) => {
+                  const isTheoretical = conflict.conflict_type === 'Theoretical Overlap';
+                  return (
                   <div
                     class="p-4 rounded-lg border relative"
                     classList={{
                       'bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800': conflict.severity === 'Error',
-                      'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-200 dark:border-yellow-800': conflict.severity === 'Warning',
+                      'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-200 dark:border-yellow-800': conflict.severity === 'Warning' && !isTheoretical,
+                      'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800': isTheoretical,
                     }}
                   >
                     <div class="flex items-start gap-3">
@@ -327,10 +362,11 @@ const FiltersView: Component = () => {
                         class="text-sm font-medium px-2 py-0.5 rounded flex-shrink-0"
                         classList={{
                           'bg-red-100 text-red-700 dark:bg-red-800 dark:text-red-200': conflict.severity === 'Error',
-                          'bg-yellow-100 text-yellow-700 dark:bg-yellow-800 dark:text-yellow-200': conflict.severity === 'Warning',
+                          'bg-yellow-100 text-yellow-700 dark:bg-yellow-800 dark:text-yellow-200': conflict.severity === 'Warning' && !isTheoretical,
+                          'bg-blue-100 text-blue-700 dark:bg-blue-800 dark:text-blue-200': isTheoretical,
                         }}
                       >
-                        {conflict.severity}
+                        {isTheoretical ? 'Theoretical' : conflict.severity}
                       </span>
                       <div class="flex-1 min-w-0">
                         <p class="text-sm font-medium text-gray-900 dark:text-white">
@@ -407,14 +443,19 @@ const FiltersView: Component = () => {
                       </div>
                     </div>
                   </div>
-                )}
+                );}}
               </For>
             </div>
           </Show>
 
-          <Show when={analysis()!.error_count === 0 && analysis()!.warning_count === 0}>
+          <Show when={analysis()!.error_count === 0 && analysis()!.warning_count === 0 && (!showTheoretical() || theoreticalCount() === 0)}>
             <div class="text-center py-8 text-gray-500 dark:text-gray-400">
               <p>No conflicts found.</p>
+              <Show when={theoreticalCount() > 0}>
+                <p class="text-sm mt-2">
+                  ({theoreticalCount()} theoretical overlap{theoreticalCount() !== 1 ? 's' : ''} hidden)
+                </p>
+              </Show>
             </div>
           </Show>
         </div>
