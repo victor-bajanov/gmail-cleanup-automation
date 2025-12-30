@@ -41,3 +41,11 @@ checkpoint.json
 /tests/fixtures/generated/
 assets/
 scripts/
+
+# Tauri
+src-tauri/gen/
+src-tauri/target/
+
+# UI (SolidJS)
+ui/node_modules/
+ui/dist/
