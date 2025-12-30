@@ -51,13 +51,57 @@ pub struct AppState {
 impl AppState {
     /// Creates a new AppState with default paths
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let gmail_dir = home.join(".gmail-automation");
+        // Project directory is parent of src-tauri (where Cargo.toml is)
+        let project_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let project_gmail_dir = project_dir.join(".gmail-automation");
+
+        let home_gmail_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".gmail-automation");
+
+        // Use project dir if credentials exist there, otherwise use home
+        let gmail_dir = if project_gmail_dir.join("credentials.json").exists() {
+            project_gmail_dir
+        } else {
+            home_gmail_dir
+        };
+
+        // Load config from project's config.toml (same as CLI)
+        let config_path = project_dir.join("config.toml");
+        let config = if config_path.exists() {
+            // Load config synchronously at startup (blocking is OK here)
+            match std::fs::read_to_string(&config_path) {
+                Ok(content) => {
+                    match toml::from_str::<Config>(&content) {
+                        Ok(cfg) => {
+                            tracing::info!("Loaded config from {:?}: max_concurrent_requests={}",
+                                config_path, cfg.scan.max_concurrent_requests);
+                            Some(cfg)
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to parse config.toml: {}, using defaults", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read config.toml: {}, using defaults", e);
+                    None
+                }
+            }
+        } else {
+            tracing::info!("No config.toml found at {:?}, using defaults", config_path);
+            None
+        };
 
         Self {
             credentials_path: RwLock::new(gmail_dir.join("credentials.json")),
             token_dir: RwLock::new(gmail_dir.clone()),
-            config: RwLock::new(None),
+            config: RwLock::new(config),
             client: RwLock::new(None),
             processing_state: RwLock::new(None),
             messages: RwLock::new(Vec::new()),

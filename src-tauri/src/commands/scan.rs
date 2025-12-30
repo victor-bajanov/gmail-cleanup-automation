@@ -132,7 +132,7 @@ pub async fn scan_emails(
         .as_ref()
         .map(|c| c.labels.prefix.clone())
         .unwrap_or_else(|| "AutoManaged".to_string());
-    let classifier = gmail_automation::EmailClassifier::new(&label_prefix);
+    let classifier = gmail_automation::EmailClassifier::new(label_prefix.clone());
 
     let mut classifications = Vec::new();
     for (i, msg) in messages.iter().enumerate() {
@@ -240,7 +240,7 @@ pub async fn classify_messages(
         .unwrap_or_else(|| "AutoManaged".to_string());
 
     // Create classifier
-    let classifier = EmailClassifier::new(&label_prefix);
+    let classifier = EmailClassifier::new(label_prefix.clone());
 
     // Classify each message
     let mut classifications = Vec::new();

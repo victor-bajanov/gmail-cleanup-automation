@@ -142,6 +142,10 @@ export interface ConflictView {
   filter_b_id: string;
   filter_a_name: string;
   filter_b_name: string;
+  filter_a_query: string;
+  filter_b_query: string;
+  filter_a_label: string;
+  filter_b_label: string;
   conflict_type: string;
   severity: 'Info' | 'Warning' | 'Error';
   description: string;
@@ -162,6 +166,7 @@ export interface FilterCoverage {
   filter_query: string;
   email_count: number;
   percentage: number;
+  is_existing: boolean;
 }
 
 export interface CoverageAnalysis {

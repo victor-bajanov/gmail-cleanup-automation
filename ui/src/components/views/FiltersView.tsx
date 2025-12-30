@@ -214,7 +214,7 @@ const FiltersView: Component = () => {
                 >
                   <div class="flex items-start gap-3">
                     <span
-                      class="text-sm font-medium px-2 py-0.5 rounded"
+                      class="text-sm font-medium px-2 py-0.5 rounded flex-shrink-0"
                       classList={{
                         'bg-red-100 text-red-700 dark:bg-red-800 dark:text-red-200': conflict.severity === 'Error',
                         'bg-yellow-100 text-yellow-700 dark:bg-yellow-800 dark:text-yellow-200': conflict.severity === 'Warning',
@@ -222,15 +222,42 @@ const FiltersView: Component = () => {
                     >
                       {conflict.severity}
                     </span>
-                    <div class="flex-1">
+                    <div class="flex-1 min-w-0">
                       <p class="text-sm font-medium text-gray-900 dark:text-white">
-                        {conflict.filter_a_name} ↔ {conflict.filter_b_name}
+                        {conflict.conflict_type}
                       </p>
                       <p class="text-sm text-gray-600 dark:text-gray-400 mt-1">
                         {conflict.description}
                       </p>
+
+                      {/* Filter details */}
+                      <div class="mt-3 space-y-2 text-xs">
+                        <div class="p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-600">
+                          <p class="font-medium text-gray-700 dark:text-gray-300 mb-1">Filter A:</p>
+                          <p class="font-mono text-gray-600 dark:text-gray-400 break-all">
+                            {conflict.filter_a_query || conflict.filter_a_name}
+                          </p>
+                          <Show when={conflict.filter_a_label}>
+                            <p class="text-gray-500 dark:text-gray-500 mt-1">
+                              Label: <span class="font-medium">{conflict.filter_a_label}</span>
+                            </p>
+                          </Show>
+                        </div>
+                        <div class="p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-600">
+                          <p class="font-medium text-gray-700 dark:text-gray-300 mb-1">Filter B:</p>
+                          <p class="font-mono text-gray-600 dark:text-gray-400 break-all">
+                            {conflict.filter_b_query || conflict.filter_b_name}
+                          </p>
+                          <Show when={conflict.filter_b_label}>
+                            <p class="text-gray-500 dark:text-gray-500 mt-1">
+                              Label: <span class="font-medium">{conflict.filter_b_label}</span>
+                            </p>
+                          </Show>
+                        </div>
+                      </div>
+
                       <Show when={conflict.suggestions.length > 0}>
-                        <div class="mt-2">
+                        <div class="mt-3">
                           <p class="text-xs text-gray-500 dark:text-gray-500">Suggestions:</p>
                           <ul class="text-xs text-gray-600 dark:text-gray-400 mt-1 space-y-1">
                             <For each={conflict.suggestions}>

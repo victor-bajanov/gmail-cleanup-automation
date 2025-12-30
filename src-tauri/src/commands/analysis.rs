@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use gmail_automation::{
     filter_ast::{Filter, FilterActions},
-    filter_overlap::{FilterConflict, FilterOverlapAnalyzer},
-    FilterManager,
+    filter_overlap::FilterOverlapAnalyzer,
+    FilterManager, GmailClient,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,25 +17,20 @@ pub struct ConflictView {
     pub filter_b_id: String,
     pub filter_a_name: String,
     pub filter_b_name: String,
+    pub filter_a_query: String,
+    pub filter_b_query: String,
+    pub filter_a_label: String,
+    pub filter_b_label: String,
     pub conflict_type: String,
     pub severity: String,
     pub description: String,
     pub suggestions: Vec<String>,
 }
 
-impl From<&FilterConflict> for ConflictView {
-    fn from(c: &FilterConflict) -> Self {
-        Self {
-            filter_a_id: c.filter_a_id.clone(),
-            filter_b_id: c.filter_b_id.clone(),
-            filter_a_name: c.filter_a_name.clone(),
-            filter_b_name: c.filter_b_name.clone(),
-            conflict_type: c.conflict_type.name().to_string(),
-            severity: c.severity.name().to_string(),
-            description: c.description.clone(),
-            suggestions: c.resolution_suggestions.clone(),
-        }
-    }
+/// Filter metadata for conflict display
+struct FilterMeta {
+    query: String,
+    label: String,
 }
 
 /// Analysis result view for frontend
@@ -58,35 +53,105 @@ pub async fn analyze_filter_overlaps(
     let existing = state.get_existing_filters();
     let proposed = state.get_proposed_filters();
 
-    // Convert existing filters to AST format
-    let mut filters: Vec<Filter> = existing
-        .iter()
-        .map(|f| {
-            let query = f.query.clone().unwrap_or_default();
-            let expr = gmail_automation::filter_overlap::parse_gmail_query(&query);
-            let label = f
-                .add_label_ids
-                .first()
-                .cloned()
-                .unwrap_or_default();
+    // Build label ID -> name map for resolving cryptic label IDs
+    let label_map: HashMap<String, String> = if let Some(client) = state.get_client() {
+        match client.list_labels().await {
+            Ok(labels) => labels.into_iter().map(|l| (l.id, l.name)).collect(),
+            Err(e) => {
+                tracing::warn!("Failed to fetch labels for display: {}", e);
+                HashMap::new()
+            }
+        }
+    } else {
+        HashMap::new()
+    };
 
-            // ExistingFilterInfo doesn't track archive status, default to just label
-            Filter::new(
-                &f.id,
-                format!("Existing: {}", &f.id),
-                expr,
-                FilterActions::with_label(&label),
-            )
-        })
-        .collect();
+    // Helper to resolve label ID to name
+    let resolve_label = |label_id: &str| -> String {
+        label_map.get(label_id).cloned().unwrap_or_else(|| label_id.to_string())
+    };
+
+    // Build metadata map for rich conflict display
+    let mut filter_meta: HashMap<String, FilterMeta> = HashMap::new();
+
+    // Convert existing filters to AST format
+    let mut filters: Vec<Filter> = Vec::new();
+
+    for f in &existing {
+        // Build a human-readable query string from ALL filter criteria
+        // Gmail API may return data in query field AND/OR individual fields
+        let mut parts = Vec::new();
+
+        // Add individual criteria fields first (more specific)
+        if let Some(from) = &f.from {
+            parts.push(format!("from:({})", from));
+        }
+        if let Some(to) = &f.to {
+            parts.push(format!("to:({})", to));
+        }
+        if let Some(subject) = &f.subject {
+            parts.push(format!("subject:({})", subject));
+        }
+
+        // Add query field if present (may contain additional criteria)
+        if let Some(q) = &f.query {
+            // Only add if not already covered by individual fields
+            if !q.is_empty() {
+                parts.push(q.clone());
+            }
+        }
+
+        let query = parts.join(" ");
+
+        let expr = gmail_automation::filter_overlap::parse_gmail_query(&query);
+        let label_id = f
+            .add_label_ids
+            .first()
+            .cloned()
+            .unwrap_or_default();
+
+        // Resolve label ID to human-readable name
+        let label_name = resolve_label(&label_id);
+
+        // Store metadata for this filter
+        filter_meta.insert(f.id.clone(), FilterMeta {
+            query: query.clone(),
+            label: label_name,
+        });
+
+        // Use query as display name
+        let display_name = if query.is_empty() {
+            format!("Existing filter ({})", &f.id[..8.min(f.id.len())])
+        } else {
+            query.clone()
+        };
+
+        // ExistingFilterInfo doesn't track archive status, default to just label
+        filters.push(Filter::new(
+            &f.id,
+            display_name,
+            expr,
+            FilterActions::with_label(&label_id),
+        ));
+    }
 
     // Add proposed filters
     for (i, f) in proposed.iter().enumerate() {
         let query = FilterManager::build_gmail_query_static(f);
         let expr = gmail_automation::filter_overlap::parse_gmail_query(&query);
+        let filter_id = format!("proposed-{}", i);
+
+        // Resolve label ID to human-readable name
+        let label_name = resolve_label(&f.target_label_id);
+
+        // Store metadata for this filter
+        filter_meta.insert(filter_id.clone(), FilterMeta {
+            query: query.clone(),
+            label: label_name,
+        });
 
         filters.push(Filter::new(
-            format!("proposed-{}", i),
+            filter_id,
             f.name.clone(),
             expr,
             if f.should_archive {
@@ -111,7 +176,26 @@ pub async fn analyze_filter_overlaps(
     let warning_count = result.warning_count();
     let info_count = result.conflicts.len() - error_count - warning_count;
 
-    let conflicts: Vec<ConflictView> = result.conflicts.iter().map(ConflictView::from).collect();
+    // Convert conflicts with full metadata
+    let conflicts: Vec<ConflictView> = result.conflicts.iter().map(|c| {
+        let meta_a = filter_meta.get(&c.filter_a_id);
+        let meta_b = filter_meta.get(&c.filter_b_id);
+
+        ConflictView {
+            filter_a_id: c.filter_a_id.clone(),
+            filter_b_id: c.filter_b_id.clone(),
+            filter_a_name: c.filter_a_name.clone(),
+            filter_b_name: c.filter_b_name.clone(),
+            filter_a_query: meta_a.map(|m| m.query.clone()).unwrap_or_default(),
+            filter_b_query: meta_b.map(|m| m.query.clone()).unwrap_or_default(),
+            filter_a_label: meta_a.map(|m| m.label.clone()).unwrap_or_default(),
+            filter_b_label: meta_b.map(|m| m.label.clone()).unwrap_or_default(),
+            conflict_type: c.conflict_type.name().to_string(),
+            severity: c.severity.name().to_string(),
+            description: c.description.clone(),
+            suggestions: c.resolution_suggestions.clone(),
+        }
+    }).collect();
 
     Ok(AnalysisView {
         total_filters: result.total_filters,
@@ -130,6 +214,7 @@ pub struct FilterCoverage {
     pub filter_query: String,
     pub email_count: usize,
     pub percentage: f64,
+    pub is_existing: bool,
 }
 
 /// Coverage analysis result
@@ -150,11 +235,40 @@ pub struct DomainCount {
     pub count: usize,
 }
 
+/// Extract from pattern from a Gmail query string
+/// e.g., "from:(*@github.com)" -> "*@github.com"
+fn extract_from_pattern_for_coverage(query: &str) -> Option<String> {
+    let query_lower = query.to_lowercase();
+
+    // Try "from:(...)" format
+    if let Some(start) = query_lower.find("from:(") {
+        let rest = &query[start + 6..];
+        if let Some(end) = rest.find(')') {
+            let pattern = rest[..end].trim().to_string();
+            // Handle exclusions - take just the first part
+            let clean = pattern.split_whitespace().next().unwrap_or(&pattern);
+            return Some(clean.to_string());
+        }
+    }
+
+    // Try "from:..." format without parens
+    if let Some(start) = query_lower.find("from:") {
+        let rest = &query[start + 5..];
+        let pattern = rest.split_whitespace().next().unwrap_or(rest);
+        if !pattern.is_empty() && !pattern.starts_with('(') {
+            return Some(pattern.to_string());
+        }
+    }
+
+    None
+}
+
 /// Analyzes filter coverage
 #[tauri::command]
 pub async fn analyze_coverage(state: State<'_, AppState>) -> Result<CoverageAnalysis, String> {
     let messages = state.get_messages();
     let proposed = state.get_proposed_filters();
+    let existing = state.get_existing_filters();
 
     if messages.is_empty() {
         return Ok(CoverageAnalysis {
@@ -171,33 +285,87 @@ pub async fn analyze_coverage(state: State<'_, AppState>) -> Result<CoverageAnal
     let mut covered_message_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut filter_coverage = Vec::new();
 
-    // Check coverage for each filter
+    // Helper to check if a pattern matches a message
+    let check_pattern_match = |from_pattern: &str, msg: &gmail_automation::MessageMetadata| -> bool {
+        let pattern_lower = from_pattern.to_lowercase();
+        let is_domain = pattern_lower.starts_with('*');
+
+        if is_domain {
+            let domain = pattern_lower.trim_start_matches("*@");
+            msg.sender_domain.to_lowercase() == domain
+        } else {
+            msg.sender_email.to_lowercase() == pattern_lower
+        }
+    };
+
+    // Check coverage for existing filters first
+    for filter in &existing {
+        // Build query from ALL available criteria (same as overlap analysis)
+        let mut parts = Vec::new();
+        if let Some(from) = &filter.from {
+            parts.push(format!("from:({})", from));
+        }
+        if let Some(to) = &filter.to {
+            parts.push(format!("to:({})", to));
+        }
+        if let Some(subject) = &filter.subject {
+            parts.push(format!("subject:({})", subject));
+        }
+        if let Some(q) = &filter.query {
+            if !q.is_empty() {
+                parts.push(q.clone());
+            }
+        }
+        let query = parts.join(" ");
+
+        // Try to extract from pattern - check direct `from` field first, then query
+        let from_pattern = filter.from.clone()
+            .or_else(|| extract_from_pattern_for_coverage(&query));
+
+        if let Some(pattern) = from_pattern {
+            let mut matched_count = 0;
+
+            for msg in &messages {
+                if check_pattern_match(&pattern, msg) {
+                    covered_message_ids.insert(msg.id.clone());
+                    matched_count += 1;
+                }
+            }
+
+            let percentage = if total > 0 {
+                (matched_count as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            // Create a readable name from the query
+            let filter_name = if query.is_empty() {
+                format!("Existing filter (no criteria)")
+            } else {
+                format!("Existing: {}", &query)
+            };
+
+            filter_coverage.push(FilterCoverage {
+                filter_name,
+                filter_query: query,
+                email_count: matched_count,
+                percentage,
+                is_existing: true,
+            });
+        }
+    }
+
+    // Check coverage for proposed filters
     for filter in &proposed {
         let from_pattern = filter.from_pattern.clone().unwrap_or_default();
-        let is_domain = from_pattern.starts_with('*');
-
-        let domain_pattern = if is_domain {
-            from_pattern.trim_start_matches("*@").to_lowercase()
-        } else {
-            String::new()
-        };
-
-        let email_pattern = if !is_domain {
-            from_pattern.to_lowercase()
-        } else {
-            String::new()
-        };
+        if from_pattern.is_empty() {
+            continue;
+        }
 
         let mut matched_count = 0;
 
         for msg in &messages {
-            let matches = if is_domain {
-                msg.sender_domain.to_lowercase() == domain_pattern
-            } else {
-                msg.sender_email.to_lowercase() == email_pattern
-            };
-
-            if matches {
+            if check_pattern_match(&from_pattern, msg) {
                 covered_message_ids.insert(msg.id.clone());
                 matched_count += 1;
             }
@@ -210,10 +378,11 @@ pub async fn analyze_coverage(state: State<'_, AppState>) -> Result<CoverageAnal
         };
 
         filter_coverage.push(FilterCoverage {
-            filter_name: filter.name.clone(),
+            filter_name: format!("Proposed: {}", filter.name),
             filter_query: FilterManager::build_gmail_query_static(filter),
             email_count: matched_count,
             percentage,
+            is_existing: false,
         });
     }
 

@@ -1,6 +1,5 @@
 //! Filter management commands
 
-use crate::commands::clusters::GuiDecision;
 use crate::events::{AppHandleExt, FilterOperation, FilterProgress};
 use crate::state::AppState;
 use gmail_automation::{DecisionAction, FilterManager, FilterRule, GmailClient};
@@ -143,7 +142,7 @@ pub async fn generate_proposed_filters(
         return Ok(Vec::new());
     }
 
-    let label_prefix = config
+    let _label_prefix = config
         .as_ref()
         .map(|c| c.labels.prefix.clone())
         .unwrap_or_else(|| "AutoManaged".to_string());
@@ -334,8 +333,8 @@ pub async fn apply_filters(
     let mut created = 0;
     let mut errors = Vec::new();
 
-    // Create FilterManager - clone the client for ownership
-    let client_clone = (*client).clone();
+    // Create FilterManager - clone the Arc for ownership
+    let client_clone = std::sync::Arc::clone(&client);
     let mut manager = FilterManager::new(Box::new(client_clone));
 
     for (i, filter) in proposed.iter().enumerate() {

@@ -22,6 +22,17 @@ fn main() {
 
     tracing::info!("Starting Gmail Cleanup GUI");
 
+    // Install default crypto provider for rustls (same as CLI)
+    #[cfg(not(windows))]
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install default crypto provider");
+
+    #[cfg(windows)]
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install default crypto provider");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
