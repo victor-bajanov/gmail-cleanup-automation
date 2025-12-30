@@ -1,5 +1,8 @@
 //! Analysis commands for filter overlap detection and coverage
 
+use crate::commands::hidden_filters::{
+    add_hidden_filter, clear_all_hidden_filters, remove_hidden_filter, save_hidden_filters,
+};
 use crate::state::AppState;
 use gmail_automation::{
     filter_ast::{Filter, FilterActions},
@@ -7,7 +10,7 @@ use gmail_automation::{
     FilterManager, GmailClient,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tauri::State;
 
 /// Conflict view for frontend
@@ -45,13 +48,26 @@ pub struct AnalysisView {
 }
 
 /// Analyzes filter overlaps
+///
+/// # Arguments
+/// * `include_info` - If true, include INFO-level conflicts (default: true)
+/// * `auto_managed_only` - If true, only show conflicts where at least one filter has the auto-managed prefix
+/// * `state` - Application state
 #[tauri::command]
 pub async fn analyze_filter_overlaps(
     include_info: Option<bool>,
+    auto_managed_only: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<AnalysisView, String> {
     let existing = state.get_existing_filters();
     let proposed = state.get_proposed_filters();
+    let hidden_filters = state.get_hidden_filters();
+
+    // Get the label prefix from config for determining "auto-managed" filters
+    let label_prefix = state
+        .get_config()
+        .map(|c| c.labels.prefix.clone())
+        .unwrap_or_default();
 
     // Build label ID -> name map for resolving cryptic label IDs
     let label_map: HashMap<String, String> = if let Some(client) = state.get_client() {
@@ -71,8 +87,19 @@ pub async fn analyze_filter_overlaps(
         label_map.get(label_id).cloned().unwrap_or_else(|| label_id.to_string())
     };
 
+    // Helper to check if a filter is "auto-managed" (has label starting with prefix)
+    let is_auto_managed = |label_name: &str| -> bool {
+        if label_prefix.is_empty() {
+            return false;
+        }
+        label_name.starts_with(&label_prefix)
+    };
+
     // Build metadata map for rich conflict display
     let mut filter_meta: HashMap<String, FilterMeta> = HashMap::new();
+
+    // Track which filters are auto-managed for filtering
+    let mut auto_managed_filter_ids: HashSet<String> = HashSet::new();
 
     // Convert existing filters to AST format
     let mut filters: Vec<Filter> = Vec::new();
@@ -113,6 +140,11 @@ pub async fn analyze_filter_overlaps(
         // Resolve label ID to human-readable name
         let label_name = resolve_label(&label_id);
 
+        // Check if this filter is auto-managed
+        if is_auto_managed(&label_name) {
+            auto_managed_filter_ids.insert(f.id.clone());
+        }
+
         // Store metadata for this filter
         filter_meta.insert(f.id.clone(), FilterMeta {
             query: query.clone(),
@@ -144,6 +176,11 @@ pub async fn analyze_filter_overlaps(
         // Resolve label ID to human-readable name
         let label_name = resolve_label(&f.target_label_id);
 
+        // Proposed filters targeting auto-managed labels are considered auto-managed
+        if is_auto_managed(&label_name) {
+            auto_managed_filter_ids.insert(filter_id.clone());
+        }
+
         // Store metadata for this filter
         filter_meta.insert(filter_id.clone(), FilterMeta {
             query: query.clone(),
@@ -172,30 +209,64 @@ pub async fn analyze_filter_overlaps(
     // Run analysis
     let result = analyzer.analyze_all(filters);
 
-    let error_count = result.error_count();
-    let warning_count = result.warning_count();
-    let info_count = result.conflicts.len() - error_count - warning_count;
+    // Filter conflicts based on hidden filters and auto_managed_only
+    let auto_managed_filter = auto_managed_only.unwrap_or(false);
+    let filtered_conflicts: Vec<_> = result
+        .conflicts
+        .iter()
+        .filter(|c| {
+            // Filter out conflicts involving hidden filters
+            if hidden_filters.contains(&c.filter_a_id) || hidden_filters.contains(&c.filter_b_id) {
+                return false;
+            }
+
+            // If auto_managed_only is set, require at least one auto-managed filter
+            if auto_managed_filter {
+                let a_is_auto = auto_managed_filter_ids.contains(&c.filter_a_id);
+                let b_is_auto = auto_managed_filter_ids.contains(&c.filter_b_id);
+                if !a_is_auto && !b_is_auto {
+                    return false;
+                }
+            }
+
+            true
+        })
+        .collect();
+
+    // Calculate counts from filtered conflicts
+    let error_count = filtered_conflicts
+        .iter()
+        .filter(|c| c.severity == gmail_automation::filter_overlap::ConflictSeverity::Error)
+        .count();
+    let warning_count = filtered_conflicts
+        .iter()
+        .filter(|c| c.severity == gmail_automation::filter_overlap::ConflictSeverity::Warning)
+        .count();
+    let info_count = filtered_conflicts.len() - error_count - warning_count;
 
     // Convert conflicts with full metadata
-    let conflicts: Vec<ConflictView> = result.conflicts.iter().map(|c| {
-        let meta_a = filter_meta.get(&c.filter_a_id);
-        let meta_b = filter_meta.get(&c.filter_b_id);
+    let conflicts: Vec<ConflictView> = filtered_conflicts
+        .iter()
+        .map(|c| {
+            let meta_a = filter_meta.get(&c.filter_a_id);
+            let meta_b = filter_meta.get(&c.filter_b_id);
 
-        ConflictView {
-            filter_a_id: c.filter_a_id.clone(),
-            filter_b_id: c.filter_b_id.clone(),
-            filter_a_name: c.filter_a_name.clone(),
-            filter_b_name: c.filter_b_name.clone(),
-            filter_a_query: meta_a.map(|m| m.query.clone()).unwrap_or_default(),
-            filter_b_query: meta_b.map(|m| m.query.clone()).unwrap_or_default(),
-            filter_a_label: meta_a.map(|m| m.label.clone()).unwrap_or_default(),
-            filter_b_label: meta_b.map(|m| m.label.clone()).unwrap_or_default(),
-            conflict_type: c.conflict_type.name().to_string(),
-            severity: c.severity.name().to_string(),
-            description: c.description.clone(),
-            suggestions: c.resolution_suggestions.clone(),
-        }
-    }).collect();
+            ConflictView {
+                filter_a_id: c.filter_a_id.clone(),
+                filter_b_id: c.filter_b_id.clone(),
+                filter_a_name: c.filter_a_name.clone(),
+                filter_b_name: c.filter_b_name.clone(),
+                filter_a_query: meta_a.map(|m| m.query.clone()).unwrap_or_default(),
+                filter_b_query: meta_b.map(|m| m.query.clone()).unwrap_or_default(),
+                filter_a_label: meta_a.map(|m| m.label.clone()).unwrap_or_default(),
+                filter_b_label: meta_b.map(|m| m.label.clone()).unwrap_or_default(),
+                conflict_type: c.conflict_type.name().to_string(),
+                severity: c.severity.name().to_string(),
+                description: c.description.clone(),
+                suggestions: c.resolution_suggestions.clone(),
+            }
+        })
+        .collect();
 
     Ok(AnalysisView {
         total_filters: result.total_filters,
@@ -205,6 +276,44 @@ pub async fn analyze_filter_overlaps(
         info_count,
         summary: result.summary(),
     })
+}
+
+// ============================================================================
+// Hidden Filters Commands
+// ============================================================================
+
+/// Hides a filter from the overlap analysis results
+#[tauri::command]
+pub async fn hide_filter(filter_id: String, state: State<'_, AppState>) -> Result<bool, String> {
+    state.with_hidden_filters_mut(|data| {
+        add_hidden_filter(data, filter_id)
+    })?;
+    Ok(true)
+}
+
+/// Unhides a filter, making it visible in overlap analysis results again
+#[tauri::command]
+pub async fn unhide_filter(filter_id: String, state: State<'_, AppState>) -> Result<bool, String> {
+    state.with_hidden_filters_mut(|data| {
+        remove_hidden_filter(data, &filter_id)
+    })?;
+    Ok(true)
+}
+
+/// Gets the list of hidden filter IDs
+#[tauri::command]
+pub async fn get_hidden_filters(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let hidden = state.get_hidden_filters();
+    Ok(hidden.into_iter().collect())
+}
+
+/// Clears all hidden filters
+#[tauri::command]
+pub async fn clear_hidden_filters(state: State<'_, AppState>) -> Result<bool, String> {
+    state.with_hidden_filters_mut(|data| {
+        clear_all_hidden_filters(data)
+    })?;
+    Ok(true)
 }
 
 /// Coverage statistics per filter

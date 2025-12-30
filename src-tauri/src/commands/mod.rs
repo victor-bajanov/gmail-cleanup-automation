@@ -9,11 +9,13 @@
 //! - `clusters` - Cluster review and decision making
 //! - `analysis` - Overlap detection and coverage analysis
 //! - `settings` - Application settings and configuration
+//! - `hidden_filters` - Persistence for hidden filter IDs
 
 pub mod analysis;
 pub mod auth;
 pub mod clusters;
 pub mod filters;
+pub mod hidden_filters;
 pub mod scan;
 pub mod settings;
 

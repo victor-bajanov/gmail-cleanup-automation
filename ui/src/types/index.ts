@@ -238,5 +238,20 @@ export interface WindowState {
   maximized: boolean;
 }
 
+// Config.toml settings (separate from GUI AppSettings)
+export interface ConfigSettings {
+  scan_period_days: number;
+  max_concurrent_requests: number;
+  classification_mode: string;
+  llm_provider: string;
+  minimum_emails_for_label: number;
+  label_prefix: string;
+  auto_archive_categories: string[];
+  dry_run: boolean;
+  circuit_breaker_enabled: boolean;
+  failure_threshold: number;
+  reset_timeout_secs: number;
+}
+
 // App state
 export type AppView = 'auth' | 'scan' | 'review' | 'filters' | 'coverage' | 'settings';

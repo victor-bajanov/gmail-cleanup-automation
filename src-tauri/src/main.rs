@@ -71,12 +71,21 @@ fn main() {
             commands::analyze_coverage,
             commands::get_overlap_matrix,
             commands::get_uncovered_emails,
+            // Hidden filters commands
+            commands::hide_filter,
+            commands::unhide_filter,
+            commands::get_hidden_filters,
+            commands::clear_hidden_filters,
             // Settings commands
             commands::get_settings,
             commands::save_settings,
             commands::reset_settings,
             commands::get_window_state,
             commands::save_window_state,
+            // Config.toml settings commands
+            commands::get_config_settings,
+            commands::save_config_settings,
+            commands::reset_config_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

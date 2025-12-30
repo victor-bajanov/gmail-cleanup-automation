@@ -4,12 +4,13 @@
 //! thread-safe state management for the Tauri application.
 
 use crate::commands::clusters::GuiDecision;
+use crate::commands::hidden_filters::{load_hidden_filters, HiddenFiltersData};
 use gmail_automation::{
     Classification, Config, EmailCluster, FilterRule,
     MessageMetadata, ProcessingState, ProductionGmailClient,
 };
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -24,6 +25,8 @@ pub struct AppState {
     pub credentials_path: RwLock<PathBuf>,
     /// Path to token storage directory
     pub token_dir: RwLock<PathBuf>,
+    /// Path to config.toml
+    pub config_path: RwLock<PathBuf>,
     /// Application configuration
     pub config: RwLock<Option<Config>>,
     /// Gmail API client (lazily initialized)
@@ -46,6 +49,8 @@ pub struct AppState {
     pub existing_filters: RwLock<Vec<gmail_automation::client::ExistingFilterInfo>>,
     /// Label ID cache (name -> ID)
     pub label_cache: RwLock<HashMap<String, String>>,
+    /// Hidden filters data (persisted to disk)
+    pub hidden_filters: RwLock<HiddenFiltersData>,
 }
 
 impl AppState {
@@ -98,9 +103,14 @@ impl AppState {
             None
         };
 
+        // Load hidden filters from disk
+        let hidden_filters_data = load_hidden_filters();
+        tracing::debug!("Loaded {} hidden filters from disk", hidden_filters_data.hidden_filter_ids.len());
+
         Self {
             credentials_path: RwLock::new(gmail_dir.join("credentials.json")),
             token_dir: RwLock::new(gmail_dir.clone()),
+            config_path: RwLock::new(config_path),
             config: RwLock::new(config),
             client: RwLock::new(None),
             processing_state: RwLock::new(None),
@@ -112,6 +122,7 @@ impl AppState {
             proposed_filters: RwLock::new(Vec::new()),
             existing_filters: RwLock::new(Vec::new()),
             label_cache: RwLock::new(HashMap::new()),
+            hidden_filters: RwLock::new(hidden_filters_data),
         }
     }
 
@@ -128,6 +139,11 @@ impl AppState {
     /// Gets the token file path
     pub fn token_path(&self) -> PathBuf {
         self.token_dir.read().join("token.json")
+    }
+
+    /// Gets the config file path
+    pub fn config_path(&self) -> PathBuf {
+        self.config_path.read().clone()
     }
 
     /// Sets the configuration
@@ -259,6 +275,20 @@ impl AppState {
     /// Gets a cached label ID
     pub fn get_cached_label(&self, name: &str) -> Option<String> {
         self.label_cache.read().get(name).cloned()
+    }
+
+    /// Gets the set of hidden filter IDs
+    pub fn get_hidden_filters(&self) -> HashSet<String> {
+        self.hidden_filters.read().hidden_filter_ids.clone()
+    }
+
+    /// Gets mutable access to hidden filters data for modifications
+    pub fn with_hidden_filters_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut HiddenFiltersData) -> R,
+    {
+        let mut data = self.hidden_filters.write();
+        f(&mut data)
     }
 
     /// Clears all session data (for starting fresh)

@@ -22,6 +22,7 @@ import type {
   UncoveredEmail,
   AppSettings,
   WindowState,
+  ConfigSettings,
 } from '../types';
 
 // ============ Authentication Commands ============
@@ -126,8 +127,24 @@ export async function deleteFilter(filterId: string): Promise<boolean> {
 
 // ============ Analysis Commands ============
 
-export async function analyzeFilterOverlaps(includeInfo?: boolean): Promise<AnalysisView> {
-  return invoke<AnalysisView>('analyze_filter_overlaps', { includeInfo });
+export async function analyzeFilterOverlaps(includeInfo?: boolean, autoManagedOnly?: boolean): Promise<AnalysisView> {
+  return invoke<AnalysisView>('analyze_filter_overlaps', { includeInfo, autoManagedOnly });
+}
+
+export async function hideFilter(filterId: string): Promise<boolean> {
+  return invoke<boolean>('hide_filter', { filterId });
+}
+
+export async function unhideFilter(filterId: string): Promise<boolean> {
+  return invoke<boolean>('unhide_filter', { filterId });
+}
+
+export async function getHiddenFilters(): Promise<string[]> {
+  return invoke<string[]>('get_hidden_filters');
+}
+
+export async function clearHiddenFilters(): Promise<boolean> {
+  return invoke<boolean>('clear_hidden_filters');
 }
 
 export async function analyzeCoverage(): Promise<CoverageAnalysis> {
@@ -162,4 +179,18 @@ export async function getWindowState(): Promise<WindowState> {
 
 export async function saveWindowState(state: WindowState): Promise<boolean> {
   return invoke<boolean>('save_window_state', { state });
+}
+
+// ============ Config Settings Commands (config.toml) ============
+
+export async function getConfigSettings(): Promise<ConfigSettings> {
+  return invoke<ConfigSettings>('get_config_settings');
+}
+
+export async function saveConfigSettings(settings: ConfigSettings): Promise<boolean> {
+  return invoke<boolean>('save_config_settings', { settings });
+}
+
+export async function resetConfigSettings(): Promise<ConfigSettings> {
+  return invoke<ConfigSettings>('reset_config_settings');
 }

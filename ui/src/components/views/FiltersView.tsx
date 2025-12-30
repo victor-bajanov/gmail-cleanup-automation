@@ -1,17 +1,31 @@
 import { Component, createSignal, onMount, Show, For } from 'solid-js';
 import { filters } from '../../stores/app';
 import * as api from '../../lib/api';
-import type { FilterView, AnalysisView } from '../../types';
+import type { FilterView, AnalysisView, ConflictView } from '../../types';
 
 const FiltersView: Component = () => {
   const [isLoading, setIsLoading] = createSignal(true);
   const [analysis, setAnalysis] = createSignal<AnalysisView | null>(null);
   const [applyResult, setApplyResult] = createSignal<{ success: boolean; message: string } | null>(null);
   const [error, setError] = createSignal<string | null>(null);
+  const [autoManagedOnly, setAutoManagedOnly] = createSignal(false);
+  const [hiddenFilters, setHiddenFilters] = createSignal<string[]>([]);
+  const [showHiddenModal, setShowHiddenModal] = createSignal(false);
+  const [hidingInProgress, setHidingInProgress] = createSignal<string | null>(null);
 
   onMount(async () => {
+    await loadHiddenFilters();
     await loadFilters();
   });
+
+  const loadHiddenFilters = async () => {
+    try {
+      const hidden = await api.getHiddenFilters();
+      setHiddenFilters(hidden);
+    } catch (e) {
+      console.error('Failed to load hidden filters:', e);
+    }
+  };
 
   const loadFilters = async () => {
     setIsLoading(true);
@@ -28,13 +42,67 @@ const FiltersView: Component = () => {
       const comparison = await api.compareFilters();
       filters.setComparison(comparison);
 
-      // Analyze overlaps
-      const analysisResult = await api.analyzeFilterOverlaps(false);
+      // Analyze overlaps with current mode
+      const analysisResult = await api.analyzeFilterOverlaps(false, autoManagedOnly());
       setAnalysis(analysisResult);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleModeToggle = async (newMode: boolean) => {
+    setAutoManagedOnly(newMode);
+    // Reload analysis with new mode
+    try {
+      setIsLoading(true);
+      const analysisResult = await api.analyzeFilterOverlaps(false, newMode);
+      setAnalysis(analysisResult);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleHideFilter = async (filterId: string) => {
+    setHidingInProgress(filterId);
+    try {
+      await api.hideFilter(filterId);
+      await loadHiddenFilters();
+      // Reload analysis after hiding
+      const analysisResult = await api.analyzeFilterOverlaps(false, autoManagedOnly());
+      setAnalysis(analysisResult);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHidingInProgress(null);
+    }
+  };
+
+  const handleUnhideFilter = async (filterId: string) => {
+    try {
+      await api.unhideFilter(filterId);
+      await loadHiddenFilters();
+      // Reload analysis after unhiding
+      const analysisResult = await api.analyzeFilterOverlaps(false, autoManagedOnly());
+      setAnalysis(analysisResult);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleClearAllHidden = async () => {
+    try {
+      await api.clearHiddenFilters();
+      setHiddenFilters([]);
+      setShowHiddenModal(false);
+      // Reload analysis after clearing
+      const analysisResult = await api.analyzeFilterOverlaps(false, autoManagedOnly());
+      setAnalysis(analysisResult);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -81,6 +149,22 @@ const FiltersView: Component = () => {
       default:
         return { icon: '=', class: 'text-gray-400' };
     }
+  };
+
+  // Get filter info for display in hidden modal
+  const getFilterDisplayInfo = (filterId: string): { name: string; query: string } => {
+    // Check existing filters
+    const existing = filters.existingFilters().find(f => f.id === filterId);
+    if (existing) {
+      return { name: existing.name || 'Unnamed Filter', query: existing.query };
+    }
+    // Check proposed filters
+    const proposed = filters.proposedFilters().find(f => f.id === filterId);
+    if (proposed) {
+      return { name: proposed.name || 'Unnamed Filter', query: proposed.query };
+    }
+    // Fallback
+    return { name: filterId, query: '' };
   };
 
   return (
@@ -192,85 +276,230 @@ const FiltersView: Component = () => {
       </Show>
 
       {/* Overlap Analysis */}
-      <Show when={analysis() && (analysis()!.error_count > 0 || analysis()!.warning_count > 0)}>
+      <Show when={analysis()}>
         <div class="card p-6">
-          <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-            Overlap Analysis
-          </h3>
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+              Overlap Analysis
+            </h3>
+
+            <div class="flex items-center gap-4">
+              {/* Hidden Filters Button */}
+              <button
+                onClick={() => setShowHiddenModal(true)}
+                class="text-sm px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+              >
+                Manage Hidden ({hiddenFilters().length})
+              </button>
+
+              {/* Filter Mode Toggle */}
+              <div class="flex items-center gap-2 bg-gray-100 dark:bg-gray-700 rounded-lg p-1">
+                <button
+                  onClick={() => handleModeToggle(false)}
+                  class="text-sm px-3 py-1.5 rounded-md transition-colors"
+                  classList={{
+                    'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm': !autoManagedOnly(),
+                    'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white': autoManagedOnly(),
+                  }}
+                >
+                  All Overlaps
+                </button>
+                <button
+                  onClick={() => handleModeToggle(true)}
+                  class="text-sm px-3 py-1.5 rounded-md transition-colors"
+                  classList={{
+                    'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm': autoManagedOnly(),
+                    'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white': !autoManagedOnly(),
+                  }}
+                >
+                  Auto-Managed Only
+                </button>
+              </div>
+            </div>
+          </div>
 
           <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
             {analysis()!.summary}
           </p>
 
-          <div class="space-y-3">
-            <For each={analysis()!.conflicts.filter(c => c.severity !== 'Info')}>
-              {(conflict) => (
-                <div
-                  class="p-4 rounded-lg border"
-                  classList={{
-                    'bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800': conflict.severity === 'Error',
-                    'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-200 dark:border-yellow-800': conflict.severity === 'Warning',
-                  }}
-                >
-                  <div class="flex items-start gap-3">
-                    <span
-                      class="text-sm font-medium px-2 py-0.5 rounded flex-shrink-0"
-                      classList={{
-                        'bg-red-100 text-red-700 dark:bg-red-800 dark:text-red-200': conflict.severity === 'Error',
-                        'bg-yellow-100 text-yellow-700 dark:bg-yellow-800 dark:text-yellow-200': conflict.severity === 'Warning',
-                      }}
-                    >
-                      {conflict.severity}
-                    </span>
-                    <div class="flex-1 min-w-0">
-                      <p class="text-sm font-medium text-gray-900 dark:text-white">
-                        {conflict.conflict_type}
-                      </p>
-                      <p class="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                        {conflict.description}
-                      </p>
+          <Show when={analysis()!.error_count > 0 || analysis()!.warning_count > 0}>
+            <div class="space-y-3">
+              <For each={analysis()!.conflicts.filter(c => c.severity !== 'Info')}>
+                {(conflict) => (
+                  <div
+                    class="p-4 rounded-lg border relative"
+                    classList={{
+                      'bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800': conflict.severity === 'Error',
+                      'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-200 dark:border-yellow-800': conflict.severity === 'Warning',
+                    }}
+                  >
+                    <div class="flex items-start gap-3">
+                      <span
+                        class="text-sm font-medium px-2 py-0.5 rounded flex-shrink-0"
+                        classList={{
+                          'bg-red-100 text-red-700 dark:bg-red-800 dark:text-red-200': conflict.severity === 'Error',
+                          'bg-yellow-100 text-yellow-700 dark:bg-yellow-800 dark:text-yellow-200': conflict.severity === 'Warning',
+                        }}
+                      >
+                        {conflict.severity}
+                      </span>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-sm font-medium text-gray-900 dark:text-white">
+                          {conflict.conflict_type}
+                        </p>
+                        <p class="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                          {conflict.description}
+                        </p>
 
-                      {/* Filter details */}
-                      <div class="mt-3 space-y-2 text-xs">
-                        <div class="p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-600">
-                          <p class="font-medium text-gray-700 dark:text-gray-300 mb-1">Filter A:</p>
-                          <p class="font-mono text-gray-600 dark:text-gray-400 break-all">
-                            {conflict.filter_a_query || conflict.filter_a_name}
-                          </p>
-                          <Show when={conflict.filter_a_label}>
-                            <p class="text-gray-500 dark:text-gray-500 mt-1">
-                              Label: <span class="font-medium">{conflict.filter_a_label}</span>
+                        {/* Filter details */}
+                        <div class="mt-3 space-y-2 text-xs">
+                          <div class="p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-600 relative group">
+                            <p class="font-medium text-gray-700 dark:text-gray-300 mb-1">Filter A:</p>
+                            <p class="font-mono text-gray-600 dark:text-gray-400 break-all">
+                              {conflict.filter_a_query || conflict.filter_a_name}
                             </p>
-                          </Show>
-                        </div>
-                        <div class="p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-600">
-                          <p class="font-medium text-gray-700 dark:text-gray-300 mb-1">Filter B:</p>
-                          <p class="font-mono text-gray-600 dark:text-gray-400 break-all">
-                            {conflict.filter_b_query || conflict.filter_b_name}
-                          </p>
-                          <Show when={conflict.filter_b_label}>
-                            <p class="text-gray-500 dark:text-gray-500 mt-1">
-                              Label: <span class="font-medium">{conflict.filter_b_label}</span>
+                            <Show when={conflict.filter_a_label}>
+                              <p class="text-gray-500 dark:text-gray-500 mt-1">
+                                Label: <span class="font-medium">{conflict.filter_a_label}</span>
+                              </p>
+                            </Show>
+                            {/* Hide button for Filter A */}
+                            <button
+                              onClick={() => handleHideFilter(conflict.filter_a_id)}
+                              disabled={hidingInProgress() === conflict.filter_a_id}
+                              class="absolute top-2 right-2 text-xs px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors opacity-0 group-hover:opacity-100"
+                              title="Hide this filter from analysis"
+                            >
+                              {hidingInProgress() === conflict.filter_a_id ? '...' : 'Hide'}
+                            </button>
+                          </div>
+                          <div class="p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-600 relative group">
+                            <p class="font-medium text-gray-700 dark:text-gray-300 mb-1">Filter B:</p>
+                            <p class="font-mono text-gray-600 dark:text-gray-400 break-all">
+                              {conflict.filter_b_query || conflict.filter_b_name}
                             </p>
-                          </Show>
+                            <Show when={conflict.filter_b_label}>
+                              <p class="text-gray-500 dark:text-gray-500 mt-1">
+                                Label: <span class="font-medium">{conflict.filter_b_label}</span>
+                              </p>
+                            </Show>
+                            {/* Hide button for Filter B */}
+                            <button
+                              onClick={() => handleHideFilter(conflict.filter_b_id)}
+                              disabled={hidingInProgress() === conflict.filter_b_id}
+                              class="absolute top-2 right-2 text-xs px-2 py-1 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors opacity-0 group-hover:opacity-100"
+                              title="Hide this filter from analysis"
+                            >
+                              {hidingInProgress() === conflict.filter_b_id ? '...' : 'Hide'}
+                            </button>
+                          </div>
                         </div>
+
+                        <Show when={conflict.suggestions.length > 0}>
+                          <div class="mt-3">
+                            <p class="text-xs text-gray-500 dark:text-gray-500">Suggestions:</p>
+                            <ul class="text-xs text-gray-600 dark:text-gray-400 mt-1 space-y-1">
+                              <For each={conflict.suggestions}>
+                                {(suggestion) => <li>- {suggestion}</li>}
+                              </For>
+                            </ul>
+                          </div>
+                        </Show>
                       </div>
-
-                      <Show when={conflict.suggestions.length > 0}>
-                        <div class="mt-3">
-                          <p class="text-xs text-gray-500 dark:text-gray-500">Suggestions:</p>
-                          <ul class="text-xs text-gray-600 dark:text-gray-400 mt-1 space-y-1">
-                            <For each={conflict.suggestions}>
-                              {(suggestion) => <li>• {suggestion}</li>}
-                            </For>
-                          </ul>
-                        </div>
-                      </Show>
                     </div>
                   </div>
+                )}
+              </For>
+            </div>
+          </Show>
+
+          <Show when={analysis()!.error_count === 0 && analysis()!.warning_count === 0}>
+            <div class="text-center py-8 text-gray-500 dark:text-gray-400">
+              <p>No conflicts found.</p>
+            </div>
+          </Show>
+        </div>
+      </Show>
+
+      {/* Hidden Filters Modal */}
+      <Show when={showHiddenModal()}>
+        <div class="fixed inset-0 z-50 flex items-center justify-center">
+          {/* Backdrop */}
+          <div
+            class="absolute inset-0 bg-black/50"
+            onClick={() => setShowHiddenModal(false)}
+          />
+
+          {/* Modal */}
+          <div class="relative bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-lg w-full mx-4 max-h-[80vh] overflow-hidden">
+            {/* Header */}
+            <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+                Hidden Filters ({hiddenFilters().length})
+              </h3>
+              <button
+                onClick={() => setShowHiddenModal(false)}
+                class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+              >
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Content */}
+            <div class="p-4 overflow-y-auto max-h-[60vh]">
+              <Show when={hiddenFilters().length === 0}>
+                <p class="text-center text-gray-500 dark:text-gray-400 py-8">
+                  No hidden filters
+                </p>
+              </Show>
+
+              <Show when={hiddenFilters().length > 0}>
+                <div class="space-y-2">
+                  <For each={hiddenFilters()}>
+                    {(filterId) => {
+                      const info = getFilterDisplayInfo(filterId);
+                      return (
+                        <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                          <div class="min-w-0 flex-1 mr-3">
+                            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
+                              {info.name}
+                            </p>
+                            <Show when={info.query}>
+                              <p class="text-xs font-mono text-gray-500 dark:text-gray-400 truncate">
+                                {info.query}
+                              </p>
+                            </Show>
+                            <p class="text-xs text-gray-400 dark:text-gray-500 truncate">
+                              ID: {filterId}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => handleUnhideFilter(filterId)}
+                            class="flex-shrink-0 text-sm px-3 py-1.5 rounded-lg bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 hover:bg-primary-200 dark:hover:bg-primary-900/50 transition-colors"
+                          >
+                            Unhide
+                          </button>
+                        </div>
+                      );
+                    }}
+                  </For>
                 </div>
-              )}
-            </For>
+              </Show>
+            </div>
+
+            {/* Footer */}
+            <Show when={hiddenFilters().length > 0}>
+              <div class="p-4 border-t border-gray-200 dark:border-gray-700">
+                <button
+                  onClick={handleClearAllHidden}
+                  class="w-full text-sm px-4 py-2 rounded-lg bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
+                >
+                  Clear All Hidden Filters
+                </button>
+              </div>
+            </Show>
           </div>
         </div>
       </Show>
