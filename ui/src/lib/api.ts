@@ -20,6 +20,7 @@ import type {
   CoverageAnalysis,
   OverlapMatrixResult,
   UncoveredEmail,
+  HiddenFilterInfo,
   AppSettings,
   WindowState,
   ConfigSettings,
@@ -139,8 +140,8 @@ export async function unhideFilter(filterId: string): Promise<boolean> {
   return invoke<boolean>('unhide_filter', { filterId });
 }
 
-export async function getHiddenFilters(): Promise<string[]> {
-  return invoke<string[]>('get_hidden_filters');
+export async function getHiddenFilters(): Promise<HiddenFilterInfo[]> {
+  return invoke<HiddenFilterInfo[]>('get_hidden_filters');
 }
 
 export async function clearHiddenFilters(): Promise<boolean> {

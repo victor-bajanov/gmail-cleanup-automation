@@ -205,6 +205,13 @@ export interface UncoveredEmail {
   date: string;
 }
 
+export interface HiddenFilterInfo {
+  id: string;
+  name: string;
+  query: string;
+  label: string;
+}
+
 // Event types
 export interface ErrorEvent {
   code: string;

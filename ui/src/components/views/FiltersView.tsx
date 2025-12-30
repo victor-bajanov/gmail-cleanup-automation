@@ -1,7 +1,7 @@
 import { Component, createSignal, onMount, Show, For } from 'solid-js';
 import { filters } from '../../stores/app';
 import * as api from '../../lib/api';
-import type { FilterView, AnalysisView, ConflictView } from '../../types';
+import type { FilterView, AnalysisView, ConflictView, HiddenFilterInfo } from '../../types';
 
 const FiltersView: Component = () => {
   const [isLoading, setIsLoading] = createSignal(true);
@@ -9,7 +9,7 @@ const FiltersView: Component = () => {
   const [applyResult, setApplyResult] = createSignal<{ success: boolean; message: string } | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [autoManagedOnly, setAutoManagedOnly] = createSignal(false);
-  const [hiddenFilters, setHiddenFilters] = createSignal<string[]>([]);
+  const [hiddenFilters, setHiddenFilters] = createSignal<HiddenFilterInfo[]>([]);
   const [showHiddenModal, setShowHiddenModal] = createSignal(false);
   const [hidingInProgress, setHidingInProgress] = createSignal<string | null>(null);
 
@@ -149,22 +149,6 @@ const FiltersView: Component = () => {
       default:
         return { icon: '=', class: 'text-gray-400' };
     }
-  };
-
-  // Get filter info for display in hidden modal
-  const getFilterDisplayInfo = (filterId: string): { name: string; query: string } => {
-    // Check existing filters
-    const existing = filters.existingFilters().find(f => f.id === filterId);
-    if (existing) {
-      return { name: existing.name || 'Unnamed Filter', query: existing.query };
-    }
-    // Check proposed filters
-    const proposed = filters.proposedFilters().find(f => f.id === filterId);
-    if (proposed) {
-      return { name: proposed.name || 'Unnamed Filter', query: proposed.query };
-    }
-    // Fallback
-    return { name: filterId, query: '' };
   };
 
   return (
@@ -456,34 +440,38 @@ const FiltersView: Component = () => {
               </Show>
 
               <Show when={hiddenFilters().length > 0}>
-                <div class="space-y-2">
+                <div class="space-y-3">
                   <For each={hiddenFilters()}>
-                    {(filterId) => {
-                      const info = getFilterDisplayInfo(filterId);
-                      return (
-                        <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                          <div class="min-w-0 flex-1 mr-3">
-                            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">
-                              {info.name}
+                    {(filter) => (
+                      <div class="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                        <div class="flex items-start justify-between gap-3">
+                          <div class="min-w-0 flex-1">
+                            <p class="text-sm font-medium text-gray-900 dark:text-white">
+                              {filter.name}
                             </p>
-                            <Show when={info.query}>
-                              <p class="text-xs font-mono text-gray-500 dark:text-gray-400 truncate">
-                                {info.query}
+                            <Show when={filter.query}>
+                              <p class="text-xs font-mono text-gray-600 dark:text-gray-400 mt-1 break-all">
+                                Query: {filter.query}
                               </p>
                             </Show>
-                            <p class="text-xs text-gray-400 dark:text-gray-500 truncate">
-                              ID: {filterId}
+                            <Show when={filter.label}>
+                              <p class="text-xs text-gray-500 dark:text-gray-500 mt-1">
+                                Label: <span class="font-medium">{filter.label}</span>
+                              </p>
+                            </Show>
+                            <p class="text-xs text-gray-400 dark:text-gray-500 mt-1 font-mono">
+                              ID: {filter.id}
                             </p>
                           </div>
                           <button
-                            onClick={() => handleUnhideFilter(filterId)}
+                            onClick={() => handleUnhideFilter(filter.id)}
                             class="flex-shrink-0 text-sm px-3 py-1.5 rounded-lg bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 hover:bg-primary-200 dark:hover:bg-primary-900/50 transition-colors"
                           >
                             Unhide
                           </button>
                         </div>
-                      );
-                    }}
+                      </div>
+                    )}
                   </For>
                 </div>
               </Show>
