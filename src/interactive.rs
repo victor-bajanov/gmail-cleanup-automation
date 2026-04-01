@@ -29,6 +29,8 @@ pub struct EmailCluster {
     pub excluded_senders: Vec<String>,
     /// Subject pattern for subject-based clusters (e.g., "QNAP NAS Notification")
     pub subject_pattern: Option<String>,
+    /// Subject patterns to exclude from this cluster (patterns that have their own clusters)
+    pub excluded_subject_patterns: Vec<String>,
     pub message_ids: Vec<String>,
     pub suggested_category: EmailCategory,
     pub suggested_label: String,
@@ -1319,6 +1321,7 @@ fn build_cluster_with_subject(
         is_specific_sender,
         excluded_senders,
         subject_pattern,
+        excluded_subject_patterns: vec![],
         message_ids,
         suggested_category,
         suggested_label,
@@ -1525,6 +1528,7 @@ mod tests {
             is_specific_sender: false,
             excluded_senders: vec![],
             subject_pattern: None,
+            excluded_subject_patterns: vec![],
             message_ids: vec!["1".to_string(), "2".to_string()],
             suggested_category: EmailCategory::Newsletter,
             suggested_label: "auto/newsletters".to_string(),
@@ -1540,6 +1544,31 @@ mod tests {
         };
 
         assert_eq!(cluster.email_count(), 2);
+    }
+
+    #[test]
+    fn test_cluster_has_excluded_subject_patterns() {
+        let cluster = EmailCluster {
+            sender_domain: "cba.com.au".to_string(),
+            sender_email: "noreply@cba.com.au".to_string(),
+            is_specific_sender: true,
+            excluded_senders: vec![],
+            subject_pattern: None,
+            excluded_subject_patterns: vec!["statement".to_string(), "receipt".to_string()],
+            message_ids: vec!["1".to_string()],
+            suggested_category: EmailCategory::Other,
+            suggested_label: "auto/other".to_string(),
+            confidence: 0.9,
+            sample_subjects: vec![],
+            should_archive: false,
+            existing_filter_id: None,
+            existing_filter_label_id: None,
+            existing_filter_label: None,
+            existing_filter_archive: None,
+            source: ClusterSource::EmailScan,
+            default_action: None,
+        };
+        assert_eq!(cluster.excluded_subject_patterns.len(), 2);
     }
 
     #[test]

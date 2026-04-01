@@ -700,6 +700,7 @@ fn create_synthetic_clusters(
                 is_specific_sender,
                 excluded_senders: Vec::new(),
                 subject_pattern,
+                excluded_subject_patterns: vec![],
                 message_ids: Vec::new(), // No messages - synthetic cluster
                 suggested_category: EmailCategory::Other,
                 suggested_label: label_name.clone(),
