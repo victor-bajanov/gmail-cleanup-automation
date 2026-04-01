@@ -16,6 +16,7 @@ pub mod auth;
 pub mod clusters;
 pub mod filters;
 pub mod hidden_filters;
+pub mod remediation;
 pub mod scan;
 pub mod settings;
 
@@ -24,5 +25,6 @@ pub use analysis::*;
 pub use auth::*;
 pub use clusters::*;
 pub use filters::*;
+pub use remediation::*;
 pub use scan::*;
 pub use settings::*;

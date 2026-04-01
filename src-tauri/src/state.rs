@@ -51,6 +51,10 @@ pub struct AppState {
     pub label_cache: RwLock<HashMap<String, String>>,
     /// Hidden filters data (persisted to disk)
     pub hidden_filters: RwLock<HiddenFiltersData>,
+    /// Detected overlap groups for remediation
+    pub remediation_groups: RwLock<Vec<gmail_automation::filter_remediation::OverlapGroup>>,
+    /// User decisions for remediation groups (group_id -> decision)
+    pub remediation_decisions: RwLock<HashMap<String, gmail_automation::filter_remediation::GroupDecision>>,
 }
 
 impl AppState {
@@ -123,6 +127,8 @@ impl AppState {
             existing_filters: RwLock::new(Vec::new()),
             label_cache: RwLock::new(HashMap::new()),
             hidden_filters: RwLock::new(hidden_filters_data),
+            remediation_groups: RwLock::new(vec![]),
+            remediation_decisions: RwLock::new(HashMap::new()),
         }
     }
 

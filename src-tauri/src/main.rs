@@ -78,6 +78,11 @@ fn main() {
             commands::unhide_filter,
             commands::get_hidden_filters,
             commands::clear_hidden_filters,
+            // Remediation commands
+            commands::detect_overlaps,
+            commands::submit_group_decision,
+            commands::execute_remediation,
+            commands::remediation_summary,
             // Settings commands
             commands::get_settings,
             commands::save_settings,
