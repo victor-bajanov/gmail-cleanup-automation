@@ -663,7 +663,8 @@ fn create_synthetic_clusters(
             // Parse from pattern to get domain and email
             let (sender_domain, sender_email, is_specific_sender) = if from_pattern.starts_with("*@") {
                 // Domain pattern: *@domain.com
-                let domain = from_pattern[2..].split_whitespace().next().unwrap_or(&from_pattern[2..]);
+                let stripped = from_pattern.strip_prefix("*@").unwrap();
+                let domain = stripped.split_whitespace().next().unwrap_or(stripped);
                 (domain.to_string(), String::new(), false)
             } else {
                 // Specific sender: email@domain.com
