@@ -130,6 +130,13 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+
+    /// Detect and fix overlapping Gmail filters
+    Remediate {
+        /// Preview changes without applying them
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};

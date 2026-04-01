@@ -584,6 +584,172 @@ async fn run() -> Result<()> {
 
             Ok(())
         }
+
+        Commands::Remediate { dry_run } => {
+            tracing::info!("Starting filter remediation");
+            if dry_run {
+                println!("Running in DRY RUN mode — no changes will be made\n");
+            }
+
+            // Load config
+            let config = Config::load(&cli.config).await?;
+
+            // Auth
+            let hub = gmail_automation::auth::initialize_gmail_hub(
+                &cli.credentials,
+                &cli.token_cache,
+            )
+            .await?;
+
+            // Create client (follow Unmanage pattern)
+            let client = gmail_automation::client::ProductionGmailClient::with_full_config(
+                hub,
+                config.scan.max_concurrent_requests,
+                250.0,
+                500.0,
+                config.circuit_breaker.clone(),
+            );
+
+            // Build label map
+            let labels = client.list_labels().await?;
+            let label_map: std::collections::HashMap<String, String> = labels
+                .iter()
+                .map(|l| (l.id.clone(), l.name.clone()))
+                .collect();
+
+            println!("Scanning existing filters for overlaps...");
+            let groups = gmail_automation::filter_remediation::OverlapDetector::detect(
+                &client, &label_map,
+            )
+            .await?;
+
+            if groups.is_empty() {
+                println!("No overlapping filters found. Nothing to remediate.");
+                return Ok(());
+            }
+
+            println!("Found {} overlap group(s):\n", groups.len());
+
+            let mut plan = gmail_automation::RemediationPlan::new();
+
+            for group in groups {
+                println!("─── {} ───", group.group_id);
+                println!("  From: {}", group.from_pattern);
+                println!("  Labels: {}", group.label_names.join(", "));
+                println!("  Filters: {}", group.filters.len());
+
+                let decision = match &group.resolution_type {
+                    gmail_automation::ResolutionType::MechanicalFix {
+                        proposed_replacements,
+                    } => {
+                        println!(
+                            "  Type: Can be fixed automatically (add subject exclusions)\n"
+                        );
+                        for r in proposed_replacements {
+                            let query =
+                                gmail_automation::FilterManager::build_gmail_query_static(r);
+                            let label = label_map
+                                .get(&r.target_label_id)
+                                .map(|s| s.as_str())
+                                .unwrap_or(&r.target_label_id);
+                            println!("    → {} → {}", query, label);
+                        }
+                        println!();
+
+                        let choice = inquire::Select::new(
+                            "Action?",
+                            vec!["Accept fix", "Skip"],
+                        )
+                        .prompt()
+                        .unwrap_or("Skip");
+
+                        if choice == "Accept fix" {
+                            gmail_automation::GroupDecision::ReplaceWithExclusive {
+                                replacement_filters: proposed_replacements.clone(),
+                            }
+                        } else {
+                            gmail_automation::GroupDecision::Skip
+                        }
+                    }
+                    gmail_automation::ResolutionType::PickWinner => {
+                        println!(
+                            "  Type: Identical filters — pick which label to keep\n"
+                        );
+
+                        let mut options: Vec<String> = group
+                            .filters
+                            .iter()
+                            .map(|f| {
+                                let label = f
+                                    .add_label_ids
+                                    .first()
+                                    .and_then(|id| label_map.get(id))
+                                    .map(|s| s.as_str())
+                                    .unwrap_or("(unknown)");
+                                format!("Keep: {} (filter {})", label, f.id)
+                            })
+                            .collect();
+                        options.push("Rescan".to_string());
+                        options.push("Skip".to_string());
+
+                        let choice = inquire::Select::new("Action?", options)
+                            .prompt()
+                            .unwrap_or_else(|_| "Skip".to_string());
+
+                        if choice == "Skip" {
+                            gmail_automation::GroupDecision::Skip
+                        } else if choice == "Rescan" {
+                            gmail_automation::GroupDecision::Rescan {
+                                from_pattern: group.from_pattern.clone(),
+                            }
+                        } else {
+                            let keep_id = group
+                                .filters
+                                .iter()
+                                .find(|f| choice.contains(&f.id))
+                                .map(|f| f.id.clone())
+                                .unwrap_or_default();
+                            gmail_automation::GroupDecision::KeepOne {
+                                keep_filter_id: keep_id,
+                            }
+                        }
+                    }
+                };
+
+                plan.add(group, decision);
+            }
+
+            println!("\n{}\n", plan.summary());
+
+            if dry_run {
+                println!("Dry run complete. No changes were made.");
+                return Ok(());
+            }
+
+            let confirm = inquire::Confirm::new("Execute this plan?")
+                .with_default(false)
+                .prompt()
+                .unwrap_or(false);
+
+            if !confirm {
+                println!("Aborted.");
+                return Ok(());
+            }
+
+            let result = plan.execute(&client).await?;
+            println!("\nRemediation complete:");
+            println!("  Deleted: {} filters", result.deleted.len());
+            println!("  Created: {} filters", result.created.len());
+            println!("  Skipped: {} groups", result.skipped);
+            if !result.errors.is_empty() {
+                println!("  Errors:");
+                for e in &result.errors {
+                    println!("    - {}", e);
+                }
+            }
+
+            Ok(())
+        }
     }
 }
 
