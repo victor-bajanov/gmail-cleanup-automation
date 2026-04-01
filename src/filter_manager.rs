@@ -801,6 +801,18 @@ impl FilterManager {
                     }
                 }
 
+                // Check for broad-vs-specific overlap: if an existing filter has the same
+                // from_pattern with subject keywords, and the new filter has the same
+                // from_pattern but NO subject keywords and NO subject exclusions,
+                // the new filter is a broad catch-all that overlaps the specific one.
+                if new_from == existing_from
+                    && !existing_filter.subject_keywords.is_empty()
+                    && filter.subject_keywords.is_empty()
+                    && filter.excluded_subject_patterns.is_empty()
+                {
+                    return true;
+                }
+
                 // Check if new filter is more specific (subset)
                 // e.g., specific@domain.com vs *@domain.com
                 if !new_from.contains('*') && existing_from.contains('*') {
@@ -1480,5 +1492,140 @@ mod tests {
         // This function always returns true in the current implementation
         let confirmed = manager.confirm_filter_creation(&filters, &estimates);
         assert!(confirmed);
+    }
+
+    #[test]
+    fn test_dedup_catches_broad_filter_overlapping_specific() {
+        use async_trait::async_trait;
+
+        mockall::mock! {
+            pub TestGmailClient {}
+
+            #[async_trait]
+            impl crate::client::GmailClient for TestGmailClient {
+                async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
+                async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
+                async fn create_label(&self, name: &str) -> Result<String>;
+                async fn delete_label(&self, label_id: &str) -> Result<()>;
+                async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
+                async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
+                async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
+            }
+        }
+
+        let mock_client = MockTestGmailClient::new();
+        let manager = FilterManager::new(Box::new(mock_client));
+
+        // Specific filter: from:noreply@cba.com.au subject:statement → Financial
+        let specific_filter = FilterRule {
+            id: None,
+            name: "CBA statements".to_string(),
+            from_pattern: Some("noreply@cba.com.au".to_string()),
+            is_specific_sender: true,
+            excluded_senders: vec![],
+            subject_keywords: vec!["statement".to_string()],
+            excluded_subject_patterns: vec![],
+            target_label_id: "financial".to_string(),
+            should_archive: false,
+            estimated_matches: 10,
+        };
+
+        // Broad filter: from:noreply@cba.com.au (no subject) → Other
+        let broad_filter = FilterRule {
+            id: None,
+            name: "CBA other".to_string(),
+            from_pattern: Some("noreply@cba.com.au".to_string()),
+            is_specific_sender: true,
+            excluded_senders: vec![],
+            subject_keywords: vec![],
+            excluded_subject_patterns: vec![],
+            target_label_id: "other".to_string(),
+            should_archive: false,
+            estimated_matches: 5,
+        };
+
+        let filters = vec![specific_filter, broad_filter];
+        let deduplicated = manager.deduplicate_filters(filters);
+
+        // Only the specific filter should survive
+        assert_eq!(deduplicated.len(), 1, "Broad filter should be deduplicated");
+        assert_eq!(deduplicated[0].subject_keywords, vec!["statement".to_string()]);
+    }
+
+    #[test]
+    fn test_dedup_keeps_filter_with_subject_exclusions() {
+        use async_trait::async_trait;
+
+        mockall::mock! {
+            pub TestGmailClient {}
+
+            #[async_trait]
+            impl crate::client::GmailClient for TestGmailClient {
+                async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
+                async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
+                async fn create_label(&self, name: &str) -> Result<String>;
+                async fn delete_label(&self, label_id: &str) -> Result<()>;
+                async fn create_filter(&self, filter: &FilterRule) -> Result<String>;
+                async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
+                async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
+                async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
+            }
+        }
+
+        let mock_client = MockTestGmailClient::new();
+        let manager = FilterManager::new(Box::new(mock_client));
+
+        // Specific filter: from:noreply@cba.com.au subject:statement → Financial
+        let specific_filter = FilterRule {
+            id: None,
+            name: "CBA statements".to_string(),
+            from_pattern: Some("noreply@cba.com.au".to_string()),
+            is_specific_sender: true,
+            excluded_senders: vec![],
+            subject_keywords: vec!["statement".to_string()],
+            excluded_subject_patterns: vec![],
+            target_label_id: "financial".to_string(),
+            should_archive: false,
+            estimated_matches: 10,
+        };
+
+        // Remainder filter WITH exclusions: from:noreply@cba.com.au -subject:statement → Other
+        let remainder_filter = FilterRule {
+            id: None,
+            name: "CBA other".to_string(),
+            from_pattern: Some("noreply@cba.com.au".to_string()),
+            is_specific_sender: true,
+            excluded_senders: vec![],
+            subject_keywords: vec![],
+            excluded_subject_patterns: vec!["statement".to_string()],
+            target_label_id: "other".to_string(),
+            should_archive: false,
+            estimated_matches: 5,
+        };
+
+        let filters = vec![specific_filter, remainder_filter];
+        let deduplicated = manager.deduplicate_filters(filters);
+
+        // Both should survive — they target different non-overlapping emails
+        assert_eq!(deduplicated.len(), 2, "Remainder with exclusions should be kept");
     }
 }
