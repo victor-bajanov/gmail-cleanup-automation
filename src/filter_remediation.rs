@@ -191,7 +191,7 @@ impl OverlapDetector {
         if let Some(ref from) = filter.from {
             if from.contains('@') {
                 // Specific sender — extract domain
-                let domain = from.split('@').last().unwrap_or("").to_string();
+                let domain = from.split('@').next_back().unwrap_or("").to_string();
                 return Some((domain, Some(from.clone())));
             } else if !from.is_empty() {
                 // It's a domain
@@ -217,7 +217,7 @@ impl OverlapDetector {
 
     /// Classify each group as MechanicalFix or PickWinner and, for MechanicalFix,
     /// synthesize the replacement filters with -subject: exclusions.
-    pub fn classify_groups(groups: &mut Vec<OverlapGroup>) {
+    pub fn classify_groups(groups: &mut [OverlapGroup]) {
         for group in groups.iter_mut() {
             // 1. Collect subject keywords from filters that have them
             let mut all_subject_keywords: Vec<String> = Vec::new();
