@@ -70,6 +70,7 @@ pub mod exclusions;
 pub mod filter_ast;
 pub mod filter_manager;
 pub mod filter_overlap;
+pub mod filter_remediation;
 pub mod interactive;
 pub mod label_manager;
 pub mod models;
@@ -123,6 +124,11 @@ pub use interactive::{
 pub use filter_ast::{
     DomainPattern, EmailPattern, ExclusionClause, Filter, FilterActions, FilterExpr, FromClause,
     SubjectClause, SubjectMatchMode,
+};
+
+// Filter remediation types
+pub use filter_remediation::{
+    GroupDecision, OverlapGroup, RemediationPlan, RemediationResult, ResolutionType,
 };
 
 // Filter overlap detection types

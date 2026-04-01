@@ -15,6 +15,8 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
+use serde::{Deserialize, Serialize};
+
 use crate::circuit_breaker::CircuitBreaker;
 use crate::config::CircuitBreakerConfig;
 use crate::error::{GmailError, Result};
@@ -32,7 +34,7 @@ pub struct LabelInfo {
 }
 
 /// Existing Gmail filter info for comparison
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExistingFilterInfo {
     pub id: String,
     pub query: Option<String>,
