@@ -1603,7 +1603,7 @@ pub async fn run_pipeline(
                             is_specific_sender: d.is_specific_sender,
                             excluded_senders: d.excluded_senders.clone(),
                             subject_keywords,
-                            excluded_subject_patterns: vec![],
+                            excluded_subject_patterns: d.excluded_subject_patterns.clone(),
                             target_label_id: d.label.clone(),
                             should_archive: d.should_archive,
                             estimated_matches: d.message_ids.len(),

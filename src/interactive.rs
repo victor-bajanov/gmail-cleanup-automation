@@ -69,6 +69,8 @@ pub struct ClusterDecision {
     pub excluded_senders: Vec<String>,
     /// Subject pattern for subject-based clusters
     pub subject_pattern: Option<String>,
+    /// Subject patterns to exclude from this cluster's filter
+    pub excluded_subject_patterns: Vec<String>,
     pub message_ids: Vec<String>,
     pub label: String,
     pub should_archive: bool,
@@ -640,6 +642,7 @@ impl ReviewSession {
                 is_specific_sender: cluster.is_specific_sender,
                 excluded_senders: cluster.excluded_senders.clone(),
                 subject_pattern: cluster.subject_pattern.clone(),
+                excluded_subject_patterns: cluster.excluded_subject_patterns.clone(),
                 message_ids: cluster.message_ids.clone(),
                 label: cluster.suggested_label.clone(),
                 should_archive: cluster.should_archive,
@@ -669,6 +672,7 @@ impl ReviewSession {
                 is_specific_sender: cluster.is_specific_sender,
                 excluded_senders: cluster.excluded_senders.clone(),
                 subject_pattern: cluster.subject_pattern.clone(),
+                excluded_subject_patterns: vec![],
                 message_ids: cluster.message_ids.clone(),
                 label: String::new(), // No label
                 should_archive: false,
@@ -698,6 +702,7 @@ impl ReviewSession {
                 is_specific_sender: cluster.is_specific_sender,
                 excluded_senders: cluster.excluded_senders.clone(),
                 subject_pattern: cluster.subject_pattern.clone(),
+                excluded_subject_patterns: vec![],
                 message_ids: cluster.message_ids.clone(),
                 label: String::new(),
                 should_archive: false,
@@ -733,6 +738,7 @@ impl ReviewSession {
                 is_specific_sender: cluster.is_specific_sender,
                 excluded_senders: cluster.excluded_senders.clone(),
                 subject_pattern: cluster.subject_pattern.clone(),
+                excluded_subject_patterns: vec![],
                 message_ids: cluster.message_ids.clone(),
                 label: String::new(),
                 should_archive: false,
@@ -833,6 +839,7 @@ impl ReviewSession {
                             is_specific_sender: cluster.is_specific_sender,
                             excluded_senders: cluster.excluded_senders.clone(),
                             subject_pattern: cluster.subject_pattern.clone(),
+                            excluded_subject_patterns: cluster.excluded_subject_patterns.clone(),
                             message_ids: cluster.message_ids.clone(),
                             label: label.clone(),
                             should_archive: cluster.should_archive,
@@ -874,6 +881,7 @@ impl ReviewSession {
                     is_specific_sender: cluster.is_specific_sender,
                     excluded_senders: cluster.excluded_senders.clone(),
                     subject_pattern: cluster.subject_pattern.clone(),
+                    excluded_subject_patterns: vec![],
                     message_ids: cluster.message_ids.clone(),
                     label: cluster.suggested_label.clone(),
                     should_archive: cluster.should_archive,
@@ -1597,6 +1605,7 @@ mod tests {
             existing_filter_id: None,
             needs_filter_update: false,
             excluded_senders: vec![],
+            excluded_subject_patterns: vec![],
         };
 
         // Serialize to JSON
