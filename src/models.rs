@@ -48,6 +48,8 @@ pub struct FilterRule {
     /// For domain filters, list of specific senders to exclude (they have their own filters)
     pub excluded_senders: Vec<String>,
     pub subject_keywords: Vec<String>,
+    /// Subject patterns to exclude (for remainder clusters that coexist with subject-specific clusters)
+    pub excluded_subject_patterns: Vec<String>,
     pub target_label_id: String,
     pub should_archive: bool,
     pub estimated_matches: usize,
@@ -122,6 +124,23 @@ mod tests {
 
         assert_eq!(metadata.id, deserialized.id);
         assert_eq!(metadata.sender_email, deserialized.sender_email);
+    }
+
+    #[test]
+    fn test_filter_rule_has_excluded_subject_patterns() {
+        let filter = FilterRule {
+            id: None,
+            name: "Test".to_string(),
+            from_pattern: Some("*@cba.com.au".to_string()),
+            is_specific_sender: false,
+            excluded_senders: vec![],
+            subject_keywords: vec![],
+            excluded_subject_patterns: vec!["statement".to_string()],
+            target_label_id: "label-id".to_string(),
+            should_archive: false,
+            estimated_matches: 10,
+        };
+        assert_eq!(filter.excluded_subject_patterns, vec!["statement".to_string()]);
     }
 
     #[test]

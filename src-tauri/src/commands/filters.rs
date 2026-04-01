@@ -176,6 +176,7 @@ pub async fn generate_proposed_filters(
                 is_specific_sender: cluster.is_specific_sender,
                 excluded_senders: cluster.excluded_senders.clone(),
                 subject_keywords: vec![],
+                excluded_subject_patterns: vec![],
                 target_label_id: label.clone(),
                 should_archive: decision.should_archive,
                 estimated_matches: cluster.message_ids.len(),
