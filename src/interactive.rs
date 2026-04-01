@@ -1120,6 +1120,9 @@ pub fn create_clusters(
             let mut sender_remaining: Vec<(&MessageMetadata, &Classification)> =
                 sender_msgs.clone();
 
+            // Track which subject patterns were extracted for this sender
+            let mut extracted_patterns: Vec<String> = Vec::new();
+
             // Create clusters for subject patterns that meet threshold
             for (pattern, pattern_msgs) in subject_patterns {
                 if pattern_msgs.len() >= min_emails {
@@ -1129,10 +1132,14 @@ pub fn create_clusters(
                         &sender_email,
                         true,   // is_specific_sender
                         vec![], // no exclusions
+                        vec![], // subject-specific clusters don't need exclusions
                         Some(pattern.clone()),
                         &pattern_msgs,
                     );
                     clusters.push(cluster);
+
+                    // Track this pattern for exclusion on the remainder cluster
+                    extracted_patterns.push(pattern);
 
                     // Remove these messages from sender_remaining
                     let pattern_ids: HashSet<String> =
@@ -1150,7 +1157,8 @@ pub fn create_clusters(
                     &domain,
                     &sender_email,
                     true,   // is_specific_sender
-                    vec![], // no exclusions for specific sender clusters
+                    vec![], // no excluded senders for specific sender clusters
+                    extracted_patterns, // pass subject exclusions to remainder
                     &sender_remaining,
                 );
                 clusters.push(cluster);
@@ -1167,6 +1175,7 @@ pub fn create_clusters(
                 "",                       // no specific sender
                 false,                    // is domain cluster
                 specific_senders.clone(), // exclude specific senders that have their own clusters
+                vec![],                   // domain clusters don't need subject exclusions
                 &remaining_msgs,
             );
             clusters.push(cluster);
@@ -1254,6 +1263,7 @@ fn build_cluster(
     sender_email: &str,
     is_specific_sender: bool,
     excluded_senders: Vec<String>,
+    excluded_subject_patterns: Vec<String>,
     msgs: &[(&MessageMetadata, &Classification)],
 ) -> EmailCluster {
     build_cluster_with_subject(
@@ -1261,6 +1271,7 @@ fn build_cluster(
         sender_email,
         is_specific_sender,
         excluded_senders,
+        excluded_subject_patterns,
         None,
         msgs,
     )
@@ -1272,6 +1283,7 @@ fn build_cluster_with_subject(
     sender_email: &str,
     is_specific_sender: bool,
     excluded_senders: Vec<String>,
+    excluded_subject_patterns: Vec<String>,
     subject_pattern: Option<String>,
     msgs: &[(&MessageMetadata, &Classification)],
 ) -> EmailCluster {
@@ -1321,7 +1333,7 @@ fn build_cluster_with_subject(
         is_specific_sender,
         excluded_senders,
         subject_pattern,
-        excluded_subject_patterns: vec![],
+        excluded_subject_patterns,
         message_ids,
         suggested_category,
         suggested_label,
@@ -1613,6 +1625,69 @@ mod tests {
             let restored: DecisionAction = serde_json::from_str(&json).unwrap();
             // Verify round-trip works (comparing debug strings since action has PartialEq)
             assert_eq!(format!("{:?}", action), format!("{:?}", restored));
+        }
+    }
+
+    #[test]
+    fn test_remainder_cluster_excludes_subject_patterns() {
+        // Create messages from one sender with different subject patterns
+        let mut messages = Vec::new();
+        let mut classifications = Vec::new();
+
+        // 3 "statement" emails -> Financial
+        for i in 0..3 {
+            let msg = create_test_message(&format!("s{}", i), "noreply@cba.com.au", "Your statement is ready");
+            let mut class = create_test_classification(&msg);
+            class.category = EmailCategory::Financial;
+            class.suggested_label = "auto/financial".to_string();
+            classifications.push((msg.clone(), class));
+            messages.push(msg);
+        }
+
+        // 3 "receipt" emails -> Receipt
+        for i in 0..3 {
+            let msg = create_test_message(&format!("r{}", i), "noreply@cba.com.au", "Your payment receipt");
+            let mut class = create_test_classification(&msg);
+            class.category = EmailCategory::Receipt;
+            class.suggested_label = "auto/receipts".to_string();
+            classifications.push((msg.clone(), class));
+            messages.push(msg);
+        }
+
+        // 3 generic emails -> Other (these become the remainder cluster)
+        for i in 0..3 {
+            let msg = create_test_message(&format!("g{}", i), "noreply@cba.com.au", &format!("Notification {}", i));
+            let mut class = create_test_classification(&msg);
+            class.category = EmailCategory::Other;
+            class.suggested_label = "auto/other".to_string();
+            classifications.push((msg.clone(), class));
+            messages.push(msg);
+        }
+
+        let clusters = create_clusters(&messages, &classifications, 3);
+
+        // Find the remainder cluster (no subject_pattern)
+        let remainder = clusters.iter().find(|c| c.subject_pattern.is_none());
+        assert!(remainder.is_some(), "Should have a remainder cluster");
+
+        let remainder = remainder.unwrap();
+        assert!(!remainder.excluded_subject_patterns.is_empty(),
+            "Remainder cluster should have excluded_subject_patterns");
+
+        // The excluded patterns should include the subject patterns from the specific clusters
+        let subject_clusters: Vec<_> = clusters.iter()
+            .filter(|c| c.subject_pattern.is_some())
+            .collect();
+        assert!(subject_clusters.len() >= 2, "Should have at least 2 subject-pattern clusters");
+
+        for sc in &subject_clusters {
+            let pattern = sc.subject_pattern.as_ref().unwrap();
+            assert!(
+                remainder.excluded_subject_patterns.contains(pattern),
+                "Remainder should exclude pattern '{}', but excluded_subject_patterns = {:?}",
+                pattern,
+                remainder.excluded_subject_patterns
+            );
         }
     }
 }
