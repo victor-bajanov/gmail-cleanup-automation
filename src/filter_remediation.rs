@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::client::ExistingFilterInfo;
+use crate::client::{ExistingFilterInfo, GmailClient};
 use crate::filter_ast::FromClause;
 use crate::filter_overlap::parse_gmail_query;
 use crate::models::FilterRule;
@@ -103,6 +103,18 @@ pub struct RemediationResult {
 pub struct OverlapDetector;
 
 impl OverlapDetector {
+    /// Fetch existing filters from Gmail and detect overlap groups.
+    /// This is the main entry point for the detection phase.
+    pub async fn detect(
+        client: &dyn GmailClient,
+        label_map: &HashMap<String, String>,
+    ) -> crate::error::Result<Vec<OverlapGroup>> {
+        let filters = client.list_filters().await?;
+        let mut groups = Self::group_filters(&filters, label_map);
+        Self::classify_groups(&mut groups);
+        Ok(groups)
+    }
+
     /// Parse the from-pattern from an ExistingFilterInfo.
     /// Returns (domain, Option<specific_sender>).
     fn parse_from_key(filter: &ExistingFilterInfo) -> Option<(String, Option<String>)> {
@@ -384,6 +396,91 @@ mod tests {
         } else {
             panic!("Expected MechanicalFix");
         }
+    }
+
+    use async_trait::async_trait;
+
+    struct MockDetectClient {
+        filters: Vec<ExistingFilterInfo>,
+    }
+
+    #[async_trait]
+    impl crate::client::GmailClient for MockDetectClient {
+        async fn list_message_ids(&self, _query: &str) -> crate::error::Result<Vec<String>> {
+            unimplemented!()
+        }
+        async fn get_message(&self, _id: &str) -> crate::error::Result<crate::models::MessageMetadata> {
+            unimplemented!()
+        }
+        async fn list_labels(&self) -> crate::error::Result<Vec<crate::client::LabelInfo>> {
+            unimplemented!()
+        }
+        async fn create_label(&self, _name: &str) -> crate::error::Result<String> {
+            unimplemented!()
+        }
+        async fn delete_label(&self, _label_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn create_filter(&self, _filter: &crate::models::FilterRule) -> crate::error::Result<String> {
+            unimplemented!()
+        }
+        async fn list_filters(&self) -> crate::error::Result<Vec<ExistingFilterInfo>> {
+            Ok(self.filters.clone())
+        }
+        async fn delete_filter(&self, _filter_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn update_filter(&self, _filter_id: &str, _filter: &crate::models::FilterRule) -> crate::error::Result<String> {
+            unimplemented!()
+        }
+        async fn apply_label(&self, _message_id: &str, _label_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn remove_label(&self, _message_id: &str, _label_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn batch_remove_label(&self, _message_ids: &[String], _label_id: &str) -> crate::error::Result<usize> {
+            unimplemented!()
+        }
+        async fn batch_add_label(&self, _message_ids: &[String], _label_id: &str) -> crate::error::Result<usize> {
+            unimplemented!()
+        }
+        async fn batch_modify_labels(
+            &self,
+            _message_ids: &[String],
+            _add_label_ids: &[String],
+            _remove_label_ids: &[String],
+        ) -> crate::error::Result<usize> {
+            unimplemented!()
+        }
+        async fn fetch_messages_batch(&self, _message_ids: Vec<String>) -> crate::error::Result<Vec<crate::models::MessageMetadata>> {
+            unimplemented!()
+        }
+        async fn fetch_messages_with_progress(
+            &self,
+            _message_ids: Vec<String>,
+            _on_progress: crate::client::ProgressCallback,
+        ) -> crate::error::Result<Vec<crate::models::MessageMetadata>> {
+            unimplemented!()
+        }
+        async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_returns_classified_groups() {
+        let client = MockDetectClient {
+            filters: vec![
+                make_filter("f1", Some("cba.com.au"), Some("statement"), "lbl_fin"),
+                make_filter("f2", Some("cba.com.au"), None, "lbl_oth"),
+                make_filter("f3", Some("github.com"), None, "lbl_rec"),
+            ],
+        };
+        let groups = OverlapDetector::detect(&client, &label_map()).await.unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].group_id, "cba.com.au");
+        assert!(matches!(groups[0].resolution_type, ResolutionType::MechanicalFix { .. }));
     }
 
     #[test]
