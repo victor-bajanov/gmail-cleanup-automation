@@ -134,6 +134,93 @@ impl OverlapDetector {
         None
     }
 
+    /// Classify each group as MechanicalFix or PickWinner and, for MechanicalFix,
+    /// synthesize the replacement filters with -subject: exclusions.
+    pub fn classify_groups(groups: &mut Vec<OverlapGroup>) {
+        for group in groups.iter_mut() {
+            // 1. Collect subject keywords from filters that have them
+            let mut all_subject_keywords: Vec<String> = Vec::new();
+            let mut filter_subjects: Vec<(usize, Vec<String>)> = Vec::new(); // (index, keywords)
+
+            for (i, filter) in group.filters.iter().enumerate() {
+                let mut keywords: Vec<String> = Vec::new();
+
+                // Check filter.subject field first
+                if let Some(ref subj) = filter.subject {
+                    if !subj.is_empty() {
+                        keywords.push(subj.clone());
+                    }
+                }
+
+                // Also check filter.query field for subject clause
+                if keywords.is_empty() {
+                    if let Some(ref query) = filter.query {
+                        let expr = parse_gmail_query(query);
+                        if let Some(ref subject_clause) = expr.subject_clause {
+                            keywords.extend(subject_clause.keywords.clone());
+                        }
+                    }
+                }
+
+                if !keywords.is_empty() {
+                    all_subject_keywords.extend(keywords.clone());
+                }
+                filter_subjects.push((i, keywords));
+            }
+
+            // 2. If no subject keywords found at all → PickWinner
+            if all_subject_keywords.is_empty() {
+                group.resolution_type = ResolutionType::PickWinner;
+                continue;
+            }
+
+            // 3. Subject keywords exist → MechanicalFix
+            let mut proposed_replacements: Vec<FilterRule> = Vec::new();
+
+            for (i, keywords) in &filter_subjects {
+                let filter = &group.filters[*i];
+                let is_bare = keywords.is_empty();
+
+                let excluded_subject_patterns = if is_bare {
+                    all_subject_keywords.clone()
+                } else {
+                    vec![]
+                };
+
+                let from_pattern = filter.from.clone();
+                let is_specific_sender = from_pattern
+                    .as_ref()
+                    .map(|f| f.contains('@'))
+                    .unwrap_or(false);
+
+                let target_label_id = filter
+                    .add_label_ids
+                    .first()
+                    .cloned()
+                    .unwrap_or_default();
+
+                let should_archive = filter.remove_label_ids.contains(&"INBOX".to_string());
+
+                proposed_replacements.push(FilterRule {
+                    id: Some(filter.id.clone()),
+                    name: format!("{}_{}", group.from_pattern, target_label_id),
+                    from_pattern,
+                    is_specific_sender,
+                    excluded_senders: vec![],
+                    subject_keywords: keywords.clone(),
+                    excluded_subject_patterns,
+                    target_label_id,
+                    should_archive,
+                    estimated_matches: 0,
+                });
+            }
+
+            group.resolution_type = ResolutionType::MechanicalFix {
+                proposed_replacements,
+            };
+        }
+    }
+
     /// Group filters by overlapping from-patterns.
     /// Filters sharing the same domain land in the same group.
     /// Groups of size 1 are discarded (no overlap).
@@ -250,6 +337,53 @@ mod tests {
         };
         assert_eq!(group.group_id, "cba.com.au");
         assert!(matches!(group.resolution_type, ResolutionType::PickWinner));
+    }
+
+    #[test]
+    fn test_classify_mechanical_fix() {
+        let filters = vec![
+            make_filter("f1", Some("cba.com.au"), Some("statement"), "lbl_fin"),
+            make_filter("f2", Some("cba.com.au"), None, "lbl_oth"),
+        ];
+        let mut groups = OverlapDetector::group_filters(&filters, &label_map());
+        OverlapDetector::classify_groups(&mut groups);
+        assert_eq!(groups.len(), 1);
+        assert!(matches!(groups[0].resolution_type, ResolutionType::MechanicalFix { .. }));
+    }
+
+    #[test]
+    fn test_classify_pick_winner() {
+        let filters = vec![
+            make_filter("f1", Some("cba.com.au"), None, "lbl_fin"),
+            make_filter("f2", Some("cba.com.au"), None, "lbl_rec"),
+        ];
+        let mut groups = OverlapDetector::group_filters(&filters, &label_map());
+        OverlapDetector::classify_groups(&mut groups);
+        assert_eq!(groups.len(), 1);
+        assert!(matches!(groups[0].resolution_type, ResolutionType::PickWinner));
+    }
+
+    #[test]
+    fn test_mechanical_fix_adds_exclusions_to_remainder() {
+        let filters = vec![
+            make_filter("f1", Some("cba.com.au"), Some("statement"), "lbl_fin"),
+            make_filter("f2", Some("cba.com.au"), Some("receipt"), "lbl_rec"),
+            make_filter("f3", Some("cba.com.au"), None, "lbl_oth"),
+        ];
+        let mut groups = OverlapDetector::group_filters(&filters, &label_map());
+        OverlapDetector::classify_groups(&mut groups);
+
+        if let ResolutionType::MechanicalFix { ref proposed_replacements } = groups[0].resolution_type {
+            // The remainder filter should exclude "statement" and "receipt"
+            let remainder = proposed_replacements.iter()
+                .find(|f| f.subject_keywords.is_empty())
+                .unwrap();
+            assert!(remainder.excluded_subject_patterns.contains(&"statement".to_string()));
+            assert!(remainder.excluded_subject_patterns.contains(&"receipt".to_string()));
+            assert_eq!(proposed_replacements.len(), 3);
+        } else {
+            panic!("Expected MechanicalFix");
+        }
     }
 
     #[test]
