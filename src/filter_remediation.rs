@@ -70,6 +70,15 @@ impl RemediationPlan {
                     result.skipped += 1;
                 }
                 GroupDecision::KeepOne { keep_filter_id } => {
+                    // Validate the keeper exists in the group
+                    if !group.filters.iter().any(|f| f.id == *keep_filter_id) {
+                        result.errors.push(format!(
+                            "Group {}: keep_filter_id '{}' not found in group — skipping to avoid data loss",
+                            group.group_id, keep_filter_id
+                        ));
+                        result.skipped += 1;
+                        continue;
+                    }
                     // Delete all except the keeper
                     for filter in &group.filters {
                         if filter.id != *keep_filter_id {
@@ -87,23 +96,34 @@ impl RemediationPlan {
                     replacement_filters,
                 } => {
                     // Delete all existing filters in the group first
+                    let mut delete_failed = false;
                     for filter in &group.filters {
                         match client.delete_filter(&filter.id).await {
                             Ok(()) => result.deleted.push(filter.id.clone()),
-                            Err(e) => result.errors.push(format!(
-                                "Failed to delete filter {} in group {}: {}",
-                                filter.id, group.group_id, e
-                            )),
+                            Err(e) => {
+                                result.errors.push(format!(
+                                    "Failed to delete filter {} in group {}: {}",
+                                    filter.id, group.group_id, e
+                                ));
+                                delete_failed = true;
+                            }
                         }
                     }
-                    // Then create replacements
-                    for replacement in replacement_filters {
-                        match client.create_filter(replacement).await {
-                            Ok(id) => result.created.push(id),
-                            Err(e) => result.errors.push(format!(
-                                "Failed to create replacement filter in group {}: {}",
-                                group.group_id, e
-                            )),
+                    // Only create replacements if all deletes succeeded
+                    if delete_failed {
+                        result.errors.push(format!(
+                            "Skipping replacement creation for group {} due to delete failures",
+                            group.group_id
+                        ));
+                    } else {
+                        for replacement in replacement_filters {
+                            match client.create_filter(replacement).await {
+                                Ok(id) => result.created.push(id),
+                                Err(e) => result.errors.push(format!(
+                                    "Failed to create replacement filter in group {}: {}",
+                                    group.group_id, e
+                                )),
+                            }
                         }
                     }
                 }
@@ -122,42 +142,57 @@ impl RemediationPlan {
     }
 
     pub fn summary(&self) -> String {
-        let mut deletions = 0usize;
-        let mut creations = 0usize;
-        let mut skips = 0usize;
-        let mut rescans = 0usize;
+        let mut lines = vec![];
+        let mut total_delete = 0usize;
+        let mut total_create = 0usize;
+        let mut total_skip = 0usize;
 
         for (group, decision) in &self.groups {
             match decision {
                 GroupDecision::ReplaceWithExclusive {
                     replacement_filters,
                 } => {
-                    deletions += group.filters.len();
-                    creations += replacement_filters.len();
+                    let del = group.filters.len();
+                    let cre = replacement_filters.len();
+                    lines.push(format!(
+                        "  {} — delete {} filters, create {} exclusive replacements",
+                        group.group_id, del, cre
+                    ));
+                    total_delete += del;
+                    total_create += cre;
                 }
-                GroupDecision::KeepOne { .. } => {
-                    // Delete all but the kept one
-                    if group.filters.len() > 1 {
-                        deletions += group.filters.len() - 1;
-                    }
+                GroupDecision::KeepOne { keep_filter_id } => {
+                    let del = group.filters.len().saturating_sub(1);
+                    lines.push(format!(
+                        "  {} — keep filter {}, delete {} others",
+                        group.group_id, keep_filter_id, del
+                    ));
+                    total_delete += del;
                 }
                 GroupDecision::Skip => {
-                    skips += 1;
+                    lines.push(format!("  {} — skip", group.group_id));
+                    total_skip += 1;
                 }
                 GroupDecision::Rescan { .. } => {
-                    rescans += 1;
+                    lines.push(format!(
+                        "  {} — rescan sender emails and regenerate filters",
+                        group.group_id
+                    ));
                 }
             }
         }
 
-        format!(
-            "{} groups: {} deletions, {} creations, {} skips, {} rescans",
+        let header = format!(
+            "Remediation plan: {} groups, {} deletions, {} creations, {} skipped",
             self.groups.len(),
-            deletions,
-            creations,
-            skips,
-            rescans
-        )
+            total_delete,
+            total_create,
+            total_skip
+        );
+        std::iter::once(header)
+            .chain(lines)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -189,13 +224,18 @@ impl OverlapDetector {
     fn parse_from_key(filter: &ExistingFilterInfo) -> Option<(String, Option<String>)> {
         // Try the `from` field first (raw value from Gmail API)
         if let Some(ref from) = filter.from {
-            if from.contains('@') {
+            let from_normalized = from.trim().to_lowercase();
+            if from_normalized.contains('@') {
                 // Specific sender — extract domain
-                let domain = from.split('@').next_back().unwrap_or("").to_string();
-                return Some((domain, Some(from.clone())));
-            } else if !from.is_empty() {
+                let domain = from_normalized
+                    .split('@')
+                    .next_back()
+                    .unwrap_or("")
+                    .to_string();
+                return Some((domain, Some(from_normalized)));
+            } else if !from_normalized.is_empty() {
                 // It's a domain
-                return Some((from.clone(), None));
+                return Some((from_normalized, None));
             }
         }
 
@@ -204,9 +244,11 @@ impl OverlapDetector {
             let expr = parse_gmail_query(query);
             if let Some(ref from_clause) = expr.from_clause {
                 return match from_clause {
-                    FromClause::Domain(dp) => Some((dp.domain.clone(), None)),
+                    FromClause::Domain(dp) => {
+                        Some((dp.domain.to_lowercase(), None))
+                    }
                     FromClause::SpecificSender(ep) => {
-                        Some((ep.domain.clone(), Some(ep.full_address())))
+                        Some((ep.domain.to_lowercase(), Some(ep.full_address().to_lowercase())))
                     }
                 };
             }
@@ -557,6 +599,8 @@ mod tests {
         let plan = RemediationPlan::new();
         let summary = plan.summary();
         assert!(summary.contains("0 groups"));
+        assert!(summary.contains("0 deletions"));
+        assert!(summary.contains("0 creations"));
     }
 
     // --- MockExecuteClient and execution tests ---
