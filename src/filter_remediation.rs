@@ -34,7 +34,7 @@ pub enum GroupDecision {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RemediationPlan {
     pub groups: Vec<(OverlapGroup, GroupDecision)>,
 }
