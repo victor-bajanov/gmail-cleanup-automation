@@ -52,6 +52,75 @@ impl RemediationPlan {
         self.groups.push((group, decision));
     }
 
+    /// Execute the remediation plan: delete old filters, create replacements.
+    pub async fn execute(
+        &self,
+        client: &dyn GmailClient,
+    ) -> crate::error::Result<RemediationResult> {
+        let mut result = RemediationResult {
+            deleted: vec![],
+            created: vec![],
+            skipped: 0,
+            errors: vec![],
+        };
+
+        for (group, decision) in &self.groups {
+            match decision {
+                GroupDecision::Skip => {
+                    result.skipped += 1;
+                }
+                GroupDecision::KeepOne { keep_filter_id } => {
+                    // Delete all except the keeper
+                    for filter in &group.filters {
+                        if filter.id != *keep_filter_id {
+                            match client.delete_filter(&filter.id).await {
+                                Ok(()) => result.deleted.push(filter.id.clone()),
+                                Err(e) => result.errors.push(format!(
+                                    "Failed to delete filter {} in group {}: {}",
+                                    filter.id, group.group_id, e
+                                )),
+                            }
+                        }
+                    }
+                }
+                GroupDecision::ReplaceWithExclusive {
+                    replacement_filters,
+                } => {
+                    // Delete all existing filters in the group first
+                    for filter in &group.filters {
+                        match client.delete_filter(&filter.id).await {
+                            Ok(()) => result.deleted.push(filter.id.clone()),
+                            Err(e) => result.errors.push(format!(
+                                "Failed to delete filter {} in group {}: {}",
+                                filter.id, group.group_id, e
+                            )),
+                        }
+                    }
+                    // Then create replacements
+                    for replacement in replacement_filters {
+                        match client.create_filter(replacement).await {
+                            Ok(id) => result.created.push(id),
+                            Err(e) => result.errors.push(format!(
+                                "Failed to create replacement filter in group {}: {}",
+                                group.group_id, e
+                            )),
+                        }
+                    }
+                }
+                GroupDecision::Rescan { .. } => {
+                    // Rescan should have been resolved before execution
+                    result.errors.push(format!(
+                        "Group {} has unresolved Rescan decision — skipping",
+                        group.group_id
+                    ));
+                    result.skipped += 1;
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
     pub fn summary(&self) -> String {
         let mut deletions = 0usize;
         let mut creations = 0usize;
@@ -488,5 +557,184 @@ mod tests {
         let plan = RemediationPlan::new();
         let summary = plan.summary();
         assert!(summary.contains("0 groups"));
+    }
+
+    // --- MockExecuteClient and execution tests ---
+
+    use std::sync::{Arc, Mutex};
+
+    struct MockExecuteClient {
+        deleted: Arc<Mutex<Vec<String>>>,
+        created: Arc<Mutex<Vec<String>>>,
+        create_counter: Arc<Mutex<usize>>,
+    }
+
+    impl MockExecuteClient {
+        fn new() -> Self {
+            Self {
+                deleted: Arc::new(Mutex::new(vec![])),
+                created: Arc::new(Mutex::new(vec![])),
+                create_counter: Arc::new(Mutex::new(0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl crate::client::GmailClient for MockExecuteClient {
+        async fn list_message_ids(&self, _query: &str) -> crate::error::Result<Vec<String>> {
+            unimplemented!()
+        }
+        async fn get_message(&self, _id: &str) -> crate::error::Result<crate::models::MessageMetadata> {
+            unimplemented!()
+        }
+        async fn list_labels(&self) -> crate::error::Result<Vec<crate::client::LabelInfo>> {
+            unimplemented!()
+        }
+        async fn create_label(&self, _name: &str) -> crate::error::Result<String> {
+            unimplemented!()
+        }
+        async fn delete_label(&self, _label_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn create_filter(&self, _filter: &crate::models::FilterRule) -> crate::error::Result<String> {
+            let mut counter = self.create_counter.lock().unwrap();
+            *counter += 1;
+            let id = format!("f_new_{}", counter);
+            self.created.lock().unwrap().push(id.clone());
+            Ok(id)
+        }
+        async fn list_filters(&self) -> crate::error::Result<Vec<ExistingFilterInfo>> {
+            Ok(vec![])
+        }
+        async fn delete_filter(&self, filter_id: &str) -> crate::error::Result<()> {
+            self.deleted.lock().unwrap().push(filter_id.to_string());
+            Ok(())
+        }
+        async fn update_filter(&self, _filter_id: &str, _filter: &crate::models::FilterRule) -> crate::error::Result<String> {
+            unimplemented!()
+        }
+        async fn apply_label(&self, _message_id: &str, _label_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn remove_label(&self, _message_id: &str, _label_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn batch_remove_label(&self, _message_ids: &[String], _label_id: &str) -> crate::error::Result<usize> {
+            unimplemented!()
+        }
+        async fn batch_add_label(&self, _message_ids: &[String], _label_id: &str) -> crate::error::Result<usize> {
+            unimplemented!()
+        }
+        async fn batch_modify_labels(
+            &self,
+            _message_ids: &[String],
+            _add_label_ids: &[String],
+            _remove_label_ids: &[String],
+        ) -> crate::error::Result<usize> {
+            unimplemented!()
+        }
+        async fn fetch_messages_batch(&self, _message_ids: Vec<String>) -> crate::error::Result<Vec<crate::models::MessageMetadata>> {
+            unimplemented!()
+        }
+        async fn fetch_messages_with_progress(
+            &self,
+            _message_ids: Vec<String>,
+            _on_progress: crate::client::ProgressCallback,
+        ) -> crate::error::Result<Vec<crate::models::MessageMetadata>> {
+            unimplemented!()
+        }
+        async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_replace_with_exclusive() {
+        let group = OverlapGroup {
+            group_id: "cba.com.au".to_string(),
+            from_pattern: "cba.com.au".to_string(),
+            filters: vec![
+                make_filter("f1", Some("cba.com.au"), Some("statement"), "lbl_fin"),
+                make_filter("f2", Some("cba.com.au"), None, "lbl_oth"),
+            ],
+            label_names: vec!["Financial".to_string(), "Other".to_string()],
+            resolution_type: ResolutionType::PickWinner,
+        };
+
+        let replacement = FilterRule {
+            id: None,
+            name: "test".to_string(),
+            from_pattern: Some("cba.com.au".to_string()),
+            is_specific_sender: false,
+            excluded_senders: vec![],
+            subject_keywords: vec![],
+            excluded_subject_patterns: vec!["statement".to_string()],
+            target_label_id: "lbl_oth".to_string(),
+            should_archive: false,
+            estimated_matches: 0,
+        };
+
+        let mut plan = RemediationPlan::new();
+        plan.add(
+            group,
+            GroupDecision::ReplaceWithExclusive {
+                replacement_filters: vec![replacement],
+            },
+        );
+
+        let client = MockExecuteClient::new();
+        let result = plan.execute(&client).await.unwrap();
+        assert_eq!(result.deleted.len(), 2);
+        assert_eq!(result.created.len(), 1);
+        assert_eq!(result.skipped, 0);
+        assert!(result.errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_keep_one() {
+        let group = OverlapGroup {
+            group_id: "cba.com.au".to_string(),
+            from_pattern: "cba.com.au".to_string(),
+            filters: vec![
+                make_filter("f1", Some("cba.com.au"), None, "lbl_fin"),
+                make_filter("f2", Some("cba.com.au"), None, "lbl_rec"),
+            ],
+            label_names: vec!["Financial".to_string(), "Receipts".to_string()],
+            resolution_type: ResolutionType::PickWinner,
+        };
+
+        let mut plan = RemediationPlan::new();
+        plan.add(
+            group,
+            GroupDecision::KeepOne {
+                keep_filter_id: "f1".to_string(),
+            },
+        );
+
+        let client = MockExecuteClient::new();
+        let result = plan.execute(&client).await.unwrap();
+        assert_eq!(result.deleted.len(), 1); // only f2 deleted
+        assert_eq!(result.created.len(), 0);
+        assert!(result.errors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_skip() {
+        let group = OverlapGroup {
+            group_id: "cba.com.au".to_string(),
+            from_pattern: "cba.com.au".to_string(),
+            filters: vec![],
+            label_names: vec![],
+            resolution_type: ResolutionType::PickWinner,
+        };
+
+        let mut plan = RemediationPlan::new();
+        plan.add(group, GroupDecision::Skip);
+
+        let client = MockExecuteClient::new();
+        let result = plan.execute(&client).await.unwrap();
+        assert_eq!(result.deleted.len(), 0);
+        assert_eq!(result.created.len(), 0);
+        assert_eq!(result.skipped, 1);
     }
 }
