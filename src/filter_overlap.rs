@@ -441,10 +441,7 @@ impl FilterOverlapAnalyzer {
 
         if common_keywords.is_empty() {
             // No common keywords
-            return match (&subj_a.match_mode, &subj_b.match_mode) {
-                // If either uses OR, no common keywords = disjoint
-                _ => PatternRelation::Disjoint,
-            };
+            return PatternRelation::Disjoint;
         }
 
         // Some common keywords exist
@@ -763,7 +760,7 @@ impl FilterOverlapAnalyzer {
                     let (conflict_type, description_text) = if is_orthogonal {
                         (
                             ConflictType::TheoreticalOverlap,
-                            format!("Filters on orthogonal dimensions (FROM vs SUBJECT) - theoretical overlap only"),
+                            "Filters on orthogonal dimensions (FROM vs SUBJECT) - theoretical overlap only".to_string(),
                         )
                     } else {
                         (
