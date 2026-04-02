@@ -8,6 +8,22 @@ use gmail_automation::filter_remediation::{
 
 use crate::state::AppState;
 
+/// Build a RemediationPlan from current state (groups + decisions).
+fn build_plan_from_state(state: &AppState) -> RemediationPlan {
+    let groups = state.remediation_groups.read().clone();
+    let decisions = state.remediation_decisions.read().clone();
+
+    let mut plan = RemediationPlan::new();
+    for group in groups {
+        let decision = decisions
+            .get(&group.group_id)
+            .cloned()
+            .unwrap_or(GroupDecision::Skip);
+        plan.add(group, decision);
+    }
+    plan
+}
+
 #[tauri::command]
 pub async fn detect_overlaps(
     state: State<'_, AppState>,
@@ -52,26 +68,15 @@ pub async fn execute_remediation(
         .get_client()
         .ok_or_else(|| "Not authenticated".to_string())?;
 
-    let groups = state.remediation_groups.read().clone();
-    let decisions = state.remediation_decisions.read().clone();
-
-    let mut plan = RemediationPlan::new();
-    for group in groups {
-        let decision = decisions
-            .get(&group.group_id)
-            .cloned()
-            .unwrap_or(GroupDecision::Skip);
-        plan.add(group, decision);
-    }
+    let plan = build_plan_from_state(&state);
 
     let result = plan
         .execute(client.as_ref())
         .await
         .map_err(|e| format!("Execution failed: {}", e))?;
 
-    // Clear remediation state
-    *state.remediation_groups.write() = vec![];
-    *state.remediation_decisions.write() = HashMap::new();
+    // Don't clear state here — apply_remediation_swaps needs it afterward.
+    // State is cleared by clear_remediation_state or on next detect_overlaps call.
 
     Ok(result)
 }
@@ -80,18 +85,7 @@ pub async fn execute_remediation(
 pub async fn remediation_summary(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let groups = state.remediation_groups.read().clone();
-    let decisions = state.remediation_decisions.read().clone();
-
-    let mut plan = RemediationPlan::new();
-    for group in groups {
-        let decision = decisions
-            .get(&group.group_id)
-            .cloned()
-            .unwrap_or(GroupDecision::Skip);
-        plan.add(group, decision);
-    }
-
+    let plan = build_plan_from_state(&state);
     Ok(plan.summary())
 }
 
@@ -99,18 +93,7 @@ pub async fn remediation_summary(
 pub async fn collect_remediation_swaps(
     state: State<'_, AppState>,
 ) -> Result<Vec<LabelSwap>, String> {
-    let groups = state.remediation_groups.read().clone();
-    let decisions = state.remediation_decisions.read().clone();
-
-    let mut plan = RemediationPlan::new();
-    for group in groups {
-        let decision = decisions
-            .get(&group.group_id)
-            .cloned()
-            .unwrap_or(GroupDecision::Skip);
-        plan.add(group, decision);
-    }
-
+    let plan = build_plan_from_state(&state);
     Ok(RemediationApplicator::collect_swaps(&plan))
 }
 
@@ -122,20 +105,16 @@ pub async fn apply_remediation_swaps(
         .get_client()
         .ok_or_else(|| "Not authenticated".to_string())?;
 
-    let groups = state.remediation_groups.read().clone();
-    let decisions = state.remediation_decisions.read().clone();
-
-    let mut plan = RemediationPlan::new();
-    for group in groups {
-        let decision = decisions
-            .get(&group.group_id)
-            .cloned()
-            .unwrap_or(GroupDecision::Skip);
-        plan.add(group, decision);
-    }
-
+    let plan = build_plan_from_state(&state);
     let swaps = RemediationApplicator::collect_swaps(&plan);
-    RemediationApplicator::apply(client.as_ref(), &swaps)
+
+    let result = RemediationApplicator::apply(client.as_ref(), &swaps)
         .await
-        .map_err(|e| format!("Apply failed: {}", e))
+        .map_err(|e| format!("Apply failed: {}", e))?;
+
+    // Clear remediation state after apply completes
+    *state.remediation_groups.write() = vec![];
+    *state.remediation_decisions.write() = HashMap::new();
+
+    Ok(result)
 }

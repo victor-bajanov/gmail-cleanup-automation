@@ -292,7 +292,7 @@ impl RemediationApplicator {
             match client
                 .batch_modify_labels(
                     &message_ids,
-                    &[swap.add_label_id.clone()],
+                    std::slice::from_ref(&swap.add_label_id),
                     &swap.remove_label_ids,
                 )
                 .await
