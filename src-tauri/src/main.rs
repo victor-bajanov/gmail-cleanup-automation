@@ -83,6 +83,8 @@ fn main() {
             commands::submit_group_decision,
             commands::execute_remediation,
             commands::remediation_summary,
+            commands::collect_remediation_swaps,
+            commands::apply_remediation_swaps,
             // Settings commands
             commands::get_settings,
             commands::save_settings,

@@ -2,7 +2,8 @@ use tauri::State;
 use std::collections::HashMap;
 
 use gmail_automation::filter_remediation::{
-    GroupDecision, OverlapDetector, OverlapGroup, RemediationPlan, RemediationResult,
+    ApplyResult, GroupDecision, LabelSwap, OverlapDetector, OverlapGroup,
+    RemediationApplicator, RemediationPlan, RemediationResult,
 };
 
 use crate::state::AppState;
@@ -92,4 +93,49 @@ pub async fn remediation_summary(
     }
 
     Ok(plan.summary())
+}
+
+#[tauri::command]
+pub async fn collect_remediation_swaps(
+    state: State<'_, AppState>,
+) -> Result<Vec<LabelSwap>, String> {
+    let groups = state.remediation_groups.read().clone();
+    let decisions = state.remediation_decisions.read().clone();
+
+    let mut plan = RemediationPlan::new();
+    for group in groups {
+        let decision = decisions
+            .get(&group.group_id)
+            .cloned()
+            .unwrap_or(GroupDecision::Skip);
+        plan.add(group, decision);
+    }
+
+    Ok(RemediationApplicator::collect_swaps(&plan))
+}
+
+#[tauri::command]
+pub async fn apply_remediation_swaps(
+    state: State<'_, AppState>,
+) -> Result<ApplyResult, String> {
+    let client = state
+        .get_client()
+        .ok_or_else(|| "Not authenticated".to_string())?;
+
+    let groups = state.remediation_groups.read().clone();
+    let decisions = state.remediation_decisions.read().clone();
+
+    let mut plan = RemediationPlan::new();
+    for group in groups {
+        let decision = decisions
+            .get(&group.group_id)
+            .cloned()
+            .unwrap_or(GroupDecision::Skip);
+        plan.add(group, decision);
+    }
+
+    let swaps = RemediationApplicator::collect_swaps(&plan);
+    RemediationApplicator::apply(client.as_ref(), &swaps)
+        .await
+        .map_err(|e| format!("Apply failed: {}", e))
 }
