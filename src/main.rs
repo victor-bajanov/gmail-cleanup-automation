@@ -637,17 +637,20 @@ async fn run() -> Result<()> {
                 terminal,
             };
 
-            // Helper: read a single keypress
+            // Helper: read a single keypress (Escape cancels, errors break)
             fn read_key() -> Option<char> {
                 terminal::enable_raw_mode().ok()?;
                 let result = loop {
-                    if let Ok(Event::Key(key)) = event::read() {
-                        if key.kind != KeyEventKind::Press {
-                            continue;
+                    match event::read() {
+                        Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                            match key.code {
+                                KeyCode::Char(c) => break Some(c),
+                                KeyCode::Esc => break None,
+                                _ => continue,
+                            }
                         }
-                        if let KeyCode::Char(c) = key.code {
-                            break Some(c);
-                        }
+                        Err(_) => break None,
+                        _ => continue,
                     }
                 };
                 terminal::disable_raw_mode().ok();

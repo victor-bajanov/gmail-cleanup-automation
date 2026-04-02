@@ -302,8 +302,10 @@ impl OverlapDetector {
         None
     }
 
-    /// Classify each group as MechanicalFix or PickWinner and, for MechanicalFix,
-    /// synthesize the replacement filters with -subject: exclusions.
+    /// Classify each group as Consolidate, MechanicalFix, or PickWinner.
+    /// Consolidate: all filters share the same label — keep broadest, delete rest.
+    /// MechanicalFix: synthesize replacement filters with -subject: exclusions.
+    /// PickWinner: user must choose which label to keep.
     pub fn classify_groups(groups: &mut [OverlapGroup]) {
         for group in groups.iter_mut() {
             // 0. Check if all filters target the same label — if so, consolidate
