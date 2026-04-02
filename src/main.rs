@@ -783,8 +783,14 @@ async fn run() -> Result<()> {
                 return Ok(());
             }
 
-            let result = plan.execute(&client).await?;
-            println!("\nRemediation complete:");
+            println!("\nExecuting...");
+            let total = plan.groups.len();
+            let result = plan.execute_with_progress(&client, |i, group_id| {
+                print!("\r  [{}/{}] {:<40}", i + 1, total, group_id);
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+            }).await?;
+            println!("\r\nRemediation complete:");
             println!("  Deleted: {} filters", result.deleted.len());
             println!("  Created: {} filters", result.created.len());
             println!("  Skipped: {} groups", result.skipped);

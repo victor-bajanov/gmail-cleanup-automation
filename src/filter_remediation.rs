@@ -69,6 +69,15 @@ impl RemediationPlan {
         &self,
         client: &dyn GmailClient,
     ) -> crate::error::Result<RemediationResult> {
+        self.execute_with_progress(client, |_, _| {}).await
+    }
+
+    /// Execute with a per-group progress callback: fn(index, group_id).
+    pub async fn execute_with_progress(
+        &self,
+        client: &dyn GmailClient,
+        on_progress: impl Fn(usize, &str),
+    ) -> crate::error::Result<RemediationResult> {
         let mut result = RemediationResult {
             deleted: vec![],
             created: vec![],
@@ -76,7 +85,8 @@ impl RemediationPlan {
             errors: vec![],
         };
 
-        for (group, decision) in &self.groups {
+        for (i, (group, decision)) in self.groups.iter().enumerate() {
+            on_progress(i, &group.group_id);
             match decision {
                 GroupDecision::Skip => {
                     result.skipped += 1;
