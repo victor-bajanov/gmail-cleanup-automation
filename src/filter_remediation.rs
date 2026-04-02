@@ -249,6 +249,62 @@ pub struct RemediationResult {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelSwap {
+    pub from_pattern: String,
+    pub add_label_id: String,
+    pub remove_label_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ApplyResult {
+    pub messages_relabeled: usize,
+    pub messages_failed: usize,
+    pub errors: Vec<String>,
+}
+
+pub struct RemediationApplicator;
+
+impl RemediationApplicator {
+    pub fn collect_swaps(plan: &RemediationPlan) -> Vec<LabelSwap> {
+        let mut swaps = Vec::new();
+
+        for (group, decision) in &plan.groups {
+            if let GroupDecision::KeepOne { keep_filter_id } = decision {
+                let winner_label = group
+                    .filters
+                    .iter()
+                    .find(|f| f.id == *keep_filter_id)
+                    .and_then(|f| f.add_label_ids.first().cloned());
+
+                let Some(winner) = winner_label else {
+                    continue;
+                };
+
+                let loser_labels: Vec<String> = group
+                    .filters
+                    .iter()
+                    .filter(|f| f.id != *keep_filter_id)
+                    .flat_map(|f| f.add_label_ids.iter().cloned())
+                    .filter(|l| *l != winner)
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+
+                if !loser_labels.is_empty() {
+                    swaps.push(LabelSwap {
+                        from_pattern: group.from_pattern.clone(),
+                        add_label_id: winner,
+                        remove_label_ids: loser_labels,
+                    });
+                }
+            }
+        }
+
+        swaps
+    }
+}
+
 pub struct OverlapDetector;
 
 impl OverlapDetector {
@@ -917,6 +973,83 @@ mod tests {
         assert_eq!(result.deleted.len(), 1); // only f2 deleted
         assert_eq!(result.created.len(), 0);
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_collect_swaps_pick_winner_produces_swap() {
+        let group = OverlapGroup {
+            group_id: "cba.com.au".to_string(),
+            from_pattern: "cba.com.au".to_string(),
+            filters: vec![
+                make_filter("f1", Some("cba.com.au"), None, "lbl_fin"),
+                make_filter("f2", Some("cba.com.au"), None, "lbl_rec"),
+            ],
+            label_names: vec!["Financial".to_string(), "Receipts".to_string()],
+            resolution_type: ResolutionType::PickWinner,
+        };
+
+        let mut plan = RemediationPlan::new();
+        plan.add(
+            group,
+            GroupDecision::KeepOne {
+                keep_filter_id: "f1".to_string(),
+            },
+        );
+
+        let swaps = RemediationApplicator::collect_swaps(&plan);
+        assert_eq!(swaps.len(), 1);
+        assert_eq!(swaps[0].from_pattern, "cba.com.au");
+        assert_eq!(swaps[0].add_label_id, "lbl_fin");
+        assert_eq!(swaps[0].remove_label_ids, vec!["lbl_rec".to_string()]);
+    }
+
+    #[test]
+    fn test_collect_swaps_consolidate_produces_no_swap() {
+        let group = OverlapGroup {
+            group_id: "cba.com.au".to_string(),
+            from_pattern: "cba.com.au".to_string(),
+            filters: vec![
+                make_filter("f1", Some("cba.com.au"), None, "lbl_fin"),
+                make_filter("f2", Some("cba.com.au"), None, "lbl_fin"),
+            ],
+            label_names: vec!["Financial".to_string()],
+            resolution_type: ResolutionType::Consolidate {
+                keep_filter_id: "f1".to_string(),
+                remove_filter_ids: vec!["f2".to_string()],
+            },
+        };
+
+        let mut plan = RemediationPlan::new();
+        plan.add(
+            group,
+            GroupDecision::Consolidate {
+                keep_filter_id: "f1".to_string(),
+                remove_filter_ids: vec!["f2".to_string()],
+            },
+        );
+
+        let swaps = RemediationApplicator::collect_swaps(&plan);
+        assert_eq!(swaps.len(), 0);
+    }
+
+    #[test]
+    fn test_collect_swaps_skip_produces_no_swap() {
+        let group = OverlapGroup {
+            group_id: "cba.com.au".to_string(),
+            from_pattern: "cba.com.au".to_string(),
+            filters: vec![
+                make_filter("f1", Some("cba.com.au"), None, "lbl_fin"),
+                make_filter("f2", Some("cba.com.au"), None, "lbl_rec"),
+            ],
+            label_names: vec![],
+            resolution_type: ResolutionType::PickWinner,
+        };
+
+        let mut plan = RemediationPlan::new();
+        plan.add(group, GroupDecision::Skip);
+
+        let swaps = RemediationApplicator::collect_swaps(&plan);
+        assert_eq!(swaps.len(), 0);
     }
 
     #[tokio::test]

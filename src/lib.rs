@@ -128,7 +128,8 @@ pub use filter_ast::{
 
 // Filter remediation types
 pub use filter_remediation::{
-    GroupDecision, OverlapGroup, RemediationPlan, RemediationResult, ResolutionType,
+    ApplyResult, GroupDecision, LabelSwap, OverlapGroup, RemediationApplicator,
+    RemediationPlan, RemediationResult, ResolutionType,
 };
 
 // Filter overlap detection types
