@@ -585,7 +585,7 @@ async fn run() -> Result<()> {
             Ok(())
         }
 
-        Commands::Remediate { dry_run } => {
+        Commands::Remediate { dry_run, no_apply } => {
             tracing::info!("Starting filter remediation");
             if dry_run {
                 println!("Running in DRY RUN mode — no changes will be made\n");
@@ -792,6 +792,57 @@ async fn run() -> Result<()> {
                 println!("  Errors:");
                 for e in &result.errors {
                     println!("    - {}", e);
+                }
+            }
+
+            // --- Apply phase: swap labels on existing emails ---
+            let swaps = gmail_automation::RemediationApplicator::collect_swaps(&plan);
+
+            if swaps.is_empty() {
+                println!("\nNo label changes needed for existing emails.");
+            } else if no_apply {
+                println!("\nSkipping label application (--no-apply).");
+                println!("  {} swap(s) would affect existing emails.", swaps.len());
+            } else {
+                println!("\nLabel swaps for existing emails:");
+                for swap in &swaps {
+                    let query = format!("from:{}", swap.from_pattern);
+                    let count = client.list_message_ids(&query).await.unwrap_or_default().len();
+                    let remove_names: Vec<&str> = swap.remove_label_ids.iter()
+                        .map(|id| label_map.get(id).map(|s| s.as_str()).unwrap_or(id))
+                        .collect();
+                    let add_name = label_map.get(&swap.add_label_id)
+                        .map(|s| s.as_str())
+                        .unwrap_or(&swap.add_label_id);
+                    println!(
+                        "  {} — {} → {} (~{} emails)",
+                        swap.from_pattern,
+                        remove_names.join(", "),
+                        add_name,
+                        count
+                    );
+                }
+
+                println!("\nApply label changes? [y]es [n]o");
+                let confirm_apply = matches!(read_key(), Some('y'));
+
+                if confirm_apply {
+                    let apply_result = gmail_automation::RemediationApplicator::apply(
+                        &client, &swaps,
+                    )
+                    .await?;
+                    println!("\nLabel application complete:");
+                    println!("  Relabeled: {} messages", apply_result.messages_relabeled);
+                    if apply_result.messages_failed > 0 {
+                        println!("  Failed: {} messages", apply_result.messages_failed);
+                    }
+                    if !apply_result.errors.is_empty() {
+                        for e in &apply_result.errors {
+                            println!("    - {}", e);
+                        }
+                    }
+                } else {
+                    println!("Skipped label application.");
                 }
             }
 

@@ -136,6 +136,9 @@ pub enum Commands {
         /// Preview changes without applying them
         #[arg(long)]
         dry_run: bool,
+        /// Skip applying label changes to existing emails
+        #[arg(long)]
+        no_apply: bool,
     },
 }
 
