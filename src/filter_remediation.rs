@@ -266,6 +266,53 @@ pub struct ApplyResult {
 pub struct RemediationApplicator;
 
 impl RemediationApplicator {
+    pub async fn apply(
+        client: &dyn GmailClient,
+        swaps: &[LabelSwap],
+    ) -> crate::error::Result<ApplyResult> {
+        let mut result = ApplyResult::default();
+
+        for swap in swaps {
+            let query = format!("from:{}", swap.from_pattern);
+            let message_ids = match client.list_message_ids(&query).await {
+                Ok(ids) => ids,
+                Err(e) => {
+                    result.errors.push(format!(
+                        "Failed to query messages for {}: {}",
+                        swap.from_pattern, e
+                    ));
+                    continue;
+                }
+            };
+
+            if message_ids.is_empty() {
+                continue;
+            }
+
+            match client
+                .batch_modify_labels(
+                    &message_ids,
+                    &[swap.add_label_id.clone()],
+                    &swap.remove_label_ids,
+                )
+                .await
+            {
+                Ok(count) => result.messages_relabeled += count,
+                Err(e) => {
+                    result.messages_failed += message_ids.len();
+                    result.errors.push(format!(
+                        "Failed to swap labels for {} ({} messages): {}",
+                        swap.from_pattern,
+                        message_ids.len(),
+                        e
+                    ));
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
     pub fn collect_swaps(plan: &RemediationPlan) -> Vec<LabelSwap> {
         let mut swaps = Vec::new();
 
@@ -1050,6 +1097,132 @@ mod tests {
 
         let swaps = RemediationApplicator::collect_swaps(&plan);
         assert_eq!(swaps.len(), 0);
+    }
+
+    // --- MockApplyClient and apply tests ---
+
+    struct MockApplyClient {
+        message_ids: HashMap<String, Vec<String>>,
+        modifications: Arc<Mutex<Vec<(Vec<String>, Vec<String>, Vec<String>)>>>,
+    }
+
+    #[async_trait]
+    impl crate::client::GmailClient for MockApplyClient {
+        async fn list_message_ids(&self, query: &str) -> crate::error::Result<Vec<String>> {
+            for (pattern, ids) in &self.message_ids {
+                if query.contains(pattern) {
+                    return Ok(ids.clone());
+                }
+            }
+            Ok(vec![])
+        }
+        async fn get_message(&self, _id: &str) -> crate::error::Result<crate::models::MessageMetadata> {
+            unimplemented!()
+        }
+        async fn list_labels(&self) -> crate::error::Result<Vec<crate::client::LabelInfo>> {
+            unimplemented!()
+        }
+        async fn create_label(&self, _name: &str) -> crate::error::Result<String> {
+            unimplemented!()
+        }
+        async fn delete_label(&self, _label_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn create_filter(&self, _filter: &crate::models::FilterRule) -> crate::error::Result<String> {
+            unimplemented!()
+        }
+        async fn list_filters(&self) -> crate::error::Result<Vec<ExistingFilterInfo>> {
+            unimplemented!()
+        }
+        async fn delete_filter(&self, _filter_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn update_filter(&self, _filter_id: &str, _filter: &crate::models::FilterRule) -> crate::error::Result<String> {
+            unimplemented!()
+        }
+        async fn apply_label(&self, _message_id: &str, _label_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn remove_label(&self, _message_id: &str, _label_id: &str) -> crate::error::Result<()> {
+            unimplemented!()
+        }
+        async fn batch_remove_label(&self, _message_ids: &[String], _label_id: &str) -> crate::error::Result<usize> {
+            unimplemented!()
+        }
+        async fn batch_add_label(&self, _message_ids: &[String], _label_id: &str) -> crate::error::Result<usize> {
+            unimplemented!()
+        }
+        async fn batch_modify_labels(
+            &self,
+            message_ids: &[String],
+            add_label_ids: &[String],
+            remove_label_ids: &[String],
+        ) -> crate::error::Result<usize> {
+            let count = message_ids.len();
+            self.modifications.lock().unwrap().push((
+                message_ids.to_vec(),
+                add_label_ids.to_vec(),
+                remove_label_ids.to_vec(),
+            ));
+            Ok(count)
+        }
+        async fn fetch_messages_batch(&self, _message_ids: Vec<String>) -> crate::error::Result<Vec<crate::models::MessageMetadata>> {
+            unimplemented!()
+        }
+        async fn fetch_messages_with_progress(
+            &self,
+            _message_ids: Vec<String>,
+            _on_progress: crate::client::ProgressCallback,
+        ) -> crate::error::Result<Vec<crate::models::MessageMetadata>> {
+            unimplemented!()
+        }
+        async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_apply_swaps_labels() {
+        let mut message_ids = HashMap::new();
+        message_ids.insert(
+            "cba.com.au".to_string(),
+            vec!["msg1".to_string(), "msg2".to_string(), "msg3".to_string()],
+        );
+        let modifications = Arc::new(Mutex::new(vec![]));
+
+        let client = MockApplyClient {
+            message_ids,
+            modifications: modifications.clone(),
+        };
+
+        let swaps = vec![LabelSwap {
+            from_pattern: "cba.com.au".to_string(),
+            add_label_id: "lbl_fin".to_string(),
+            remove_label_ids: vec!["lbl_rec".to_string()],
+        }];
+
+        let result = RemediationApplicator::apply(&client, &swaps).await.unwrap();
+        assert_eq!(result.messages_relabeled, 3);
+        assert_eq!(result.messages_failed, 0);
+        assert!(result.errors.is_empty());
+
+        let mods = modifications.lock().unwrap();
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].0, vec!["msg1", "msg2", "msg3"]);
+        assert_eq!(mods[0].1, vec!["lbl_fin"]);
+        assert_eq!(mods[0].2, vec!["lbl_rec"]);
+    }
+
+    #[tokio::test]
+    async fn test_apply_empty_swaps() {
+        let client = MockApplyClient {
+            message_ids: HashMap::new(),
+            modifications: Arc::new(Mutex::new(vec![])),
+        };
+
+        let result = RemediationApplicator::apply(&client, &[]).await.unwrap();
+        assert_eq!(result.messages_relabeled, 0);
+        assert_eq!(result.messages_failed, 0);
     }
 
     #[tokio::test]
