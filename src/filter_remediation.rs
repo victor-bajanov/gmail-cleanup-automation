@@ -18,6 +18,13 @@ pub struct OverlapGroup {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResolutionType {
+    /// All filters share the same label — consolidate into one broad filter.
+    Consolidate {
+        /// The filter to keep (broadest one, no subject restriction).
+        keep_filter_id: String,
+        /// IDs of filters to delete.
+        remove_filter_ids: Vec<String>,
+    },
     MechanicalFix {
         proposed_replacements: Vec<FilterRule>,
     },
@@ -26,6 +33,11 @@ pub enum ResolutionType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupDecision {
+    /// Consolidate same-label filters: keep one, delete the rest.
+    Consolidate {
+        keep_filter_id: String,
+        remove_filter_ids: Vec<String>,
+    },
     ReplaceWithExclusive {
         replacement_filters: Vec<FilterRule>,
     },
@@ -127,6 +139,29 @@ impl RemediationPlan {
                         }
                     }
                 }
+                GroupDecision::Consolidate {
+                    keep_filter_id,
+                    remove_filter_ids,
+                } => {
+                    // Validate the keeper exists
+                    if !group.filters.iter().any(|f| f.id == *keep_filter_id) {
+                        result.errors.push(format!(
+                            "Group {}: consolidate keep_filter_id '{}' not found — skipping",
+                            group.group_id, keep_filter_id
+                        ));
+                        result.skipped += 1;
+                        continue;
+                    }
+                    for fid in remove_filter_ids {
+                        match client.delete_filter(fid).await {
+                            Ok(()) => result.deleted.push(fid.clone()),
+                            Err(e) => result.errors.push(format!(
+                                "Failed to delete filter {} in group {}: {}",
+                                fid, group.group_id, e
+                            )),
+                        }
+                    }
+                }
                 GroupDecision::Rescan { .. } => {
                     // Rescan should have been resolved before execution
                     result.errors.push(format!(
@@ -149,6 +184,16 @@ impl RemediationPlan {
 
         for (group, decision) in &self.groups {
             match decision {
+                GroupDecision::Consolidate {
+                    remove_filter_ids, ..
+                } => {
+                    let del = remove_filter_ids.len();
+                    lines.push(format!(
+                        "  {} — consolidate (same label), delete {} redundant filters",
+                        group.group_id, del
+                    ));
+                    total_delete += del;
+                }
                 GroupDecision::ReplaceWithExclusive {
                     replacement_filters,
                 } => {
@@ -261,6 +306,44 @@ impl OverlapDetector {
     /// synthesize the replacement filters with -subject: exclusions.
     pub fn classify_groups(groups: &mut [OverlapGroup]) {
         for group in groups.iter_mut() {
+            // 0. Check if all filters target the same label — if so, consolidate
+            let unique_labels: std::collections::HashSet<&str> = group
+                .filters
+                .iter()
+                .flat_map(|f| f.add_label_ids.iter().map(|s| s.as_str()))
+                .collect();
+
+            if unique_labels.len() == 1 && !group.filters.is_empty() {
+                // All filters go to the same label — pick the broadest one (no subject)
+                let broadest = group
+                    .filters
+                    .iter()
+                    .find(|f| {
+                        f.subject.as_ref().map_or(true, |s| s.is_empty())
+                            && f.query
+                                .as_ref()
+                                .map_or(true, |q| {
+                                    let expr = parse_gmail_query(q);
+                                    expr.subject_clause.is_none()
+                                })
+                    })
+                    .unwrap_or(&group.filters[0]);
+
+                let keep_id = broadest.id.clone();
+                let remove_ids: Vec<String> = group
+                    .filters
+                    .iter()
+                    .filter(|f| f.id != keep_id)
+                    .map(|f| f.id.clone())
+                    .collect();
+
+                group.resolution_type = ResolutionType::Consolidate {
+                    keep_filter_id: keep_id,
+                    remove_filter_ids: remove_ids,
+                };
+                continue;
+            }
+
             // 1. Collect subject keywords from filters that have them
             let mut all_subject_keywords: Vec<String> = Vec::new();
             let mut filter_subjects: Vec<(usize, Vec<String>)> = Vec::new(); // (index, keywords)
@@ -484,6 +567,78 @@ mod tests {
         OverlapDetector::classify_groups(&mut groups);
         assert_eq!(groups.len(), 1);
         assert!(matches!(groups[0].resolution_type, ResolutionType::PickWinner));
+    }
+
+    #[test]
+    fn test_classify_consolidate_same_label() {
+        // Two filters for same domain, same label → Consolidate
+        let filters = vec![
+            make_filter("f1", Some("accounts.google.com"), Some("Security alert"), "lbl_fin"),
+            make_filter("f2", Some("accounts.google.com"), None, "lbl_fin"),
+        ];
+        let mut groups = OverlapDetector::group_filters(&filters, &label_map());
+        OverlapDetector::classify_groups(&mut groups);
+        assert_eq!(groups.len(), 1);
+        match &groups[0].resolution_type {
+            ResolutionType::Consolidate { keep_filter_id, remove_filter_ids } => {
+                // Should keep f2 (the broad one without subject) and remove f1
+                assert_eq!(keep_filter_id, "f2");
+                assert_eq!(remove_filter_ids, &vec!["f1".to_string()]);
+            }
+            other => panic!("Expected Consolidate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_classify_consolidate_all_bare_same_label() {
+        // Multiple bare filters for same domain, same label → Consolidate (keep first)
+        let filters = vec![
+            make_filter("f1", Some("cba.com.au"), None, "lbl_fin"),
+            make_filter("f2", Some("cba.com.au"), None, "lbl_fin"),
+        ];
+        let mut groups = OverlapDetector::group_filters(&filters, &label_map());
+        OverlapDetector::classify_groups(&mut groups);
+        assert_eq!(groups.len(), 1);
+        match &groups[0].resolution_type {
+            ResolutionType::Consolidate { keep_filter_id, remove_filter_ids } => {
+                assert_eq!(keep_filter_id, "f1");
+                assert_eq!(remove_filter_ids.len(), 1);
+            }
+            other => panic!("Expected Consolidate, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_consolidate() {
+        let group = OverlapGroup {
+            group_id: "accounts.google.com".to_string(),
+            from_pattern: "accounts.google.com".to_string(),
+            filters: vec![
+                make_filter("f1", Some("accounts.google.com"), Some("Security alert"), "lbl_fin"),
+                make_filter("f2", Some("accounts.google.com"), None, "lbl_fin"),
+            ],
+            label_names: vec!["Financial".to_string()],
+            resolution_type: ResolutionType::Consolidate {
+                keep_filter_id: "f2".to_string(),
+                remove_filter_ids: vec!["f1".to_string()],
+            },
+        };
+
+        let mut plan = RemediationPlan::new();
+        plan.add(
+            group,
+            GroupDecision::Consolidate {
+                keep_filter_id: "f2".to_string(),
+                remove_filter_ids: vec!["f1".to_string()],
+            },
+        );
+
+        let client = MockExecuteClient::new();
+        let result = plan.execute(&client).await.unwrap();
+        assert_eq!(result.deleted, vec!["f1".to_string()]);
+        assert_eq!(result.created.len(), 0);
+        assert_eq!(result.skipped, 0);
+        assert!(result.errors.is_empty());
     }
 
     #[test]

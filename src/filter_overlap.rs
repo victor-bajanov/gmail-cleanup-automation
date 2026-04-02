@@ -1163,7 +1163,7 @@ mod tests {
         assert!(!result.conflicts.is_empty());
 
         // Test filtering methods
-        let errors = result.conflicts_by_severity(ConflictSeverity::Error);
+        let _errors = result.conflicts_by_severity(ConflictSeverity::Error);
         let label_conflicts = result.conflicts_by_type(ConflictType::LabelConflict);
 
         assert!(!label_conflicts.is_empty());

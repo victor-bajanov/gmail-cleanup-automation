@@ -632,13 +632,58 @@ async fn run() -> Result<()> {
 
             let mut plan = gmail_automation::RemediationPlan::new();
 
+            use crossterm::{
+                event::{self, Event, KeyCode, KeyEventKind},
+                terminal,
+            };
+
+            // Helper: read a single keypress
+            fn read_key() -> Option<char> {
+                terminal::enable_raw_mode().ok()?;
+                let result = loop {
+                    if let Ok(Event::Key(key)) = event::read() {
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        if let KeyCode::Char(c) = key.code {
+                            break Some(c);
+                        }
+                    }
+                };
+                terminal::disable_raw_mode().ok();
+                result
+            }
+
             for group in groups {
-                println!("─── {} ───", group.group_id);
+                println!("\n─── {} ───", group.group_id);
                 println!("  From: {}", group.from_pattern);
                 println!("  Labels: {}", group.label_names.join(", "));
                 println!("  Filters: {}", group.filters.len());
 
                 let decision = match &group.resolution_type {
+                    gmail_automation::ResolutionType::Consolidate {
+                        keep_filter_id,
+                        remove_filter_ids,
+                    } => {
+                        println!(
+                            "  Type: Same label — consolidate (delete {} redundant)\n",
+                            remove_filter_ids.len()
+                        );
+                        println!("  [a]ccept  [s]kip");
+                        match read_key() {
+                            Some('a') => {
+                                println!("  → accepted");
+                                gmail_automation::GroupDecision::Consolidate {
+                                    keep_filter_id: keep_filter_id.clone(),
+                                    remove_filter_ids: remove_filter_ids.clone(),
+                                }
+                            }
+                            _ => {
+                                println!("  → skipped");
+                                gmail_automation::GroupDecision::Skip
+                            }
+                        }
+                    }
                     gmail_automation::ResolutionType::MechanicalFix {
                         proposed_replacements,
                     } => {
@@ -655,62 +700,63 @@ async fn run() -> Result<()> {
                             println!("    → {} → {}", query, label);
                         }
                         println!();
-
-                        let choice = inquire::Select::new(
-                            "Action?",
-                            vec!["Accept fix", "Skip"],
-                        )
-                        .prompt()
-                        .unwrap_or("Skip");
-
-                        if choice == "Accept fix" {
-                            gmail_automation::GroupDecision::ReplaceWithExclusive {
-                                replacement_filters: proposed_replacements.clone(),
+                        println!("  [a]ccept fix  [s]kip");
+                        match read_key() {
+                            Some('a') => {
+                                println!("  → accepted");
+                                gmail_automation::GroupDecision::ReplaceWithExclusive {
+                                    replacement_filters: proposed_replacements.clone(),
+                                }
                             }
-                        } else {
-                            gmail_automation::GroupDecision::Skip
+                            _ => {
+                                println!("  → skipped");
+                                gmail_automation::GroupDecision::Skip
+                            }
                         }
                     }
                     gmail_automation::ResolutionType::PickWinner => {
                         println!(
-                            "  Type: Identical filters — pick which label to keep\n"
+                            "  Type: Different labels — pick which to keep\n"
                         );
 
-                        let mut options: Vec<String> = group
-                            .filters
-                            .iter()
-                            .map(|f| {
-                                let label = f
-                                    .add_label_ids
-                                    .first()
-                                    .and_then(|id| label_map.get(id))
-                                    .map(|s| s.as_str())
-                                    .unwrap_or("(unknown)");
-                                format!("Keep: {} (filter {})", label, f.id)
-                            })
-                            .collect();
-                        options.push("Rescan".to_string());
-                        options.push("Skip".to_string());
+                        for (i, f) in group.filters.iter().enumerate() {
+                            let label = f
+                                .add_label_ids
+                                .first()
+                                .and_then(|id| label_map.get(id))
+                                .map(|s| s.as_str())
+                                .unwrap_or("(unknown)");
+                            println!("    [{}] {} (filter {})", i + 1, label, f.id);
+                        }
+                        println!("    [r]escan  [s]kip");
 
-                        let choice = inquire::Select::new("Action?", options)
-                            .prompt()
-                            .unwrap_or_else(|_| "Skip".to_string());
-
-                        if choice == "Skip" {
-                            gmail_automation::GroupDecision::Skip
-                        } else if choice == "Rescan" {
-                            gmail_automation::GroupDecision::Rescan {
-                                from_pattern: group.from_pattern.clone(),
+                        match read_key() {
+                            Some('s') => {
+                                println!("  → skipped");
+                                gmail_automation::GroupDecision::Skip
                             }
-                        } else {
-                            let keep_id = group
-                                .filters
-                                .iter()
-                                .find(|f| choice.contains(&f.id))
-                                .map(|f| f.id.clone())
-                                .unwrap_or_default();
-                            gmail_automation::GroupDecision::KeepOne {
-                                keep_filter_id: keep_id,
+                            Some('r') => {
+                                println!("  → rescan");
+                                gmail_automation::GroupDecision::Rescan {
+                                    from_pattern: group.from_pattern.clone(),
+                                }
+                            }
+                            Some(c) if c.is_ascii_digit() => {
+                                let idx = (c as u8 - b'0') as usize;
+                                if idx >= 1 && idx <= group.filters.len() {
+                                    let keep_id = group.filters[idx - 1].id.clone();
+                                    println!("  → keep {}", keep_id);
+                                    gmail_automation::GroupDecision::KeepOne {
+                                        keep_filter_id: keep_id,
+                                    }
+                                } else {
+                                    println!("  → invalid, skipped");
+                                    gmail_automation::GroupDecision::Skip
+                                }
+                            }
+                            _ => {
+                                println!("  → skipped");
+                                gmail_automation::GroupDecision::Skip
                             }
                         }
                     }
@@ -726,10 +772,8 @@ async fn run() -> Result<()> {
                 return Ok(());
             }
 
-            let confirm = inquire::Confirm::new("Execute this plan?")
-                .with_default(false)
-                .prompt()
-                .unwrap_or(false);
+            println!("Execute this plan? [y]es [n]o");
+            let confirm = matches!(read_key(), Some('y'));
 
             if !confirm {
                 println!("Aborted.");
