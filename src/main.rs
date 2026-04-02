@@ -783,10 +783,10 @@ async fn run() -> Result<()> {
                 return Ok(());
             }
 
-            println!("\nExecuting...");
+            println!("\nExecuting (up to 10 groups concurrently)...");
             let total = plan.groups.len();
-            let result = plan.execute_with_progress(&client, |i, group_id| {
-                print!("\r  [{}/{}] {:<40}", i + 1, total, group_id);
+            let result = plan.execute_with_progress(&client, |done, group_id| {
+                print!("\r  [{}/{}] {:<40}", done, total, group_id);
                 use std::io::Write;
                 std::io::stdout().flush().ok();
             }).await?;

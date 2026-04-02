@@ -72,12 +72,58 @@ impl RemediationPlan {
         self.execute_with_progress(client, |_, _| {}).await
     }
 
-    /// Execute with a per-group progress callback: fn(index, group_id).
+    /// Execute with a per-group progress callback: fn(completed_count, group_id).
+    /// Groups run concurrently (up to 10 at a time); operations within a group
+    /// are sequential to preserve delete-before-create ordering.
     pub async fn execute_with_progress(
         &self,
         client: &dyn GmailClient,
         on_progress: impl Fn(usize, &str),
     ) -> crate::error::Result<RemediationResult> {
+        use futures::stream::{self, StreamExt};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let completed = AtomicUsize::new(0);
+        const CONCURRENCY: usize = 10;
+
+        let group_results: Vec<RemediationResult> = stream::iter(self.groups.iter())
+            .map(|(group, decision)| {
+                let completed = &completed;
+                let on_progress = &on_progress;
+                async move {
+                    let r = Self::execute_group(client, group, decision).await;
+                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    on_progress(done, &group.group_id);
+                    r
+                }
+            })
+            .buffer_unordered(CONCURRENCY)
+            .collect()
+            .await;
+
+        // Merge all group results
+        let mut result = RemediationResult {
+            deleted: vec![],
+            created: vec![],
+            skipped: 0,
+            errors: vec![],
+        };
+        for gr in group_results {
+            result.deleted.extend(gr.deleted);
+            result.created.extend(gr.created);
+            result.skipped += gr.skipped;
+            result.errors.extend(gr.errors);
+        }
+
+        Ok(result)
+    }
+
+    /// Execute a single group's decision. Operations within a group are sequential.
+    async fn execute_group(
+        client: &dyn GmailClient,
+        group: &OverlapGroup,
+        decision: &GroupDecision,
+    ) -> RemediationResult {
         let mut result = RemediationResult {
             deleted: vec![],
             created: vec![],
@@ -85,105 +131,96 @@ impl RemediationPlan {
             errors: vec![],
         };
 
-        for (i, (group, decision)) in self.groups.iter().enumerate() {
-            on_progress(i, &group.group_id);
-            match decision {
-                GroupDecision::Skip => {
+        match decision {
+            GroupDecision::Skip => {
+                result.skipped += 1;
+            }
+            GroupDecision::KeepOne { keep_filter_id } => {
+                if !group.filters.iter().any(|f| f.id == *keep_filter_id) {
+                    result.errors.push(format!(
+                        "Group {}: keep_filter_id '{}' not found in group — skipping to avoid data loss",
+                        group.group_id, keep_filter_id
+                    ));
                     result.skipped += 1;
+                    return result;
                 }
-                GroupDecision::KeepOne { keep_filter_id } => {
-                    // Validate the keeper exists in the group
-                    if !group.filters.iter().any(|f| f.id == *keep_filter_id) {
-                        result.errors.push(format!(
-                            "Group {}: keep_filter_id '{}' not found in group — skipping to avoid data loss",
-                            group.group_id, keep_filter_id
-                        ));
-                        result.skipped += 1;
-                        continue;
-                    }
-                    // Delete all except the keeper
-                    for filter in &group.filters {
-                        if filter.id != *keep_filter_id {
-                            match client.delete_filter(&filter.id).await {
-                                Ok(()) => result.deleted.push(filter.id.clone()),
-                                Err(e) => result.errors.push(format!(
-                                    "Failed to delete filter {} in group {}: {}",
-                                    filter.id, group.group_id, e
-                                )),
-                            }
-                        }
-                    }
-                }
-                GroupDecision::ReplaceWithExclusive {
-                    replacement_filters,
-                } => {
-                    // Delete all existing filters in the group first
-                    let mut delete_failed = false;
-                    for filter in &group.filters {
+                for filter in &group.filters {
+                    if filter.id != *keep_filter_id {
                         match client.delete_filter(&filter.id).await {
                             Ok(()) => result.deleted.push(filter.id.clone()),
-                            Err(e) => {
-                                result.errors.push(format!(
-                                    "Failed to delete filter {} in group {}: {}",
-                                    filter.id, group.group_id, e
-                                ));
-                                delete_failed = true;
-                            }
-                        }
-                    }
-                    // Only create replacements if all deletes succeeded
-                    if delete_failed {
-                        result.errors.push(format!(
-                            "Skipping replacement creation for group {} due to delete failures",
-                            group.group_id
-                        ));
-                    } else {
-                        for replacement in replacement_filters {
-                            match client.create_filter(replacement).await {
-                                Ok(id) => result.created.push(id),
-                                Err(e) => result.errors.push(format!(
-                                    "Failed to create replacement filter in group {}: {}",
-                                    group.group_id, e
-                                )),
-                            }
-                        }
-                    }
-                }
-                GroupDecision::Consolidate {
-                    keep_filter_id,
-                    remove_filter_ids,
-                } => {
-                    // Validate the keeper exists
-                    if !group.filters.iter().any(|f| f.id == *keep_filter_id) {
-                        result.errors.push(format!(
-                            "Group {}: consolidate keep_filter_id '{}' not found — skipping",
-                            group.group_id, keep_filter_id
-                        ));
-                        result.skipped += 1;
-                        continue;
-                    }
-                    for fid in remove_filter_ids {
-                        match client.delete_filter(fid).await {
-                            Ok(()) => result.deleted.push(fid.clone()),
                             Err(e) => result.errors.push(format!(
                                 "Failed to delete filter {} in group {}: {}",
-                                fid, group.group_id, e
+                                filter.id, group.group_id, e
                             )),
                         }
                     }
                 }
-                GroupDecision::Rescan { .. } => {
-                    // Rescan should have been resolved before execution
+            }
+            GroupDecision::ReplaceWithExclusive {
+                replacement_filters,
+            } => {
+                let mut delete_failed = false;
+                for filter in &group.filters {
+                    match client.delete_filter(&filter.id).await {
+                        Ok(()) => result.deleted.push(filter.id.clone()),
+                        Err(e) => {
+                            result.errors.push(format!(
+                                "Failed to delete filter {} in group {}: {}",
+                                filter.id, group.group_id, e
+                            ));
+                            delete_failed = true;
+                        }
+                    }
+                }
+                if delete_failed {
                     result.errors.push(format!(
-                        "Group {} has unresolved Rescan decision — skipping",
+                        "Skipping replacement creation for group {} due to delete failures",
                         group.group_id
                     ));
-                    result.skipped += 1;
+                } else {
+                    for replacement in replacement_filters {
+                        match client.create_filter(replacement).await {
+                            Ok(id) => result.created.push(id),
+                            Err(e) => result.errors.push(format!(
+                                "Failed to create replacement filter in group {}: {}",
+                                group.group_id, e
+                            )),
+                        }
+                    }
                 }
+            }
+            GroupDecision::Consolidate {
+                keep_filter_id,
+                remove_filter_ids,
+            } => {
+                if !group.filters.iter().any(|f| f.id == *keep_filter_id) {
+                    result.errors.push(format!(
+                        "Group {}: consolidate keep_filter_id '{}' not found — skipping",
+                        group.group_id, keep_filter_id
+                    ));
+                    result.skipped += 1;
+                    return result;
+                }
+                for fid in remove_filter_ids {
+                    match client.delete_filter(fid).await {
+                        Ok(()) => result.deleted.push(fid.clone()),
+                        Err(e) => result.errors.push(format!(
+                            "Failed to delete filter {} in group {}: {}",
+                            fid, group.group_id, e
+                        )),
+                    }
+                }
+            }
+            GroupDecision::Rescan { .. } => {
+                result.errors.push(format!(
+                    "Group {} has unresolved Rescan decision — skipping",
+                    group.group_id
+                ));
+                result.skipped += 1;
             }
         }
 
-        Ok(result)
+        result
     }
 
     pub fn summary(&self) -> String {
