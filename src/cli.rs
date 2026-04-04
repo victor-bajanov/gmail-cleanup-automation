@@ -140,6 +140,9 @@ pub enum Commands {
         #[arg(long)]
         no_apply: bool,
     },
+
+    /// Clean up emails with too many AutoManaged labels
+    LabelCleanup,
 }
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};

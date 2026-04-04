@@ -853,6 +853,10 @@ async fn run() -> Result<()> {
 
             Ok(())
         }
+        Commands::LabelCleanup => {
+            println!("Label cleanup not yet implemented");
+            Ok(())
+        }
     }
 }
 

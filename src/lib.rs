@@ -72,6 +72,7 @@ pub mod filter_manager;
 pub mod filter_overlap;
 pub mod filter_remediation;
 pub mod interactive;
+pub mod label_cleanup;
 pub mod label_manager;
 pub mod models;
 pub mod rate_limiter;
