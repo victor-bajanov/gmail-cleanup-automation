@@ -452,6 +452,34 @@ impl OverlapDetector {
         None
     }
 
+    /// Extract a FilterRule-compatible from_pattern from an ExistingFilterInfo.
+    /// Checks `filter.from` first, falls back to parsing `filter.query`.
+    /// Returns (from_pattern, is_specific_sender).
+    pub fn extract_from_pattern(filter: &ExistingFilterInfo) -> (Option<String>, bool) {
+        // Try filter.from first (direct Gmail API field)
+        if let Some(ref from) = filter.from {
+            if !from.trim().is_empty() {
+                let is_specific = from.contains('@');
+                return (Some(from.clone()), is_specific);
+            }
+        }
+        // Fall back to parsing the query field
+        if let Some(ref query) = filter.query {
+            let expr = parse_gmail_query(query);
+            if let Some(ref from_clause) = expr.from_clause {
+                return match from_clause {
+                    FromClause::Domain(dp) => {
+                        (Some(format!("*@{}", dp.domain)), false)
+                    }
+                    FromClause::SpecificSender(ep) => {
+                        (Some(ep.full_address()), true)
+                    }
+                };
+            }
+        }
+        (None, false)
+    }
+
     /// Classify each group as Consolidate, MechanicalFix, or PickWinner.
     /// Consolidate: all filters share the same label — keep broadest, delete rest.
     /// MechanicalFix: synthesize replacement filters with -subject: exclusions.
@@ -545,11 +573,8 @@ impl OverlapDetector {
                     vec![]
                 };
 
-                let from_pattern = filter.from.clone();
-                let is_specific_sender = from_pattern
-                    .as_ref()
-                    .map(|f| f.contains('@'))
-                    .unwrap_or(false);
+                let (from_pattern, is_specific_sender) =
+                    Self::extract_from_pattern(filter);
 
                 let target_label_id = filter
                     .add_label_ids
@@ -635,6 +660,24 @@ mod tests {
         ExistingFilterInfo {
             id: id.to_string(),
             query: None,
+            from: from.map(|s| s.to_string()),
+            to: None,
+            subject: subject.map(|s| s.to_string()),
+            add_label_ids: vec![label.to_string()],
+            remove_label_ids: vec![],
+        }
+    }
+
+    fn make_filter_with_query(
+        id: &str,
+        from: Option<&str>,
+        query: Option<&str>,
+        subject: Option<&str>,
+        label: &str,
+    ) -> ExistingFilterInfo {
+        ExistingFilterInfo {
+            id: id.to_string(),
+            query: query.map(|s| s.to_string()),
             from: from.map(|s| s.to_string()),
             to: None,
             subject: subject.map(|s| s.to_string()),
@@ -813,6 +856,102 @@ mod tests {
             assert_eq!(proposed_replacements.len(), 3);
         } else {
             panic!("Expected MechanicalFix");
+        }
+    }
+
+    #[test]
+    fn test_extract_from_pattern_from_field() {
+        let filter = make_filter("f1", Some("noreply@cba.com.au"), None, "lbl_fin");
+        let (from_pattern, is_specific) = OverlapDetector::extract_from_pattern(&filter);
+        assert_eq!(from_pattern, Some("noreply@cba.com.au".to_string()));
+        assert!(is_specific);
+    }
+
+    #[test]
+    fn test_extract_from_pattern_domain_field() {
+        let filter = make_filter("f1", Some("cba.com.au"), None, "lbl_fin");
+        let (from_pattern, is_specific) = OverlapDetector::extract_from_pattern(&filter);
+        assert_eq!(from_pattern, Some("cba.com.au".to_string()));
+        assert!(!is_specific);
+    }
+
+    #[test]
+    fn test_extract_from_pattern_from_query_field() {
+        let filter = make_filter_with_query(
+            "f1",
+            None,
+            Some("from:(*@cba.com.au) subject:(statement)"),
+            None,
+            "lbl_fin",
+        );
+        let (from_pattern, is_specific) = OverlapDetector::extract_from_pattern(&filter);
+        assert!(from_pattern.is_some(), "Should extract from_pattern from query field");
+        let fp = from_pattern.unwrap();
+        assert!(fp.contains("cba.com.au"), "from_pattern should contain domain: {}", fp);
+        assert!(!is_specific);
+    }
+
+    #[test]
+    fn test_extract_from_pattern_specific_sender_in_query() {
+        let filter = make_filter_with_query(
+            "f1",
+            None,
+            Some("from:(noreply@cba.com.au)"),
+            None,
+            "lbl_fin",
+        );
+        let (from_pattern, is_specific) = OverlapDetector::extract_from_pattern(&filter);
+        assert!(from_pattern.is_some());
+        let fp = from_pattern.unwrap();
+        assert!(fp.contains("noreply@cba.com.au"), "Should extract specific sender: {}", fp);
+        assert!(is_specific);
+    }
+
+    #[test]
+    fn test_extract_from_pattern_none_when_no_from() {
+        let filter = make_filter_with_query("f1", None, Some("subject:(hello)"), None, "lbl_fin");
+        let (from_pattern, _is_specific) = OverlapDetector::extract_from_pattern(&filter);
+        assert!(from_pattern.is_none());
+    }
+
+    #[test]
+    fn test_classify_mechanical_fix_from_in_query_field() {
+        let filters = vec![
+            make_filter_with_query(
+                "f1",
+                None,
+                Some("from:(*@cba.com.au) subject:(statement)"),
+                Some("statement"),
+                "lbl_fin",
+            ),
+            make_filter_with_query(
+                "f2",
+                None,
+                Some("from:(*@cba.com.au)"),
+                None,
+                "lbl_oth",
+            ),
+        ];
+        let mut groups = OverlapDetector::group_filters(&filters, &label_map());
+        OverlapDetector::classify_groups(&mut groups);
+        assert_eq!(groups.len(), 1);
+
+        if let ResolutionType::MechanicalFix { ref proposed_replacements } = groups[0].resolution_type {
+            for replacement in proposed_replacements {
+                assert!(
+                    replacement.from_pattern.is_some(),
+                    "Replacement should have from_pattern, got None. name={}",
+                    replacement.name,
+                );
+                let fp = replacement.from_pattern.as_ref().unwrap();
+                assert!(
+                    fp.contains("cba.com.au"),
+                    "from_pattern should contain domain, got: {}",
+                    fp,
+                );
+            }
+        } else {
+            panic!("Expected MechanicalFix, got {:?}", groups[0].resolution_type);
         }
     }
 
