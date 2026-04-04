@@ -1646,4 +1646,362 @@ mod tests {
             groups[0].resolution_type,
         );
     }
+
+    mod property_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        #[derive(Debug, Clone)]
+        enum FromLocation {
+            FromField,
+            QueryField,
+            Both,
+        }
+
+        fn from_location_strategy() -> impl Strategy<Value = FromLocation> {
+            prop_oneof![
+                Just(FromLocation::FromField),
+                Just(FromLocation::QueryField),
+                Just(FromLocation::Both),
+            ]
+        }
+
+        fn from_value_strategy() -> impl Strategy<Value = String> {
+            prop_oneof![
+                Just("noreply@cba.com.au".to_string()),
+                Just("alerts@cba.com.au".to_string()),
+                Just("cba.com.au".to_string()),
+                Just("*@cba.com.au".to_string()),
+            ]
+        }
+
+        fn subject_strategy() -> impl Strategy<Value = Option<String>> {
+            prop_oneof![
+                Just(None),
+                Just(Some("statement".to_string())),
+                Just(Some("receipt".to_string())),
+                Just(Some("payment confirmation".to_string())),
+            ]
+        }
+
+        fn label_strategy() -> impl Strategy<Value = String> {
+            prop_oneof![
+                Just("lbl_fin".to_string()),
+                Just("lbl_rec".to_string()),
+                Just("lbl_per".to_string()),
+                Just("lbl_oth".to_string()),
+            ]
+        }
+
+        fn build_test_filter(
+            id: &str,
+            from_value: &str,
+            from_loc: &FromLocation,
+            subject: &Option<String>,
+            label: &str,
+            archives: bool,
+        ) -> ExistingFilterInfo {
+            let _domain = if from_value.contains('@') {
+                from_value.split('@').next_back().unwrap_or(from_value).trim_start_matches('*')
+            } else {
+                from_value
+            };
+            let from_query_part = if from_value.contains('@') {
+                format!("from:({})", from_value)
+            } else {
+                format!("from:(*@{})", from_value)
+            };
+            let subject_query_part = subject
+                .as_ref()
+                .map(|s| format!(" subject:({})", s));
+            let full_query = format!(
+                "{}{}",
+                from_query_part,
+                subject_query_part.as_deref().unwrap_or("")
+            );
+
+            let (from_field, query_field) = match from_loc {
+                FromLocation::FromField => (Some(from_value.to_string()), None),
+                FromLocation::QueryField => (None, Some(full_query)),
+                FromLocation::Both => (Some(from_value.to_string()), Some(full_query)),
+            };
+
+            ExistingFilterInfo {
+                id: id.to_string(),
+                from: from_field,
+                query: query_field,
+                to: None,
+                subject: subject.clone(),
+                add_label_ids: vec![label.to_string()],
+                remove_label_ids: if archives {
+                    vec!["INBOX".to_string()]
+                } else {
+                    vec![]
+                },
+            }
+        }
+
+        /// Strategy for a group of 2-4 filters sharing a domain
+        fn filter_group_strategy() -> impl Strategy<Value = Vec<ExistingFilterInfo>> {
+            (
+                from_value_strategy(),
+                proptest::collection::vec(
+                    (
+                        from_location_strategy(),
+                        subject_strategy(),
+                        label_strategy(),
+                        proptest::bool::ANY,
+                    ),
+                    2..=4,
+                ),
+            )
+                .prop_map(|(from_val, configs)| {
+                    configs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (loc, subj, lbl, arc))| {
+                            build_test_filter(
+                                &format!("f{}", i),
+                                &from_val,
+                                loc,
+                                subj,
+                                lbl,
+                                *arc,
+                            )
+                        })
+                        .collect()
+                })
+        }
+
+        fn test_label_map() -> HashMap<String, String> {
+            [
+                ("lbl_fin", "Financial"),
+                ("lbl_rec", "Receipts"),
+                ("lbl_per", "Personal"),
+                ("lbl_oth", "Other"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+        }
+
+        proptest! {
+            // P1: from_pattern never lost on MechanicalFix replacements
+            #[test]
+            fn prop_from_pattern_never_lost(filters in filter_group_strategy()) {
+                let label_map = test_label_map();
+                let mut groups = OverlapDetector::group_filters(&filters, &label_map);
+                OverlapDetector::classify_groups(&mut groups);
+
+                for group in &groups {
+                    if let ResolutionType::MechanicalFix { ref proposed_replacements } = group.resolution_type {
+                        for r in proposed_replacements {
+                            prop_assert!(
+                                r.from_pattern.is_some(),
+                                "Replacement lost from_pattern in group '{}', filter name '{}'",
+                                group.group_id,
+                                r.name,
+                            );
+                        }
+                    }
+                }
+            }
+
+            // P2: apply query always includes from: clause
+            #[test]
+            fn prop_apply_query_includes_from(filters in filter_group_strategy()) {
+                let label_map = test_label_map();
+                let mut groups = OverlapDetector::group_filters(&filters, &label_map);
+                OverlapDetector::classify_groups(&mut groups);
+
+                let mut plan = RemediationPlan::new();
+                for group in groups {
+                    if matches!(group.resolution_type, ResolutionType::PickWinner) {
+                        if let Some(winner) = group.filters.first() {
+                            plan.add(
+                                group.clone(),
+                                GroupDecision::KeepOne {
+                                    keep_filter_id: winner.id.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+
+                let swaps = RemediationApplicator::collect_swaps(&plan);
+                for swap in &swaps {
+                    prop_assert!(
+                        swap.query.contains("from:"),
+                        "Swap query missing from: clause: '{}'",
+                        swap.query,
+                    );
+                }
+            }
+
+            // P5: MechanicalFix when subjects differ across labels
+            #[test]
+            fn prop_mechanical_fix_when_subjects_differ(filters in filter_group_strategy()) {
+                let label_map = test_label_map();
+                let mut groups = OverlapDetector::group_filters(&filters, &label_map);
+                OverlapDetector::classify_groups(&mut groups);
+
+                for group in &groups {
+                    let has_subject_criteria = group.filters.iter().any(|f| {
+                        let has_subject_field = f.subject
+                            .as_ref()
+                            .map_or(false, |s| !s.is_empty());
+                        let has_subject_in_query = f.query
+                            .as_ref()
+                            .map_or(false, |q| q.contains("subject:"));
+                        has_subject_field || has_subject_in_query
+                    });
+
+                    let unique_labels: std::collections::HashSet<&str> = group
+                        .filters
+                        .iter()
+                        .flat_map(|f| f.add_label_ids.iter().map(|s| s.as_str()))
+                        .collect();
+
+                    if has_subject_criteria && unique_labels.len() > 1 {
+                        prop_assert!(
+                            matches!(group.resolution_type, ResolutionType::MechanicalFix { .. }),
+                            "Group '{}' has subject criteria + different labels but got {:?}",
+                            group.group_id,
+                            group.resolution_type,
+                        );
+                    }
+                }
+            }
+
+            // P6: replacement from_pattern domain matches group domain
+            #[test]
+            fn prop_replacement_from_matches_group(filters in filter_group_strategy()) {
+                let label_map = test_label_map();
+                let mut groups = OverlapDetector::group_filters(&filters, &label_map);
+                OverlapDetector::classify_groups(&mut groups);
+
+                for group in &groups {
+                    if let ResolutionType::MechanicalFix { ref proposed_replacements } = group.resolution_type {
+                        for r in proposed_replacements {
+                            if let Some(ref fp) = r.from_pattern {
+                                let fp_lower = fp.to_lowercase();
+                                let group_domain = group.from_pattern.to_lowercase();
+                                prop_assert!(
+                                    fp_lower.contains(&group_domain),
+                                    "Replacement from_pattern '{}' doesn't match group domain '{}'",
+                                    fp,
+                                    group.from_pattern,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // P7: replacement mutual exclusivity
+            #[test]
+            fn prop_replacement_mutual_exclusivity(filters in filter_group_strategy()) {
+                let label_map = test_label_map();
+                let mut groups = OverlapDetector::group_filters(&filters, &label_map);
+                OverlapDetector::classify_groups(&mut groups);
+
+                for group in &groups {
+                    if let ResolutionType::MechanicalFix { ref proposed_replacements } = group.resolution_type {
+                        for (i, a) in proposed_replacements.iter().enumerate() {
+                            for b in &proposed_replacements[i + 1..] {
+                                let a_has_subject = !a.subject_keywords.is_empty();
+                                let b_has_subject = !b.subject_keywords.is_empty();
+
+                                if a_has_subject && !b_has_subject {
+                                    for kw in &a.subject_keywords {
+                                        prop_assert!(
+                                            b.excluded_subject_patterns.contains(kw),
+                                            "Remainder missing exclusion for '{}' in group '{}'",
+                                            kw,
+                                            group.group_id,
+                                        );
+                                    }
+                                } else if !a_has_subject && b_has_subject {
+                                    for kw in &b.subject_keywords {
+                                        prop_assert!(
+                                            a.excluded_subject_patterns.contains(kw),
+                                            "Remainder missing exclusion for '{}' in group '{}'",
+                                            kw,
+                                            group.group_id,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // P8: PickWinner only when truly no subjects
+            #[test]
+            fn prop_pick_winner_only_when_no_subjects(filters in filter_group_strategy()) {
+                let label_map = test_label_map();
+                let mut groups = OverlapDetector::group_filters(&filters, &label_map);
+                OverlapDetector::classify_groups(&mut groups);
+
+                for group in &groups {
+                    if matches!(group.resolution_type, ResolutionType::PickWinner) {
+                        for f in &group.filters {
+                            prop_assert!(
+                                f.subject.as_ref().map_or(true, |s| s.is_empty()),
+                                "PickWinner group '{}' has filter with subject field: {:?}",
+                                group.group_id,
+                                f.subject,
+                            );
+                            if let Some(ref q) = f.query {
+                                prop_assert!(
+                                    !q.contains("subject:"),
+                                    "PickWinner group '{}' has filter with subject in query: {}",
+                                    group.group_id,
+                                    q,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // P9: archive isolation — swaps never touch INBOX
+            #[test]
+            fn prop_archive_isolation(filters in filter_group_strategy()) {
+                let label_map = test_label_map();
+                let mut groups = OverlapDetector::group_filters(&filters, &label_map);
+                OverlapDetector::classify_groups(&mut groups);
+
+                let mut plan = RemediationPlan::new();
+                for group in groups {
+                    if matches!(group.resolution_type, ResolutionType::PickWinner) {
+                        if let Some(winner) = group.filters.first() {
+                            plan.add(
+                                group.clone(),
+                                GroupDecision::KeepOne {
+                                    keep_filter_id: winner.id.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+
+                let swaps = RemediationApplicator::collect_swaps(&plan);
+                for swap in &swaps {
+                    prop_assert!(
+                        !swap.remove_label_ids.contains(&"INBOX".to_string()),
+                        "Swap removes INBOX (archive leak): query='{}'",
+                        swap.query,
+                    );
+                    prop_assert_ne!(
+                        &swap.add_label_id,
+                        "INBOX",
+                        "Swap adds INBOX: query='{}'",
+                        swap.query,
+                    );
+                }
+            }
+        }
+    }
 }
