@@ -812,8 +812,7 @@ async fn run() -> Result<()> {
             } else {
                 println!("\nLabel swaps for existing emails:");
                 for swap in &swaps {
-                    let query = format!("from:{}", swap.from_pattern);
-                    let count = client.list_message_ids(&query).await.unwrap_or_default().len();
+                    let count = client.list_message_ids(&swap.query).await.unwrap_or_default().len();
                     let remove_names: Vec<&str> = swap.remove_label_ids.iter()
                         .map(|id| label_map.get(id).map(|s| s.as_str()).unwrap_or(id))
                         .collect();
@@ -822,7 +821,7 @@ async fn run() -> Result<()> {
                         .unwrap_or(&swap.add_label_id);
                     println!(
                         "  {} — {} → {} (~{} emails)",
-                        swap.from_pattern,
+                        swap.query,
                         remove_names.join(", "),
                         add_name,
                         count
