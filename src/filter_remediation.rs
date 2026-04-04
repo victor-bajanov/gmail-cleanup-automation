@@ -298,7 +298,8 @@ pub struct RemediationResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabelSwap {
-    pub from_pattern: String,
+    /// Full Gmail search query scoped to the loser filter's criteria
+    pub query: String,
     pub add_label_id: String,
     pub remove_label_ids: Vec<String>,
 }
@@ -320,13 +321,12 @@ impl RemediationApplicator {
         let mut result = ApplyResult::default();
 
         for swap in swaps {
-            let query = format!("from:{}", swap.from_pattern);
-            let message_ids = match client.list_message_ids(&query).await {
+            let message_ids = match client.list_message_ids(&swap.query).await {
                 Ok(ids) => ids,
                 Err(e) => {
                     result.errors.push(format!(
-                        "Failed to query messages for {}: {}",
-                        swap.from_pattern, e
+                        "Failed to query messages for '{}': {}",
+                        swap.query, e
                     ));
                     continue;
                 }
@@ -348,8 +348,8 @@ impl RemediationApplicator {
                 Err(e) => {
                     result.messages_failed += message_ids.len();
                     result.errors.push(format!(
-                        "Failed to swap labels for {} ({} messages): {}",
-                        swap.from_pattern,
+                        "Failed to swap labels for '{}' ({} messages): {}",
+                        swap.query,
                         message_ids.len(),
                         e
                     ));
@@ -375,20 +375,27 @@ impl RemediationApplicator {
                     continue;
                 };
 
-                let loser_labels: Vec<String> = group
-                    .filters
-                    .iter()
-                    .filter(|f| f.id != *keep_filter_id)
-                    .flat_map(|f| f.add_label_ids.iter().cloned())
-                    .filter(|l| *l != winner)
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
+                // Produce one swap per loser filter, scoped to that filter's full query
+                for loser in group.filters.iter().filter(|f| f.id != *keep_filter_id) {
+                    let loser_labels: Vec<String> = loser
+                        .add_label_ids
+                        .iter()
+                        .filter(|l| **l != winner)
+                        .cloned()
+                        .collect();
 
-                if !loser_labels.is_empty() {
+                    if loser_labels.is_empty() {
+                        continue;
+                    }
+
+                    let query = OverlapDetector::reconstruct_filter_query(loser);
+                    if query.is_empty() {
+                        continue;
+                    }
+
                     swaps.push(LabelSwap {
-                        from_pattern: group.from_pattern.clone(),
-                        add_label_id: winner,
+                        query,
+                        add_label_id: winner.clone(),
                         remove_label_ids: loser_labels,
                     });
                 }
@@ -1256,7 +1263,7 @@ mod tests {
 
         let swaps = RemediationApplicator::collect_swaps(&plan);
         assert_eq!(swaps.len(), 1);
-        assert_eq!(swaps[0].from_pattern, "cba.com.au");
+        assert!(swaps[0].query.contains("cba.com.au"), "query={}", swaps[0].query);
         assert_eq!(swaps[0].add_label_id, "lbl_fin");
         assert_eq!(swaps[0].remove_label_ids, vec!["lbl_rec".to_string()]);
     }
@@ -1407,7 +1414,7 @@ mod tests {
         };
 
         let swaps = vec![LabelSwap {
-            from_pattern: "cba.com.au".to_string(),
+            query: "from:(cba.com.au)".to_string(),
             add_label_id: "lbl_fin".to_string(),
             remove_label_ids: vec!["lbl_rec".to_string()],
         }];
@@ -1496,5 +1503,74 @@ mod tests {
         );
         let query = OverlapDetector::reconstruct_filter_query(&filter);
         assert_eq!(query, "from:(*@cba.com.au) subject:(statement)");
+    }
+
+    #[test]
+    fn test_collect_swaps_uses_full_query() {
+        let group = OverlapGroup {
+            group_id: "cba.com.au".to_string(),
+            from_pattern: "cba.com.au".to_string(),
+            filters: vec![
+                make_filter("f1", Some("cba.com.au"), None, "lbl_fin"),
+                make_filter_with_query(
+                    "f2",
+                    None,
+                    Some("from:(*@cba.com.au) subject:(receipt)"),
+                    Some("receipt"),
+                    "lbl_rec",
+                ),
+            ],
+            label_names: vec!["Financial".to_string(), "Receipts".to_string()],
+            resolution_type: ResolutionType::PickWinner,
+        };
+
+        let mut plan = RemediationPlan::new();
+        plan.add(
+            group,
+            GroupDecision::KeepOne {
+                keep_filter_id: "f1".to_string(),
+            },
+        );
+
+        let swaps = RemediationApplicator::collect_swaps(&plan);
+        assert_eq!(swaps.len(), 1);
+
+        let swap = &swaps[0];
+        assert!(
+            swap.query.contains("from:"),
+            "Swap query should contain from: clause, got: '{}'",
+            swap.query,
+        );
+        assert!(
+            swap.query.contains("subject:"),
+            "Swap query should contain subject: clause for loser filter that has subject, got: '{}'",
+            swap.query,
+        );
+    }
+
+    #[test]
+    fn test_collect_swaps_per_loser_filter() {
+        let group = OverlapGroup {
+            group_id: "cba.com.au".to_string(),
+            from_pattern: "cba.com.au".to_string(),
+            filters: vec![
+                make_filter("f1", Some("cba.com.au"), None, "lbl_fin"),
+                make_filter("f2", Some("cba.com.au"), Some("statement"), "lbl_rec"),
+                make_filter("f3", Some("cba.com.au"), Some("receipt"), "lbl_per"),
+            ],
+            label_names: vec!["Financial".to_string(), "Receipts".to_string(), "Personal".to_string()],
+            resolution_type: ResolutionType::PickWinner,
+        };
+
+        let mut plan = RemediationPlan::new();
+        plan.add(
+            group,
+            GroupDecision::KeepOne {
+                keep_filter_id: "f1".to_string(),
+            },
+        );
+
+        let swaps = RemediationApplicator::collect_swaps(&plan);
+        assert_eq!(swaps.len(), 2, "Should have one swap per loser filter");
     }
 }
