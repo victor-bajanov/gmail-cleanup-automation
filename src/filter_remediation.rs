@@ -1701,11 +1701,6 @@ mod tests {
             label: &str,
             archives: bool,
         ) -> ExistingFilterInfo {
-            let _domain = if from_value.contains('@') {
-                from_value.split('@').next_back().unwrap_or(from_value).trim_start_matches('*')
-            } else {
-                from_value
-            };
             let from_query_part = if from_value.contains('@') {
                 format!("from:({})", from_value)
             } else {
@@ -1961,6 +1956,96 @@ mod tests {
                                     q,
                                 );
                             }
+                        }
+                    }
+                }
+            }
+
+            // P3: apply query includes subject when loser filter has subject
+            #[test]
+            fn prop_apply_query_includes_subject_when_present(filters in filter_group_strategy()) {
+                let label_map = test_label_map();
+                let mut groups = OverlapDetector::group_filters(&filters, &label_map);
+                OverlapDetector::classify_groups(&mut groups);
+
+                let mut plan = RemediationPlan::new();
+                for group in groups {
+                    if matches!(group.resolution_type, ResolutionType::PickWinner) {
+                        if let Some(winner) = group.filters.first() {
+                            plan.add(
+                                group.clone(),
+                                GroupDecision::KeepOne {
+                                    keep_filter_id: winner.id.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+
+                let swaps = RemediationApplicator::collect_swaps(&plan);
+                for (group, decision) in &plan.groups {
+                    if let GroupDecision::KeepOne { keep_filter_id } = decision {
+                        for loser in group.filters.iter().filter(|f| f.id != *keep_filter_id) {
+                            let loser_has_subject =
+                                loser.subject.as_ref().map_or(false, |s| !s.is_empty())
+                                    || loser.query.as_ref().map_or(false, |q| q.contains("subject:"));
+
+                            if loser_has_subject {
+                                // Find the swap for this loser
+                                let loser_query = OverlapDetector::reconstruct_filter_query(loser);
+                                if let Some(swap) = swaps.iter().find(|s| s.query == loser_query) {
+                                    prop_assert!(
+                                        swap.query.contains("subject:"),
+                                        "Swap for loser with subject criteria missing subject: in query. query='{}', loser_id='{}'",
+                                        swap.query,
+                                        loser.id,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // P4: no cross-subject contamination — a swap with subject:X never removes labels
+            // that belong to a filter with subject:Y (different subject)
+            #[test]
+            fn prop_no_cross_subject_contamination(filters in filter_group_strategy()) {
+                let label_map = test_label_map();
+                let mut groups = OverlapDetector::group_filters(&filters, &label_map);
+                OverlapDetector::classify_groups(&mut groups);
+
+                let mut plan = RemediationPlan::new();
+                for group in groups {
+                    if matches!(group.resolution_type, ResolutionType::PickWinner) {
+                        if let Some(winner) = group.filters.first() {
+                            plan.add(
+                                group.clone(),
+                                GroupDecision::KeepOne {
+                                    keep_filter_id: winner.id.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+
+                let swaps = RemediationApplicator::collect_swaps(&plan);
+                // For any two swaps where both have subject clauses, the subjects must differ
+                // (otherwise the same email set is being targeted by two different swaps)
+                for (i, a) in swaps.iter().enumerate() {
+                    for b in &swaps[i + 1..] {
+                        let a_has_subject = a.query.contains("subject:");
+                        let b_has_subject = b.query.contains("subject:");
+                        if a_has_subject && b_has_subject && a.query == b.query {
+                            // Two swaps with identical subject-scoped queries should
+                            // not remove different labels — that would mean the same
+                            // email gets conflicting label operations
+                            prop_assert_eq!(
+                                &a.remove_label_ids,
+                                &b.remove_label_ids,
+                                "Two swaps with same subject query '{}' remove different labels",
+                                a.query,
+                            );
                         }
                     }
                 }
