@@ -577,6 +577,21 @@ impl OverlapDetector {
                         if let Some(ref subject_clause) = expr.subject_clause {
                             keywords.extend(subject_clause.keywords.clone());
                         }
+
+                        // Defensive fallback: raw string extraction if parser missed it
+                        if keywords.is_empty() && query.contains("subject:") {
+                            for part in query.split_whitespace() {
+                                if let Some(rest) = part.strip_prefix("subject:") {
+                                    let value = rest
+                                        .trim_start_matches('(')
+                                        .trim_end_matches(')')
+                                        .to_string();
+                                    if !value.is_empty() {
+                                        keywords.push(value);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1572,5 +1587,63 @@ mod tests {
 
         let swaps = RemediationApplicator::collect_swaps(&plan);
         assert_eq!(swaps.len(), 2, "Should have one swap per loser filter");
+    }
+
+    #[test]
+    fn test_classify_mechanical_fix_subject_only_in_query() {
+        // Filters where subject is ONLY in the query field, not the subject field
+        let filters = vec![
+            make_filter_with_query(
+                "f1",
+                Some("cba.com.au"),
+                Some("from:(*@cba.com.au) subject:(statement)"),
+                None,  // no subject field!
+                "lbl_fin",
+            ),
+            make_filter_with_query(
+                "f2",
+                Some("cba.com.au"),
+                Some("from:(*@cba.com.au)"),
+                None,
+                "lbl_oth",
+            ),
+        ];
+        let mut groups = OverlapDetector::group_filters(&filters, &label_map());
+        OverlapDetector::classify_groups(&mut groups);
+        assert_eq!(groups.len(), 1);
+        assert!(
+            matches!(groups[0].resolution_type, ResolutionType::MechanicalFix { .. }),
+            "Expected MechanicalFix when subject is in query field, got {:?}",
+            groups[0].resolution_type,
+        );
+    }
+
+    #[test]
+    fn test_classify_mechanical_fix_subject_no_parens_in_query() {
+        // Some filters store subject without parens: subject:statement instead of subject:(statement)
+        let filters = vec![
+            make_filter_with_query(
+                "f1",
+                Some("cba.com.au"),
+                Some("from:(*@cba.com.au) subject:statement"),
+                None,
+                "lbl_fin",
+            ),
+            make_filter_with_query(
+                "f2",
+                Some("cba.com.au"),
+                None,
+                None,
+                "lbl_oth",
+            ),
+        ];
+        let mut groups = OverlapDetector::group_filters(&filters, &label_map());
+        OverlapDetector::classify_groups(&mut groups);
+        assert_eq!(groups.len(), 1);
+        assert!(
+            matches!(groups[0].resolution_type, ResolutionType::MechanicalFix { .. }),
+            "Expected MechanicalFix when subject in query without parens, got {:?}",
+            groups[0].resolution_type,
+        );
     }
 }
