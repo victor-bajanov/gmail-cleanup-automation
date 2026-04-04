@@ -480,6 +480,31 @@ impl OverlapDetector {
         (None, false)
     }
 
+    /// Reconstruct a full Gmail search query from an ExistingFilterInfo.
+    /// Prefers the raw `query` field (already a valid Gmail query).
+    /// Falls back to building from `from` + `subject` individual fields.
+    pub fn reconstruct_filter_query(filter: &ExistingFilterInfo) -> String {
+        // Prefer the raw query field — it's exactly what Gmail uses
+        if let Some(ref query) = filter.query {
+            if !query.is_empty() {
+                return query.clone();
+            }
+        }
+        // Fallback: build from individual fields
+        let mut parts = Vec::new();
+        if let Some(ref from) = filter.from {
+            if !from.is_empty() {
+                parts.push(format!("from:({})", from));
+            }
+        }
+        if let Some(ref subject) = filter.subject {
+            if !subject.is_empty() {
+                parts.push(format!("subject:({})", subject));
+            }
+        }
+        parts.join(" ")
+    }
+
     /// Classify each group as Consolidate, MechanicalFix, or PickWinner.
     /// Consolidate: all filters share the same label — keep broadest, delete rest.
     /// MechanicalFix: synthesize replacement filters with -subject: exclusions.
@@ -1429,5 +1454,47 @@ mod tests {
         assert_eq!(result.deleted.len(), 0);
         assert_eq!(result.created.len(), 0);
         assert_eq!(result.skipped, 1);
+    }
+
+    #[test]
+    fn test_reconstruct_query_from_query_field() {
+        let filter = make_filter_with_query(
+            "f1",
+            None,
+            Some("from:(*@cba.com.au) subject:(statement)"),
+            None,
+            "lbl_fin",
+        );
+        let query = OverlapDetector::reconstruct_filter_query(&filter);
+        assert_eq!(query, "from:(*@cba.com.au) subject:(statement)");
+    }
+
+    #[test]
+    fn test_reconstruct_query_from_individual_fields() {
+        let filter = make_filter("f1", Some("cba.com.au"), Some("statement"), "lbl_fin");
+        let query = OverlapDetector::reconstruct_filter_query(&filter);
+        assert!(query.contains("from:(cba.com.au)"), "query={}", query);
+        assert!(query.contains("subject:(statement)"), "query={}", query);
+    }
+
+    #[test]
+    fn test_reconstruct_query_from_only() {
+        let filter = make_filter("f1", Some("cba.com.au"), None, "lbl_fin");
+        let query = OverlapDetector::reconstruct_filter_query(&filter);
+        assert!(query.contains("from:(cba.com.au)"), "query={}", query);
+        assert!(!query.contains("subject:"), "query should not have subject: {}", query);
+    }
+
+    #[test]
+    fn test_reconstruct_query_prefers_query_field() {
+        let filter = make_filter_with_query(
+            "f1",
+            Some("cba.com.au"),
+            Some("from:(*@cba.com.au) subject:(statement)"),
+            Some("statement"),
+            "lbl_fin",
+        );
+        let query = OverlapDetector::reconstruct_filter_query(&filter);
+        assert_eq!(query, "from:(*@cba.com.au) subject:(statement)");
     }
 }
