@@ -898,7 +898,7 @@ async fn run() -> Result<()> {
             .await?;
             pb.finish_and_clear();
 
-            if scan.emails.is_empty() {
+            if scan.groups.is_empty() {
                 println!(
                     "No emails with 3+ overlapping labels found ({} auto labels scanned).",
                     scan.total_auto_labels
@@ -907,9 +907,10 @@ async fn run() -> Result<()> {
             }
 
             println!(
-                "Found {} emails with 3+ labels (out of {} auto labels).",
-                scan.emails.len(),
-                scan.total_auto_labels
+                "Found {} emails with 3+ labels in {} groups (across {} auto labels).",
+                scan.total_emails,
+                scan.groups.len(),
+                scan.total_auto_labels,
             );
 
             // Enter raw mode with a guard that disables on drop
@@ -924,24 +925,25 @@ async fn run() -> Result<()> {
 
             use crossterm::event::{self, Event, KeyCode, KeyEventKind};
             use gmail_automation::label_cleanup::{
-                index_for_key, render_email, ApplyStatus, UndoEntry,
+                index_for_key, render_group, ApplyStatus, UndoEntry,
             };
             use std::sync::atomic::Ordering;
 
             let status = Arc::new(ApplyStatus::default());
             let mut undo_stack: Vec<UndoEntry> = Vec::new();
             let mut current: usize = 0;
-            let emails = &scan.emails;
+            let groups = &scan.groups;
 
             loop {
-                if current >= emails.len() {
+                if current >= groups.len() {
                     break;
                 }
 
-                render_email(
-                    &emails[current],
+                render_group(
+                    &groups[current],
                     current,
-                    emails.len(),
+                    groups.len(),
+                    scan.total_emails,
                     &status,
                     undo_stack.len(),
                 )?;
@@ -973,7 +975,7 @@ async fn run() -> Result<()> {
                                 // Reverse the operation: add back removed, remove added
                                 let result = c
                                     .batch_modify_labels(
-                                        &[entry.message_id],
+                                        &entry.message_ids,
                                         &entry.removed_labels,
                                         &entry.added_labels,
                                     )
@@ -999,14 +1001,14 @@ async fn run() -> Result<()> {
                     }
 
                     KeyCode::Char('0') => {
-                        // Remove all auto labels
-                        let email = &emails[current];
+                        // Remove all auto labels from all emails in group
+                        let group = &groups[current];
                         let remove_ids: Vec<String> =
-                            email.auto_labels.iter().map(|(id, _)| id.clone()).collect();
-                        let msg_id = email.message.id.clone();
+                            group.auto_labels.iter().map(|(id, _)| id.clone()).collect();
+                        let msg_ids = group.message_ids.clone();
 
                         undo_stack.push(UndoEntry {
-                            message_id: msg_id.clone(),
+                            message_ids: msg_ids.clone(),
                             added_labels: vec![],
                             removed_labels: remove_ids.clone(),
                         });
@@ -1016,7 +1018,7 @@ async fn run() -> Result<()> {
                         st.in_flight.fetch_add(1, Ordering::Relaxed);
                         tokio::spawn(async move {
                             let result = c
-                                .batch_modify_labels(&[msg_id], &[], &remove_ids)
+                                .batch_modify_labels(&msg_ids, &[], &remove_ids)
                                 .await;
                             st.in_flight.fetch_sub(1, Ordering::Relaxed);
                             match result {
@@ -1040,20 +1042,20 @@ async fn run() -> Result<()> {
 
                     KeyCode::Char(c) => {
                         if let Some(idx) = index_for_key(c) {
-                            let email = &emails[current];
-                            if idx < email.auto_labels.len() {
-                                // Keep the winner, remove all others
-                                let winner_id = &email.auto_labels[idx].0;
-                                let remove_ids: Vec<String> = email
+                            let group = &groups[current];
+                            if idx < group.auto_labels.len() {
+                                // Keep the winner, remove all others from all emails in group
+                                let winner_id = &group.auto_labels[idx].0;
+                                let remove_ids: Vec<String> = group
                                     .auto_labels
                                     .iter()
                                     .filter(|(id, _)| id != winner_id)
                                     .map(|(id, _)| id.clone())
                                     .collect();
-                                let msg_id = email.message.id.clone();
+                                let msg_ids = group.message_ids.clone();
 
                                 undo_stack.push(UndoEntry {
-                                    message_id: msg_id.clone(),
+                                    message_ids: msg_ids.clone(),
                                     added_labels: vec![],
                                     removed_labels: remove_ids.clone(),
                                 });
@@ -1063,7 +1065,7 @@ async fn run() -> Result<()> {
                                 st.in_flight.fetch_add(1, Ordering::Relaxed);
                                 tokio::spawn(async move {
                                     let result = cl
-                                        .batch_modify_labels(&[msg_id], &[], &remove_ids)
+                                        .batch_modify_labels(&msg_ids, &[], &remove_ids)
                                         .await;
                                     st.in_flight.fetch_sub(1, Ordering::Relaxed);
                                     match result {
@@ -1113,7 +1115,7 @@ async fn run() -> Result<()> {
             println!("Label cleanup complete.");
             println!("  Applied: {}", applied);
             println!("  Failed:  {}", failed);
-            println!("  Reviewed: {} / {}", current, emails.len());
+            println!("  Reviewed: {} / {} groups", current, groups.len());
 
             Ok(())
         }

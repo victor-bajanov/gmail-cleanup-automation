@@ -18,17 +18,30 @@ pub struct OverlabeledEmail {
     pub auto_labels: Vec<(String, String)>,
 }
 
+/// A group of emails sharing the same sender, subject, and label set.
+/// One decision applies to all emails in the group.
+#[derive(Debug, Clone)]
+pub struct OverlabeledGroup {
+    pub sender_email: String,
+    pub subject: String,
+    pub auto_labels: Vec<(String, String)>,
+    pub message_ids: Vec<String>,
+    /// A sample date for display (from the first email in the group)
+    pub sample_date: chrono::DateTime<chrono::Utc>,
+}
+
 /// Result of scanning for overlabeled emails.
 #[derive(Debug)]
 pub struct ScanResult {
-    pub emails: Vec<OverlabeledEmail>,
+    pub groups: Vec<OverlabeledGroup>,
+    pub total_emails: usize,
     pub total_auto_labels: usize,
 }
 
 /// Records a label modification so it can be undone.
 #[derive(Debug, Clone)]
 pub struct UndoEntry {
-    pub message_id: String,
+    pub message_ids: Vec<String>,
     pub added_labels: Vec<String>,
     pub removed_labels: Vec<String>,
 }
@@ -42,15 +55,16 @@ pub struct ApplyStatus {
     pub last_action: std::sync::Mutex<Option<String>>,
 }
 
-/// Render the two-pane TUI for a single email.
+/// Render the two-pane TUI for a group of emails.
 ///
-/// Left pane shows email details and label choices.
+/// Left pane shows group details (sender, subject, count) and label choices.
 /// Right pane (22 chars wide) shows apply status.
 /// Controls at the bottom: [0] Remove all  [s] Skip  [u] Undo  [q] Quit
-pub fn render_email(
-    email: &OverlabeledEmail,
+pub fn render_group(
+    group: &OverlabeledGroup,
     current: usize,
     total: usize,
+    total_emails: usize,
     status: &ApplyStatus,
     undo_len: usize,
 ) -> io::Result<()> {
@@ -71,31 +85,32 @@ pub fn render_email(
 
     // ── Header ──
     let header = format!(
-        " Email {}/{} — Label Cleanup",
+        " Group {}/{} ({} emails total) — Label Cleanup",
         current + 1,
-        total
+        total,
+        total_emails,
     );
     queue!(out, cursor::MoveTo(0, 0), style::Print(&header))?;
 
-    // ── Left pane: email details ──
+    // ── Left pane: group details ──
     let mut row: u16 = 2;
 
-    let from = format!("From: {}", email.message.sender_email);
+    let from = format!("From: {}", group.sender_email);
     queue!(out, cursor::MoveTo(1, row), style::Print(truncate(&from, left_w as usize)))?;
     row += 1;
 
-    let subj = format!("Subject: {}", email.message.subject);
+    let subj = format!("Subject: {}", group.subject);
     queue!(out, cursor::MoveTo(1, row), style::Print(truncate(&subj, left_w as usize)))?;
     row += 1;
 
-    let date = format!("Date: {}", email.message.date_received.format("%Y-%m-%d %H:%M"));
-    queue!(out, cursor::MoveTo(1, row), style::Print(truncate(&date, left_w as usize)))?;
+    let count = format!("Emails: {} (applying to all)", group.message_ids.len());
+    queue!(out, cursor::MoveTo(1, row), style::Print(truncate(&count, left_w as usize)))?;
     row += 2;
 
     queue!(out, cursor::MoveTo(1, row), style::Print("Labels:"))?;
     row += 1;
 
-    for (i, (_id, display)) in email.auto_labels.iter().enumerate() {
+    for (i, (_id, display)) in group.auto_labels.iter().enumerate() {
         if let Some(key) = key_for_index(i) {
             let line = format!("  [{}] {}", key, display);
             queue!(out, cursor::MoveTo(1, row), style::Print(truncate(&line, left_w as usize)))?;
@@ -174,7 +189,7 @@ pub async fn scan_overlabeled(
             .to_string();
 
         // Gmail q parameter expects label names (not IDs), with / replaced by -
-        let query = format!("label:{}", label.name.replace('/', "-").replace(' ', "-"));
+        let query = format!("label:{}", label.name.replace(['/', ' '], "-"));
         let message_ids = client.list_message_ids(&query).await?;
         on_progress(i + 1, auto_labels.len(), &label.name);
         for mid in message_ids {
@@ -193,10 +208,13 @@ pub async fn scan_overlabeled(
 
     if affected.is_empty() {
         return Ok(ScanResult {
-            emails: vec![],
+            groups: vec![],
+            total_emails: 0,
             total_auto_labels,
         });
     }
+
+    let total_emails = affected.len();
 
     // 4. Batch-fetch message metadata
     let message_ids: Vec<String> = affected.iter().map(|(id, _)| id.clone()).collect();
@@ -207,7 +225,7 @@ pub async fn scan_overlabeled(
         .map(|m| (m.id.clone(), m))
         .collect();
 
-    let mut emails: Vec<OverlabeledEmail> = affected
+    let emails: Vec<OverlabeledEmail> = affected
         .into_iter()
         .filter_map(|(id, labels)| {
             msg_map.get(&id).map(|msg| OverlabeledEmail {
@@ -217,18 +235,56 @@ pub async fn scan_overlabeled(
         })
         .collect();
 
-    // 5. Sort by sender then date
-    emails.sort_by(|a, b| {
-        a.message
-            .sender_email
-            .cmp(&b.message.sender_email)
-            .then(a.message.date_received.cmp(&b.message.date_received))
-    });
+    // 5. Group by (sender, subject, label_set) so identical candidates get one decision
+    let groups = group_emails(emails);
 
     Ok(ScanResult {
-        emails,
+        groups,
+        total_emails,
         total_auto_labels,
     })
+}
+
+/// Group overlabeled emails by (sender_email, subject, sorted label IDs).
+/// Emails that share all three get collapsed into one group.
+fn group_emails(emails: Vec<OverlabeledEmail>) -> Vec<OverlabeledGroup> {
+    let mut map: HashMap<(String, String, Vec<String>), Vec<OverlabeledEmail>> = HashMap::new();
+
+    for email in emails {
+        let mut label_ids: Vec<String> = email.auto_labels.iter().map(|(id, _)| id.clone()).collect();
+        label_ids.sort();
+        let key = (
+            email.message.sender_email.clone(),
+            email.message.subject.clone(),
+            label_ids,
+        );
+        map.entry(key).or_default().push(email);
+    }
+
+    let mut groups: Vec<OverlabeledGroup> = map
+        .into_iter()
+        .map(|((sender, subject, _), emails)| {
+            let message_ids: Vec<String> = emails.iter().map(|e| e.message.id.clone()).collect();
+            let sample_date = emails[0].message.date_received;
+            let auto_labels = emails[0].auto_labels.clone();
+            OverlabeledGroup {
+                sender_email: sender,
+                subject,
+                auto_labels,
+                message_ids,
+                sample_date,
+            }
+        })
+        .collect();
+
+    // Sort by sender then subject for natural grouping during review
+    groups.sort_by(|a, b| {
+        a.sender_email
+            .cmp(&b.sender_email)
+            .then(a.subject.cmp(&b.subject))
+    });
+
+    groups
 }
 
 /// Build a display key for a label choice.
