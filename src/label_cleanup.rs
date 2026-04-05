@@ -132,12 +132,12 @@ pub fn render_email(
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else if max > 3 {
-        format!("{}...", &s[..max - 3])
+        format!("{}...", s.chars().take(max - 3).collect::<String>())
     } else {
-        s[..max].to_string()
+        s.chars().take(max).collect()
     }
 }
 

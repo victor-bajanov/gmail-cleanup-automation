@@ -981,15 +981,15 @@ async fn run() -> Result<()> {
                                 st.in_flight.fetch_sub(1, Ordering::Relaxed);
                                 match result {
                                     Ok(_) => {
-                                        st.applied.fetch_add(1, Ordering::Relaxed);
+                                        st.applied.fetch_sub(1, Ordering::Relaxed);
                                         if let Ok(mut la) = st.last_action.lock() {
-                                            *la = Some("Undo applied".to_string());
+                                            *la = Some("✓ undone".to_string());
                                         }
                                     }
                                     Err(_) => {
                                         st.failed.fetch_add(1, Ordering::Relaxed);
                                         if let Ok(mut la) = st.last_action.lock() {
-                                            *la = Some("Undo failed".to_string());
+                                            *la = Some("✗ undo failed".to_string());
                                         }
                                     }
                                 }
