@@ -854,7 +854,257 @@ async fn run() -> Result<()> {
             Ok(())
         }
         Commands::LabelCleanup => {
-            println!("Label cleanup not yet implemented");
+            tracing::info!("Starting label cleanup");
+
+            // Load config
+            let config = Config::load(&cli.config).await?;
+
+            // Auth
+            let hub = gmail_automation::auth::initialize_gmail_hub(
+                &cli.credentials,
+                &cli.token_cache,
+            )
+            .await?;
+
+            // Create client wrapped in Arc for spawning
+            let client = Arc::new(
+                gmail_automation::client::ProductionGmailClient::with_full_config(
+                    hub,
+                    config.scan.max_concurrent_requests,
+                    250.0,
+                    500.0,
+                    config.circuit_breaker.clone(),
+                ),
+            );
+
+            let auto_prefix = &config.labels.prefix;
+
+            println!("Scanning for emails with 3+ {} labels...", auto_prefix);
+            let scan = gmail_automation::label_cleanup::scan_overlabeled(
+                client.as_ref(),
+                auto_prefix,
+            )
+            .await?;
+
+            if scan.emails.is_empty() {
+                println!(
+                    "No emails with 3+ overlapping labels found ({} auto labels scanned).",
+                    scan.total_auto_labels
+                );
+                return Ok(());
+            }
+
+            println!(
+                "Found {} emails with 3+ labels (out of {} auto labels).",
+                scan.emails.len(),
+                scan.total_auto_labels
+            );
+
+            // Enter raw mode with a guard that disables on drop
+            struct RawModeGuard;
+            impl Drop for RawModeGuard {
+                fn drop(&mut self) {
+                    let _ = crossterm::terminal::disable_raw_mode();
+                }
+            }
+            crossterm::terminal::enable_raw_mode()?;
+            let _raw_guard = RawModeGuard;
+
+            use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+            use gmail_automation::label_cleanup::{
+                index_for_key, render_email, ApplyStatus, UndoEntry,
+            };
+            use std::sync::atomic::Ordering;
+
+            let status = Arc::new(ApplyStatus::default());
+            let mut undo_stack: Vec<UndoEntry> = Vec::new();
+            let mut current: usize = 0;
+            let emails = &scan.emails;
+
+            loop {
+                if current >= emails.len() {
+                    break;
+                }
+
+                render_email(
+                    &emails[current],
+                    current,
+                    emails.len(),
+                    &status,
+                    undo_stack.len(),
+                )?;
+
+                // Read a single keypress
+                let key = loop {
+                    match event::read() {
+                        Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                            break key.code;
+                        }
+                        Err(_) => break KeyCode::Esc,
+                        _ => continue,
+                    }
+                };
+
+                match key {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+
+                    KeyCode::Char('s') => {
+                        current += 1;
+                    }
+
+                    KeyCode::Char('u') => {
+                        if let Some(entry) = undo_stack.pop() {
+                            let c = Arc::clone(&client);
+                            let st = Arc::clone(&status);
+                            st.in_flight.fetch_add(1, Ordering::Relaxed);
+                            tokio::spawn(async move {
+                                // Reverse the operation: add back removed, remove added
+                                let result = c
+                                    .batch_modify_labels(
+                                        &[entry.message_id],
+                                        &entry.removed_labels,
+                                        &entry.added_labels,
+                                    )
+                                    .await;
+                                st.in_flight.fetch_sub(1, Ordering::Relaxed);
+                                match result {
+                                    Ok(_) => {
+                                        st.applied.fetch_add(1, Ordering::Relaxed);
+                                        if let Ok(mut la) = st.last_action.lock() {
+                                            *la = Some("Undo applied".to_string());
+                                        }
+                                    }
+                                    Err(_) => {
+                                        st.failed.fetch_add(1, Ordering::Relaxed);
+                                        if let Ok(mut la) = st.last_action.lock() {
+                                            *la = Some("Undo failed".to_string());
+                                        }
+                                    }
+                                }
+                            });
+                            if current > 0 {
+                                current -= 1;
+                            }
+                        }
+                    }
+
+                    KeyCode::Char('0') => {
+                        // Remove all auto labels
+                        let email = &emails[current];
+                        let remove_ids: Vec<String> =
+                            email.auto_labels.iter().map(|(id, _)| id.clone()).collect();
+                        let msg_id = email.message.id.clone();
+
+                        undo_stack.push(UndoEntry {
+                            message_id: msg_id.clone(),
+                            added_labels: vec![],
+                            removed_labels: remove_ids.clone(),
+                        });
+
+                        let c = Arc::clone(&client);
+                        let st = Arc::clone(&status);
+                        st.in_flight.fetch_add(1, Ordering::Relaxed);
+                        tokio::spawn(async move {
+                            let result = c
+                                .batch_modify_labels(&[msg_id], &[], &remove_ids)
+                                .await;
+                            st.in_flight.fetch_sub(1, Ordering::Relaxed);
+                            match result {
+                                Ok(_) => {
+                                    st.applied.fetch_add(1, Ordering::Relaxed);
+                                    if let Ok(mut la) = st.last_action.lock() {
+                                        *la = Some("Removed all labels".to_string());
+                                    }
+                                }
+                                Err(_) => {
+                                    st.failed.fetch_add(1, Ordering::Relaxed);
+                                    if let Ok(mut la) = st.last_action.lock() {
+                                        *la = Some("Remove failed".to_string());
+                                    }
+                                }
+                            }
+                        });
+
+                        current += 1;
+                    }
+
+                    KeyCode::Char(c) => {
+                        if let Some(idx) = index_for_key(c) {
+                            let email = &emails[current];
+                            if idx < email.auto_labels.len() {
+                                // Keep the winner, remove all others
+                                let winner_id = &email.auto_labels[idx].0;
+                                let remove_ids: Vec<String> = email
+                                    .auto_labels
+                                    .iter()
+                                    .filter(|(id, _)| id != winner_id)
+                                    .map(|(id, _)| id.clone())
+                                    .collect();
+                                let msg_id = email.message.id.clone();
+
+                                undo_stack.push(UndoEntry {
+                                    message_id: msg_id.clone(),
+                                    added_labels: vec![],
+                                    removed_labels: remove_ids.clone(),
+                                });
+
+                                let cl = Arc::clone(&client);
+                                let st = Arc::clone(&status);
+                                st.in_flight.fetch_add(1, Ordering::Relaxed);
+                                tokio::spawn(async move {
+                                    let result = cl
+                                        .batch_modify_labels(&[msg_id], &[], &remove_ids)
+                                        .await;
+                                    st.in_flight.fetch_sub(1, Ordering::Relaxed);
+                                    match result {
+                                        Ok(_) => {
+                                            st.applied.fetch_add(1, Ordering::Relaxed);
+                                            if let Ok(mut la) = st.last_action.lock() {
+                                                *la = Some("Labels updated".to_string());
+                                            }
+                                        }
+                                        Err(_) => {
+                                            st.failed.fetch_add(1, Ordering::Relaxed);
+                                            if let Ok(mut la) = st.last_action.lock() {
+                                                *la = Some("Update failed".to_string());
+                                            }
+                                        }
+                                    }
+                                });
+
+                                current += 1;
+                            }
+                        }
+                    }
+
+                    _ => {}
+                }
+            }
+
+            // Drop the raw mode guard explicitly before printing summary
+            drop(_raw_guard);
+
+            // Clear screen after exiting TUI
+            print!("\x1b[2J\x1b[H");
+
+            // Wait for in-flight operations to complete
+            let timeout = std::time::Instant::now();
+            while status.in_flight.load(Ordering::Relaxed) > 0 {
+                if timeout.elapsed() > std::time::Duration::from_secs(30) {
+                    eprintln!("Warning: timed out waiting for in-flight operations");
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+
+            // Print summary
+            let applied = status.applied.load(Ordering::Relaxed);
+            let failed = status.failed.load(Ordering::Relaxed);
+            println!("Label cleanup complete.");
+            println!("  Applied: {}", applied);
+            println!("  Failed:  {}", failed);
+            println!("  Reviewed: {} / {}", current, emails.len());
+
             Ok(())
         }
     }
