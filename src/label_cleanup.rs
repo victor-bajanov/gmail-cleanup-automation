@@ -1,4 +1,11 @@
 use std::collections::HashMap;
+use std::io::{self, Write as IoWrite};
+
+use crossterm::{
+    cursor, queue,
+    style,
+    terminal::{self, Clear, ClearType},
+};
 
 use crate::client::{GmailClient, LabelInfo};
 use crate::models::MessageMetadata;
@@ -24,6 +31,114 @@ pub struct UndoEntry {
     pub message_id: String,
     pub added_labels: Vec<String>,
     pub removed_labels: Vec<String>,
+}
+
+/// Shared status for async operations.
+#[derive(Debug, Default)]
+pub struct ApplyStatus {
+    pub applied: std::sync::atomic::AtomicUsize,
+    pub in_flight: std::sync::atomic::AtomicUsize,
+    pub failed: std::sync::atomic::AtomicUsize,
+    pub last_action: std::sync::Mutex<Option<String>>,
+}
+
+/// Render the two-pane TUI for a single email.
+///
+/// Left pane shows email details and label choices.
+/// Right pane (22 chars wide) shows apply status.
+/// Controls at the bottom: [0] Remove all  [s] Skip  [u] Undo  [q] Quit
+pub fn render_email(
+    email: &OverlabeledEmail,
+    current: usize,
+    total: usize,
+    status: &ApplyStatus,
+    undo_len: usize,
+) -> io::Result<()> {
+    let mut out = io::stdout();
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
+
+    if cols < 40 || rows < 10 {
+        queue!(out, cursor::MoveTo(0, 0), Clear(ClearType::All))?;
+        queue!(out, style::Print("Terminal too small"))?;
+        out.flush()?;
+        return Ok(());
+    }
+
+    let right_w: u16 = 22;
+    let left_w = cols.saturating_sub(right_w + 1);
+
+    queue!(out, cursor::MoveTo(0, 0), Clear(ClearType::All))?;
+
+    // ── Header ──
+    let header = format!(
+        " Email {}/{} — Label Cleanup",
+        current + 1,
+        total
+    );
+    queue!(out, cursor::MoveTo(0, 0), style::Print(&header))?;
+
+    // ── Left pane: email details ──
+    let mut row: u16 = 2;
+
+    let from = format!("From: {}", email.message.sender_email);
+    queue!(out, cursor::MoveTo(1, row), style::Print(truncate(&from, left_w as usize)))?;
+    row += 1;
+
+    let subj = format!("Subject: {}", email.message.subject);
+    queue!(out, cursor::MoveTo(1, row), style::Print(truncate(&subj, left_w as usize)))?;
+    row += 1;
+
+    let date = format!("Date: {}", email.message.date_received.format("%Y-%m-%d %H:%M"));
+    queue!(out, cursor::MoveTo(1, row), style::Print(truncate(&date, left_w as usize)))?;
+    row += 2;
+
+    queue!(out, cursor::MoveTo(1, row), style::Print("Labels:"))?;
+    row += 1;
+
+    for (i, (_id, display)) in email.auto_labels.iter().enumerate() {
+        if let Some(key) = key_for_index(i) {
+            let line = format!("  [{}] {}", key, display);
+            queue!(out, cursor::MoveTo(1, row), style::Print(truncate(&line, left_w as usize)))?;
+            row += 1;
+        }
+    }
+
+    // ── Right pane: status ──
+    let rx = left_w + 1;
+    let applied = status.applied.load(std::sync::atomic::Ordering::Relaxed);
+    let in_flight = status.in_flight.load(std::sync::atomic::Ordering::Relaxed);
+    let failed = status.failed.load(std::sync::atomic::Ordering::Relaxed);
+
+    queue!(out, cursor::MoveTo(rx, 2), style::Print("── Status ──"))?;
+    queue!(out, cursor::MoveTo(rx, 3), style::Print(format!("Applied:   {}", applied)))?;
+    queue!(out, cursor::MoveTo(rx, 4), style::Print(format!("In-flight: {}", in_flight)))?;
+    queue!(out, cursor::MoveTo(rx, 5), style::Print(format!("Failed:    {}", failed)))?;
+    queue!(out, cursor::MoveTo(rx, 6), style::Print(format!("Undo stack: {}", undo_len)))?;
+
+    if let Ok(guard) = status.last_action.lock() {
+        if let Some(ref action) = *guard {
+            let msg = truncate(action, right_w as usize);
+            queue!(out, cursor::MoveTo(rx, 8), style::Print(msg))?;
+        }
+    }
+
+    // ── Controls ──
+    let ctrl_row = rows.saturating_sub(2);
+    let controls = "[0] Remove all  [s] Skip  [u] Undo  [q] Quit";
+    queue!(out, cursor::MoveTo(1, ctrl_row), style::Print(controls))?;
+
+    out.flush()?;
+    Ok(())
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else if max > 3 {
+        format!("{}...", &s[..max - 3])
+    } else {
+        s[..max].to_string()
+    }
 }
 
 /// Scan for emails with 3+ AutoManaged labels.
