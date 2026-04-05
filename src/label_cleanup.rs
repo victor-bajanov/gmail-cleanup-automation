@@ -173,7 +173,8 @@ pub async fn scan_overlabeled(
             .unwrap_or(&label.name)
             .to_string();
 
-        let query = format!("label:{}", label.id);
+        // Gmail q parameter expects label names (not IDs), with / replaced by -
+        let query = format!("label:{}", label.name.replace('/', "-").replace(' ', "-"));
         let message_ids = client.list_message_ids(&query).await?;
         on_progress(i + 1, auto_labels.len(), &label.name);
         for mid in message_ids {
