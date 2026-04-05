@@ -879,12 +879,24 @@ async fn run() -> Result<()> {
 
             let auto_prefix = &config.labels.prefix;
 
-            println!("Scanning for emails with 3+ {} labels...", auto_prefix);
+            let pb = indicatif::ProgressBar::new(0);
+            pb.set_style(
+                indicatif::ProgressStyle::default_bar()
+                    .template("{msg} [{bar:30}] {pos}/{len}")
+                    .unwrap(),
+            );
+
             let scan = gmail_automation::label_cleanup::scan_overlabeled(
                 client.as_ref(),
                 auto_prefix,
+                |completed, total, label_name| {
+                    pb.set_length(total as u64);
+                    pb.set_position(completed as u64);
+                    pb.set_message(format!("Scanning {}", label_name));
+                },
             )
             .await?;
+            pb.finish_and_clear();
 
             if scan.emails.is_empty() {
                 println!(
@@ -982,9 +994,7 @@ async fn run() -> Result<()> {
                                     }
                                 }
                             });
-                            if current > 0 {
-                                current -= 1;
-                            }
+                            current = current.saturating_sub(1);
                         }
                     }
 

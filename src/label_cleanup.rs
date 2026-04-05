@@ -151,6 +151,7 @@ fn truncate(s: &str, max: usize) -> String {
 pub async fn scan_overlabeled(
     client: &dyn GmailClient,
     auto_prefix: &str,
+    on_progress: impl Fn(usize, usize, &str),
 ) -> crate::error::Result<ScanResult> {
     // 1. Fetch all labels, filter to auto-prefix
     let all_labels = client.list_labels().await?;
@@ -163,7 +164,7 @@ pub async fn scan_overlabeled(
 
     // 2. For each auto label, query emails
     let mut msg_labels: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    for label in &auto_labels {
+    for (i, label) in auto_labels.iter().enumerate() {
         // Strip prefix for display name
         let display = label
             .name
@@ -174,6 +175,7 @@ pub async fn scan_overlabeled(
 
         let query = format!("label:{}", label.id);
         let message_ids = client.list_message_ids(&query).await?;
+        on_progress(i + 1, auto_labels.len(), &label.name);
         for mid in message_ids {
             msg_labels
                 .entry(mid)
