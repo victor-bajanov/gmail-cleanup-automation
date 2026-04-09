@@ -13,8 +13,9 @@ const EditorView: Component = () => {
     editor.setLoading(true);
     setError(null);
     try {
-      const filters = await api.editorGetFilters(refresh);
-      editor.setFilters(filters);
+      const resp = await api.editorGetFilters(refresh);
+      editor.setFilters(resp.filters);
+      editor.setLabelMap(resp.label_map);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -28,18 +29,19 @@ const EditorView: Component = () => {
     }
   });
 
-  // Local search filtering
+  // Local search filtering (includes resolved label names)
   const filteredFilters = createMemo(() => {
     const term = editor.search().toLowerCase().trim();
     if (!term) return editor.filters();
     return editor.filters().filter((f) => {
+      const resolvedLabels = f.add_label_ids.map((id) => editor.resolveLabel(id));
       const fields = [
         f.query,
         f.from,
         f.to,
         f.subject,
         ...f.add_label_ids,
-        ...f.remove_label_ids,
+        ...resolvedLabels,
       ]
         .filter(Boolean)
         .map((s) => s!.toLowerCase());
@@ -193,12 +195,12 @@ const EditorView: Component = () => {
                         {getFilterDisplayName(f)}
                       </span>
 
-                      {/* Label badges */}
+                      {/* Label badges (resolved to names) */}
                       <div class="flex items-center gap-1 flex-shrink-0">
                         <For each={f.add_label_ids}>
-                          {(label) => (
+                          {(labelId) => (
                             <span class="text-xs px-2 py-0.5 rounded-full bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300">
-                              {label}
+                              {editor.resolveLabel(labelId)}
                             </span>
                           )}
                         </For>

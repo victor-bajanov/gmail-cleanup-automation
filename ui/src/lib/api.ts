@@ -29,6 +29,7 @@ import type {
   ActionDiff,
   EditorApplyResult,
   EditorFilter,
+  EditorFiltersResponse,
 } from '../types';
 
 // ============ Authentication Commands ============
@@ -188,8 +189,8 @@ export async function editorApply(actions: FilterAction[]): Promise<EditorApplyR
   return invoke<EditorApplyResult>('editor_apply', { actions });
 }
 
-export async function editorGetFilters(refresh?: boolean): Promise<EditorFilter[]> {
-  return invoke<EditorFilter[]>('editor_get_filters', { refresh });
+export async function editorGetFilters(refresh?: boolean): Promise<EditorFiltersResponse> {
+  return invoke<EditorFiltersResponse>('editor_get_filters', { refresh });
 }
 
 // ============ Settings Commands ============

@@ -116,16 +116,20 @@ const [editorFilters, setEditorFilters] = createSignal<EditorFilter[]>([]);
 const [editorSearch, setEditorSearch] = createSignal('');
 const [editorQueue, setEditorQueue] = createSignal<FilterAction[]>([]);
 const [editorLoading, setEditorLoading] = createSignal(false);
+const [editorLabelMap, setEditorLabelMap] = createSignal<Record<string, string>>({});
 
 export const editor = {
   filters: editorFilters,
   search: editorSearch,
   queue: editorQueue,
   isLoading: editorLoading,
+  labelMap: editorLabelMap,
   setFilters: setEditorFilters,
   setSearch: setEditorSearch,
   setQueue: setEditorQueue,
   setLoading: setEditorLoading,
+  setLabelMap: setEditorLabelMap,
+  resolveLabel: (id: string) => editorLabelMap()[id] || id,
   queueCount: createMemo(() => editorQueue().length),
   addAction: (action: FilterAction) => {
     setEditorQueue((prev) => {
@@ -143,6 +147,7 @@ export const editor = {
     setEditorSearch('');
     setEditorQueue([]);
     setEditorLoading(false);
+    setEditorLabelMap({});
   },
 };
 

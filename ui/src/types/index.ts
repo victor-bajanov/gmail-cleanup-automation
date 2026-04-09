@@ -303,5 +303,10 @@ export interface EditorFilter {
   remove_label_ids: string[];
 }
 
+export interface EditorFiltersResponse {
+  filters: EditorFilter[];
+  label_map: Record<string, string>;
+}
+
 // App state
 export type AppView = 'auth' | 'scan' | 'review' | 'filters' | 'coverage' | 'editor' | 'settings';
