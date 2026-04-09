@@ -7,7 +7,7 @@ use crate::commands::clusters::GuiDecision;
 use crate::commands::hidden_filters::{get_hidden_filter_ids, load_hidden_filters, HiddenFiltersData};
 use gmail_automation::{
     Classification, Config, EmailCluster, FilterRule,
-    MessageMetadata, ProcessingState, ProductionGmailClient,
+    MessageMetadata, ProductionGmailClient,
 };
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
@@ -31,8 +31,6 @@ pub struct AppState {
     pub config: RwLock<Option<Config>>,
     /// Gmail API client (lazily initialized)
     client: RwLock<Option<Arc<ProductionGmailClient>>>,
-    /// Current processing state
-    pub processing_state: RwLock<Option<ProcessingState>>,
     /// Scanned messages
     pub messages: RwLock<Vec<MessageMetadata>>,
     /// Classifications
@@ -117,7 +115,6 @@ impl AppState {
             config_path: RwLock::new(config_path),
             config: RwLock::new(config),
             client: RwLock::new(None),
-            processing_state: RwLock::new(None),
             messages: RwLock::new(Vec::new()),
             classifications: RwLock::new(Vec::new()),
             clusters: RwLock::new(Vec::new()),
@@ -172,11 +169,6 @@ impl AppState {
         self.client.read().clone()
     }
 
-    /// Checks if the client is initialized
-    pub fn has_client(&self) -> bool {
-        self.client.read().is_some()
-    }
-
     /// Adds scanned messages
     pub fn add_messages(&self, new_messages: Vec<MessageMetadata>) {
         let mut messages = self.messages.write();
@@ -196,11 +188,6 @@ impl AppState {
     /// Sets classifications
     pub fn set_classifications(&self, classifications: Vec<(MessageMetadata, Classification)>) {
         *self.classifications.write() = classifications;
-    }
-
-    /// Gets classifications
-    pub fn get_classifications(&self) -> Vec<(MessageMetadata, Classification)> {
-        self.classifications.read().clone()
     }
 
     /// Sets email clusters
@@ -273,16 +260,6 @@ impl AppState {
         self.existing_filters.read().clone()
     }
 
-    /// Caches a label ID
-    pub fn cache_label(&self, name: String, id: String) {
-        self.label_cache.write().insert(name, id);
-    }
-
-    /// Gets a cached label ID
-    pub fn get_cached_label(&self, name: &str) -> Option<String> {
-        self.label_cache.read().get(name).cloned()
-    }
-
     /// Gets the set of hidden filter IDs (for overlap filtering)
     pub fn get_hidden_filter_ids(&self) -> HashSet<String> {
         get_hidden_filter_ids(&self.hidden_filters.read())
@@ -306,32 +283,12 @@ impl AppState {
         self.proposed_filters.write().clear();
     }
 
-    /// Gets session statistics
-    pub fn get_stats(&self) -> SessionStats {
-        SessionStats {
-            message_count: self.messages.read().len(),
-            cluster_count: self.clusters.read().len(),
-            decision_count: self.gui_decisions.read().len(),
-            proposed_filter_count: self.proposed_filters.read().len(),
-            existing_filter_count: self.existing_filters.read().len(),
-        }
-    }
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Session statistics
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SessionStats {
-    pub message_count: usize,
-    pub cluster_count: usize,
-    pub decision_count: usize,
-    pub proposed_filter_count: usize,
-    pub existing_filter_count: usize,
 }
 
 /// Helper module for getting home directory

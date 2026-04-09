@@ -27,7 +27,6 @@ pub use auth::*;
 pub use clusters::*;
 pub use editor::*;
 pub use filters::*;
-pub use hidden_filters::*;
 pub use remediation::*;
 pub use scan::*;
 pub use settings::*;

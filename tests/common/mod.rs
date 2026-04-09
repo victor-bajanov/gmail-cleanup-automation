@@ -1,7 +1,7 @@
 //! Common test utilities and fixtures
 
 use chrono::Utc;
-use gmail_automation::client::GmailClient;
+use gmail_automation::client::{ExistingFilterInfo, GmailClient};
 use gmail_automation::error::Result;
 use gmail_automation::models::{EmailCategory, FilterRule, MessageMetadata};
 use mockall::mock;
