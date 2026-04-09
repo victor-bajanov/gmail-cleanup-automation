@@ -86,12 +86,12 @@ impl RemediationPlan {
         let completed = AtomicUsize::new(0);
         const CONCURRENCY: usize = 10;
 
-        let group_results: Vec<RemediationResult> = stream::iter(self.groups.iter())
+        let group_results: Vec<RemediationResult> = stream::iter(self.groups.clone())
             .map(|(group, decision)| {
                 let completed = &completed;
                 let on_progress = &on_progress;
                 async move {
-                    let r = Self::execute_group(client, group, decision).await;
+                    let r = Self::execute_group(client, &group, &decision).await;
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                     on_progress(done, &group.group_id);
                     r
