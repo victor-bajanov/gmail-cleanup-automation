@@ -103,7 +103,7 @@ pub async fn get_existing_filters(
                 .first()
                 .cloned()
                 .unwrap_or_default(),
-            archive: false, // ExistingFilterInfo doesn't track this
+            archive: f.remove_label_ids.contains(&"INBOX".to_string()),
             estimated_matches: 0,
             is_proposed: false,
             change_type: FilterChangeType::Unchanged,
@@ -238,7 +238,7 @@ pub async fn compare_filters(
                     .first()
                     .cloned()
                     .unwrap_or_default(),
-                archive: false, // ExistingFilterInfo doesn't track this
+                archive: f.remove_label_ids.contains(&"INBOX".to_string()),
                 estimated_matches: 0,
                 is_proposed: false,
                 change_type: if has_proposed_match {
