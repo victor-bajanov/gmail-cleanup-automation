@@ -188,8 +188,8 @@ export async function editorApply(actions: FilterAction[]): Promise<EditorApplyR
   return invoke<EditorApplyResult>('editor_apply', { actions });
 }
 
-export async function editorGetFilters(): Promise<EditorFilter[]> {
-  return invoke<EditorFilter[]>('editor_get_filters');
+export async function editorGetFilters(refresh?: boolean): Promise<EditorFilter[]> {
+  return invoke<EditorFilter[]>('editor_get_filters', { refresh });
 }
 
 // ============ Settings Commands ============

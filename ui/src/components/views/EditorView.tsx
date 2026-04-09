@@ -9,11 +9,11 @@ const EditorView: Component = () => {
   const [resultMessage, setResultMessage] = createSignal<string | null>(null);
   const [dryRunResults, setDryRunResults] = createSignal<ActionDiff[] | null>(null);
 
-  const loadFilters = async () => {
+  const loadFilters = async (refresh = false) => {
     editor.setLoading(true);
     setError(null);
     try {
-      const filters = await api.editorGetFilters();
+      const filters = await api.editorGetFilters(refresh);
       editor.setFilters(filters);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -24,7 +24,7 @@ const EditorView: Component = () => {
 
   onMount(async () => {
     if (editor.filters().length === 0) {
-      await loadFilters();
+      await loadFilters(); // uses cached state from FiltersView if available
     }
   });
 
@@ -91,7 +91,7 @@ const EditorView: Component = () => {
     try {
       const result = await api.editorApply(editor.queue());
       editor.clearQueue();
-      await loadFilters();
+      await loadFilters(true);
       if (result.failed.length > 0) {
         setResultMessage(
           `Applied ${result.succeeded} changes, ${result.failed.length} failed: ${result.failed.map(([id, err]) => `${id}: ${err}`).join('; ')}`
@@ -123,7 +123,7 @@ const EditorView: Component = () => {
             </p>
           </div>
           <button
-            onClick={loadFilters}
+            onClick={() => loadFilters(true)}
             disabled={editor.isLoading()}
             class="btn-secondary"
           >

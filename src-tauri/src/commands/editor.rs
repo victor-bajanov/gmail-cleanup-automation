@@ -30,11 +30,18 @@ pub async fn editor_apply(
     Ok(result)
 }
 
-/// Get raw filter data for the editor (includes all fields)
+/// Get raw filter data for the editor (includes all fields).
+/// Returns cached filters from state if available, unless refresh is true.
 #[tauri::command]
 pub async fn editor_get_filters(
+    refresh: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<ExistingFilterInfo>, String> {
+    let cached = state.get_existing_filters();
+    if !refresh.unwrap_or(false) && !cached.is_empty() {
+        return Ok(cached);
+    }
+
     let client = state
         .get_client()
         .ok_or_else(|| "Not authenticated".to_string())?;
