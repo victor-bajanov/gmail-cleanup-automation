@@ -70,6 +70,7 @@ pub mod exclusions;
 pub mod filter_ast;
 pub mod filter_manager;
 pub mod filter_overlap;
+pub mod filter_editor;
 pub mod filter_remediation;
 pub mod interactive;
 pub mod label_cleanup;
@@ -126,6 +127,9 @@ pub use filter_ast::{
     DomainPattern, EmailPattern, ExclusionClause, Filter, FilterActions, FilterExpr, FromClause,
     SubjectClause, SubjectMatchMode,
 };
+
+// Filter editor types
+pub use filter_editor::{ActionDiff, EditorApplyResult, FieldChange, FilterAction};
 
 // Filter remediation types
 pub use filter_remediation::{

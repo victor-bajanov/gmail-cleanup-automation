@@ -156,6 +156,7 @@ mock! {
         async fn list_filters(&self) -> Result<Vec<gmail_automation::client::ExistingFilterInfo>>;
         async fn delete_filter(&self, filter_id: &str) -> Result<()>;
         async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
+        async fn create_filter_from_info(&self, info: &ExistingFilterInfo) -> Result<String>;
         async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
         async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
         async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;

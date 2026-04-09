@@ -1037,6 +1037,9 @@ mod tests {
         async fn update_filter(&self, _filter_id: &str, _filter: &crate::models::FilterRule) -> crate::error::Result<String> {
             unimplemented!()
         }
+        async fn create_filter_from_info(&self, _info: &crate::client::ExistingFilterInfo) -> crate::error::Result<String> {
+            unimplemented!()
+        }
         async fn apply_label(&self, _message_id: &str, _label_id: &str) -> crate::error::Result<()> {
             unimplemented!()
         }
@@ -1148,6 +1151,9 @@ mod tests {
             Ok(())
         }
         async fn update_filter(&self, _filter_id: &str, _filter: &crate::models::FilterRule) -> crate::error::Result<String> {
+            unimplemented!()
+        }
+        async fn create_filter_from_info(&self, _info: &crate::client::ExistingFilterInfo) -> crate::error::Result<String> {
             unimplemented!()
         }
         async fn apply_label(&self, _message_id: &str, _label_id: &str) -> crate::error::Result<()> {
@@ -1371,6 +1377,9 @@ mod tests {
             unimplemented!()
         }
         async fn update_filter(&self, _filter_id: &str, _filter: &crate::models::FilterRule) -> crate::error::Result<String> {
+            unimplemented!()
+        }
+        async fn create_filter_from_info(&self, _info: &crate::client::ExistingFilterInfo) -> crate::error::Result<String> {
             unimplemented!()
         }
         async fn apply_label(&self, _message_id: &str, _label_id: &str) -> crate::error::Result<()> {
