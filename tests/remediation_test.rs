@@ -72,6 +72,9 @@ impl GmailClient for MockRemediationClient {
     ) -> Result<String> {
         unimplemented!()
     }
+    async fn create_filter_from_info(&self, _info: &ExistingFilterInfo) -> Result<String> {
+        unimplemented!()
+    }
     async fn apply_label(&self, _message_id: &str, _label_id: &str) -> Result<()> {
         unimplemented!()
     }

@@ -186,6 +186,9 @@ pub trait GmailClient: Send + Sync {
     /// Update an existing filter (delete and recreate with new settings)
     async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String>;
 
+    /// Create a filter from raw ExistingFilterInfo (for editor: delete + recreate with modifications)
+    async fn create_filter_from_info(&self, info: &ExistingFilterInfo) -> Result<String>;
+
     /// Apply a label to a message
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
 
@@ -936,6 +939,47 @@ impl GmailClient for ProductionGmailClient {
         .await
     }
 
+    async fn create_filter_from_info(&self, info: &ExistingFilterInfo) -> Result<String> {
+        let info = info.clone();
+        let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
+
+        self.with_retry("create_filter_from_info", 3, || async {
+            let criteria = FilterCriteria {
+                query: info.query.clone(),
+                from: info.from.clone(),
+                to: info.to.clone(),
+                subject: info.subject.clone(),
+                exclude_chats: Some(true),
+                ..Default::default()
+            };
+
+            let action = FilterAction {
+                add_label_ids: if info.add_label_ids.is_empty() { None } else { Some(info.add_label_ids.clone()) },
+                remove_label_ids: if info.remove_label_ids.is_empty() { None } else { Some(info.remove_label_ids.clone()) },
+                ..Default::default()
+            };
+
+            let gmail_filter = Filter {
+                criteria: Some(criteria),
+                action: Some(action),
+                ..Default::default()
+            };
+
+            let (_, created_filter) = self
+                .hub
+                .users()
+                .settings_filters_create(gmail_filter, "me")
+                .add_scope("https://www.googleapis.com/auth/gmail.settings.basic")
+                .doit()
+                .await?;
+
+            created_filter
+                .id
+                .ok_or_else(|| GmailError::FilterError("Created filter has no ID".to_string()))
+        })
+        .await
+    }
+
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {
         // Write operation costs 50 quota units
         let _quota_permit = self.quota_limiter.acquire(QuotaCost::Write).await;
@@ -1197,6 +1241,10 @@ impl GmailClient for Arc<ProductionGmailClient> {
 
     async fn update_filter(&self, filter_id: &str, filter: &FilterRule) -> Result<String> {
         self.as_ref().update_filter(filter_id, filter).await
+    }
+
+    async fn create_filter_from_info(&self, info: &ExistingFilterInfo) -> Result<String> {
+        self.as_ref().create_filter_from_info(info).await
     }
 
     async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()> {
