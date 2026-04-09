@@ -14,6 +14,7 @@ const navItems: NavItem[] = [
   { id: 'review', label: 'Review', icon: '✓', badge: () => review.undecidedCount() || null },
   { id: 'filters', label: 'Filters', icon: '🔧' },
   { id: 'coverage', label: 'Coverage', icon: '📊' },
+  { id: 'editor', label: 'Editor', icon: '✏️' },
 ];
 
 const Sidebar: Component = () => {

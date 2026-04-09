@@ -85,6 +85,10 @@ fn main() {
             commands::remediation_summary,
             commands::collect_remediation_swaps,
             commands::apply_remediation_swaps,
+            // Editor commands
+            commands::editor_dry_run,
+            commands::editor_apply,
+            commands::editor_get_filters,
             // Settings commands
             commands::get_settings,
             commands::save_settings,

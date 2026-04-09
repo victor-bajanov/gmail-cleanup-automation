@@ -25,6 +25,10 @@ import type {
   AppSettings,
   WindowState,
   ConfigSettings,
+  FilterAction,
+  ActionDiff,
+  EditorApplyResult,
+  EditorFilter,
 } from '../types';
 
 // ============ Authentication Commands ============
@@ -172,6 +176,20 @@ export async function getOverlapMatrix(): Promise<OverlapMatrixResult> {
 
 export async function getUncoveredEmails(limit?: number): Promise<UncoveredEmail[]> {
   return invoke<UncoveredEmail[]>('get_uncovered_emails', { limit });
+}
+
+// ============ Editor Commands ============
+
+export async function editorDryRun(actions: FilterAction[]): Promise<ActionDiff[]> {
+  return invoke<ActionDiff[]>('editor_dry_run', { actions });
+}
+
+export async function editorApply(actions: FilterAction[]): Promise<EditorApplyResult> {
+  return invoke<EditorApplyResult>('editor_apply', { actions });
+}
+
+export async function editorGetFilters(): Promise<EditorFilter[]> {
+  return invoke<EditorFilter[]>('editor_get_filters');
 }
 
 // ============ Settings Commands ============

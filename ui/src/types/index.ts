@@ -269,5 +269,39 @@ export interface ConfigSettings {
   reset_timeout_secs: number;
 }
 
+// Editor types
+export type FilterAction =
+  | { type: 'update_archive'; filter_id: string; new_value: boolean }
+  | { type: 'update_labels'; filter_id: string; add: string[]; remove: string[] }
+  | { type: 'delete'; filter_id: string };
+
+export interface ActionDiff {
+  filter_id: string;
+  description: string;
+  action_type: string;
+  changes: FieldChange[];
+}
+
+export interface FieldChange {
+  field: string;
+  before: string;
+  after: string;
+}
+
+export interface EditorApplyResult {
+  succeeded: number;
+  failed: [string, string][];
+}
+
+export interface EditorFilter {
+  id: string;
+  query: string | null;
+  from: string | null;
+  to: string | null;
+  subject: string | null;
+  add_label_ids: string[];
+  remove_label_ids: string[];
+}
+
 // App state
-export type AppView = 'auth' | 'scan' | 'review' | 'filters' | 'coverage' | 'settings';
+export type AppView = 'auth' | 'scan' | 'review' | 'filters' | 'coverage' | 'editor' | 'settings';

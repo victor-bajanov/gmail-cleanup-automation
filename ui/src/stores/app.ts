@@ -12,6 +12,8 @@ import type {
   FilterComparison,
   CoverageAnalysis,
   ErrorEvent,
+  EditorFilter,
+  FilterAction,
 } from '../types';
 
 // ============ Auth State ============
@@ -108,6 +110,42 @@ export const filters = {
   },
 };
 
+// ============ Editor State ============
+
+const [editorFilters, setEditorFilters] = createSignal<EditorFilter[]>([]);
+const [editorSearch, setEditorSearch] = createSignal('');
+const [editorQueue, setEditorQueue] = createSignal<FilterAction[]>([]);
+const [editorLoading, setEditorLoading] = createSignal(false);
+
+export const editor = {
+  filters: editorFilters,
+  search: editorSearch,
+  queue: editorQueue,
+  isLoading: editorLoading,
+  setFilters: setEditorFilters,
+  setSearch: setEditorSearch,
+  setQueue: setEditorQueue,
+  setLoading: setEditorLoading,
+  queueCount: createMemo(() => editorQueue().length),
+  addAction: (action: FilterAction) => {
+    setEditorQueue((prev) => {
+      const filterId = action.filter_id;
+      const filtered = prev.filter((a) => a.filter_id !== filterId);
+      return [...filtered, action];
+    });
+  },
+  removeAction: (filterId: string) => {
+    setEditorQueue((prev) => prev.filter((a) => a.filter_id !== filterId));
+  },
+  clearQueue: () => setEditorQueue([]),
+  reset: () => {
+    setEditorFilters([]);
+    setEditorSearch('');
+    setEditorQueue([]);
+    setEditorLoading(false);
+  },
+};
+
 // ============ Coverage State ============
 
 const [coverageAnalysis, setCoverageAnalysis] = createSignal<CoverageAnalysis | null>(null);
@@ -171,5 +209,6 @@ export function resetAllState() {
   review.reset();
   filters.reset();
   coverage.reset();
+  editor.reset();
   errorState.clear();
 }
