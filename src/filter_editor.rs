@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::client::ExistingFilterInfo;
+use crate::client::{ExistingFilterInfo, GmailClient};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -99,6 +99,96 @@ pub fn dry_run(actions: &[FilterAction], filters: &[ExistingFilterInfo]) -> Vec<
             }
         })
         .collect()
+}
+
+pub async fn apply(
+    client: &dyn GmailClient,
+    actions: &[FilterAction],
+    filters: &[ExistingFilterInfo],
+) -> EditorApplyResult {
+    let mut succeeded = 0;
+    let mut failed: Vec<(String, String)> = Vec::new();
+
+    for action in actions {
+        let result = apply_single(client, action, filters).await;
+        match result {
+            Ok(()) => succeeded += 1,
+            Err(e) => {
+                let filter_id = match action {
+                    FilterAction::UpdateArchive { filter_id, .. } => filter_id,
+                    FilterAction::UpdateLabels { filter_id, .. } => filter_id,
+                    FilterAction::Delete { filter_id } => filter_id,
+                };
+                failed.push((filter_id.clone(), e));
+            }
+        }
+    }
+
+    EditorApplyResult { succeeded, failed }
+}
+
+async fn apply_single(
+    client: &dyn GmailClient,
+    action: &FilterAction,
+    filters: &[ExistingFilterInfo],
+) -> std::result::Result<(), String> {
+    match action {
+        FilterAction::UpdateArchive {
+            filter_id,
+            new_value,
+        } => {
+            let filter = find_filter(filters, filter_id)
+                .ok_or_else(|| format!("Filter {} not found", filter_id))?;
+            let mut updated = filter.clone();
+            if *new_value {
+                if !updated.remove_label_ids.contains(&INBOX_LABEL.to_string()) {
+                    updated.remove_label_ids.push(INBOX_LABEL.to_string());
+                }
+            } else {
+                updated.remove_label_ids.retain(|l| l != INBOX_LABEL);
+            }
+            client
+                .delete_filter(filter_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            client
+                .create_filter_from_info(&updated)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        FilterAction::UpdateLabels {
+            filter_id,
+            add,
+            remove,
+        } => {
+            let filter = find_filter(filters, filter_id)
+                .ok_or_else(|| format!("Filter {} not found", filter_id))?;
+            let mut updated = filter.clone();
+            updated.add_label_ids.retain(|l| !remove.contains(l));
+            for label in add {
+                if !updated.add_label_ids.contains(label) {
+                    updated.add_label_ids.push(label.clone());
+                }
+            }
+            client
+                .delete_filter(filter_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            client
+                .create_filter_from_info(&updated)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        FilterAction::Delete { filter_id } => {
+            client
+                .delete_filter(filter_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+    }
 }
 
 fn find_filter<'a>(filters: &'a [ExistingFilterInfo], id: &str) -> Option<&'a ExistingFilterInfo> {
