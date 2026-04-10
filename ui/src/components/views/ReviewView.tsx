@@ -8,6 +8,7 @@ const ReviewView: Component = () => {
   const [customLabel, setCustomLabel] = createSignal('');
   const [showCustomLabel, setShowCustomLabel] = createSignal(false);
   const [isSubmitting, setIsSubmitting] = createSignal(false);
+  const [categories, setCategories] = createSignal<string[]>([]);
 
   // Sort clusters with existing filters first
   const sortedClusters = createMemo(() => {
@@ -44,6 +45,21 @@ const ReviewView: Component = () => {
 
     const summary = await api.getReviewSummary();
     review.setSummary(summary);
+
+    try {
+      const editorData = await api.editorGetFilters(false);
+      const labelNames = Object.values(editorData.label_map);
+      const cats = new Set<string>();
+      for (const name of labelNames) {
+        const parts = name.split('/');
+        if (parts.length >= 2) {
+          cats.add(parts[1]);
+        }
+      }
+      setCategories([...cats].sort());
+    } catch (e) {
+      console.warn('Failed to load label categories:', e);
+    }
   });
 
   // Keyboard shortcuts
@@ -80,11 +96,18 @@ const ReviewView: Component = () => {
           await handleDecision('exclude');
           break;
         case 'l':
+          setCustomLabel(currentCluster()?.suggested_label || '');
           setShowCustomLabel(true);
           break;
-        case 'a':
-          // Toggle archive - handled differently
+        case 'a': {
+          const idx = selectedIndex();
+          if (idx === null) break;
+          const updated = review.clusters().map((c, i) =>
+            i === idx ? { ...c, should_archive: !c.should_archive } : c
+          );
+          review.setClusters(updated);
           break;
+        }
         case 'u':
           await handleUndo();
           break;
@@ -383,6 +406,36 @@ const ReviewView: Component = () => {
           {/* Custom Label Input */}
           <Show when={showCustomLabel()}>
             <div class="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700">
+              <Show when={categories().length > 0 && customLabel().includes('/')}>
+                <div class="flex gap-1 mb-2 flex-wrap">
+                  <span class="text-xs text-gray-500 dark:text-gray-400 self-center mr-1">Category:</span>
+                  <For each={categories()}>
+                    {(cat) => {
+                      const parts = customLabel().split('/');
+                      const isActive = parts.length >= 2 && parts[1] === cat;
+                      return (
+                        <button
+                          class="text-xs px-2 py-1 rounded transition-colors"
+                          classList={{
+                            'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300': isActive,
+                            'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-500': !isActive,
+                          }}
+                          onClick={() => {
+                            const parts = customLabel().split('/');
+                            if (parts.length >= 2) {
+                              parts[1] = cat;
+                              setCustomLabel(parts.join('/'));
+                            }
+                          }}
+                        >
+                          {cat}
+                        </button>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
+
               <div class="flex gap-2">
                 <input
                   type="text"
@@ -464,12 +517,30 @@ const ReviewView: Component = () => {
                 Exclude
               </button>
               <button
-                onClick={() => setShowCustomLabel(true)}
+                onClick={() => {
+                  setCustomLabel(currentCluster()?.suggested_label || '');
+                  setShowCustomLabel(true);
+                }}
                 disabled={isSubmitting()}
                 class="btn-ghost flex items-center gap-2"
               >
                 <kbd class="kbd">L</kbd>
                 Custom Label
+              </button>
+              <button
+                onClick={() => {
+                  const idx = selectedIndex();
+                  if (idx === null) return;
+                  const updated = review.clusters().map((c, i) =>
+                    i === idx ? { ...c, should_archive: !c.should_archive } : c
+                  );
+                  review.setClusters(updated);
+                }}
+                disabled={isSubmitting()}
+                class="btn-ghost flex items-center gap-2"
+              >
+                <kbd class="kbd">A</kbd>
+                Archive: {currentCluster()?.should_archive ? 'ON' : 'OFF'}
               </button>
             </div>
           </div>
@@ -575,6 +646,7 @@ const ReviewView: Component = () => {
             <div><kbd class="kbd">D</kbd> Delete filter</div>
             <div><kbd class="kbd">E</kbd> Exclude forever</div>
             <div><kbd class="kbd">L</kbd> Custom label</div>
+            <div><kbd class="kbd">A</kbd> Toggle archive</div>
             <div><kbd class="kbd">U</kbd> Undo</div>
             <div><kbd class="kbd">↑↓</kbd> Navigate</div>
           </div>
