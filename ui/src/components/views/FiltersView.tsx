@@ -1,6 +1,7 @@
 import { Component, createSignal, onMount, Show, For } from 'solid-js';
 import { filters } from '../../stores/app';
 import * as api from '../../lib/api';
+import { onFilterProgress } from '../../lib/events';
 import type { FilterView, AnalysisView, ConflictView, HiddenFilterInfo } from '../../types';
 
 const FiltersView: Component = () => {
@@ -13,6 +14,9 @@ const FiltersView: Component = () => {
   const [hiddenFilters, setHiddenFilters] = createSignal<HiddenFilterInfo[]>([]);
   const [showHiddenModal, setShowHiddenModal] = createSignal(false);
   const [hidingInProgress, setHidingInProgress] = createSignal<string | null>(null);
+  const [overlapExpanded, setOverlapExpanded] = createSignal(false);
+  const [applyProgress, setApplyProgress] = createSignal<{ current: number; total: number; name?: string } | null>(null);
+  const [isApplying, setIsApplying] = createSignal(false);
 
   // Filter conflicts to exclude theoretical overlaps unless toggle is on
   const visibleConflicts = () => {
@@ -130,8 +134,19 @@ const FiltersView: Component = () => {
   const handleApply = async (dryRun: boolean) => {
     setApplyResult(null);
     setError(null);
+    setIsApplying(true);
+    setApplyProgress(null);
 
+    let unlisten: (() => void) | null = null;
     try {
+      unlisten = await onFilterProgress((progress) => {
+        setApplyProgress({
+          current: progress.current,
+          total: progress.total,
+          name: progress.filter_name,
+        });
+      });
+
       const result = await api.applyFilters(dryRun);
 
       if (result.success) {
@@ -156,6 +171,10 @@ const FiltersView: Component = () => {
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (unlisten) unlisten();
+      setIsApplying(false);
+      setApplyProgress(null);
     }
   };
 
@@ -186,20 +205,34 @@ const FiltersView: Component = () => {
         </div>
 
         <div class="flex gap-2">
-          <button
-            onClick={() => handleApply(true)}
-            disabled={isLoading()}
-            class="btn-secondary"
-          >
-            Dry Run
-          </button>
-          <button
-            onClick={() => handleApply(false)}
-            disabled={isLoading()}
-            class="btn-primary"
-          >
-            Apply Filters
-          </button>
+          <Show when={!isApplying()} fallback={
+            <div class="flex items-center gap-3">
+              <div class="animate-spin w-5 h-5 border-2 border-primary-200 border-t-primary-600 rounded-full" />
+              <span class="text-sm text-gray-600 dark:text-gray-400">
+                <Show when={applyProgress()} fallback="Preparing...">
+                  Creating filter {applyProgress()!.current}/{applyProgress()!.total}
+                  <Show when={applyProgress()!.name}>
+                    : {applyProgress()!.name}
+                  </Show>
+                </Show>
+              </span>
+            </div>
+          }>
+            <button
+              onClick={() => handleApply(true)}
+              disabled={isLoading()}
+              class="btn-secondary"
+            >
+              Dry Run
+            </button>
+            <button
+              onClick={() => handleApply(false)}
+              disabled={isLoading()}
+              class="btn-primary"
+            >
+              Apply Filters
+            </button>
+          </Show>
         </div>
       </div>
 
@@ -283,12 +316,42 @@ const FiltersView: Component = () => {
       {/* Overlap Analysis */}
       <Show when={analysis()}>
         <div class="card p-6">
-          <div class="flex items-center justify-between mb-4">
+          <button
+            class="w-full flex items-center justify-between"
+            classList={{ 'mb-4': overlapExpanded() }}
+            onClick={() => setOverlapExpanded(!overlapExpanded())}
+          >
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
               Overlap Analysis
             </h3>
+            <div class="flex items-center gap-3">
+              <div class="flex gap-2 text-sm">
+                <Show when={analysis()!.error_count > 0}>
+                  <span class="px-2 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300">
+                    {analysis()!.error_count} errors
+                  </span>
+                </Show>
+                <Show when={analysis()!.warning_count > 0}>
+                  <span class="px-2 py-0.5 rounded bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300">
+                    {analysis()!.warning_count} warnings
+                  </span>
+                </Show>
+                <Show when={analysis()!.info_count > 0}>
+                  <span class="px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">
+                    {analysis()!.info_count} info
+                  </span>
+                </Show>
+              </div>
+              <svg class="w-5 h-5 text-gray-400 transition-transform"
+                classList={{ 'rotate-180': overlapExpanded() }}
+                fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </div>
+          </button>
 
-            <div class="flex items-center gap-4">
+          <Show when={overlapExpanded()}>
+            <div class="flex items-center gap-4 mb-4">
               {/* Hidden Filters Button */}
               <button
                 onClick={() => setShowHiddenModal(true)}
@@ -335,7 +398,6 @@ const FiltersView: Component = () => {
                 </button>
               </Show>
             </div>
-          </div>
 
           <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">
             {analysis()!.summary}
@@ -457,6 +519,7 @@ const FiltersView: Component = () => {
                 </p>
               </Show>
             </div>
+          </Show>
           </Show>
         </div>
       </Show>
