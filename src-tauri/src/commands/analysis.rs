@@ -147,6 +147,7 @@ pub async fn analyze_filter_overlaps(
         }
 
         // Store metadata for this filter
+        let label_name_for_filter = label_name.clone();
         filter_meta.insert(f.id.clone(), FilterMeta {
             query: query.clone(),
             label: label_name,
@@ -164,7 +165,7 @@ pub async fn analyze_filter_overlaps(
             &f.id,
             display_name,
             expr,
-            FilterActions::with_label(&label_id),
+            FilterActions::with_label(&label_name_for_filter),
         ));
     }
 
@@ -183,6 +184,7 @@ pub async fn analyze_filter_overlaps(
         }
 
         // Store metadata for this filter
+        let label_name_for_filter = label_name.clone();
         filter_meta.insert(filter_id.clone(), FilterMeta {
             query: query.clone(),
             label: label_name,
@@ -193,9 +195,9 @@ pub async fn analyze_filter_overlaps(
             f.name.clone(),
             expr,
             if f.should_archive {
-                FilterActions::label_and_archive(&f.target_label_id)
+                FilterActions::label_and_archive(&label_name_for_filter)
             } else {
-                FilterActions::with_label(&f.target_label_id)
+                FilterActions::with_label(&label_name_for_filter)
             },
         ));
     }
