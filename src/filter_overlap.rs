@@ -388,6 +388,63 @@ impl FilterOverlapAnalyzer {
                     PatternRelation::Disjoint
                 }
             }
+
+            // MultipleSenders vs single (Domain or SpecificSender)
+            (FromClause::MultipleSenders(senders), other) => {
+                self.analyze_multi_vs_single(senders, other)
+            }
+
+            // Single vs MultipleSenders
+            (other, FromClause::MultipleSenders(senders)) => {
+                // Reverse the result
+                match self.analyze_multi_vs_single(senders, other) {
+                    PatternRelation::Subsumes => PatternRelation::SubsumedBy,
+                    PatternRelation::SubsumedBy => PatternRelation::Subsumes,
+                    other => other,
+                }
+            }
+        }
+    }
+
+    /// Analyzes the relationship between MultipleSenders and a single FromClause
+    fn analyze_multi_vs_single(&self, senders: &[FromClause], other: &FromClause) -> PatternRelation {
+        let mut all_subsumed = true;
+        let mut any_subsumes_or_identical = false;
+        let mut any_overlaps = false;
+
+        for sender in senders {
+            let relation = self.analyze_from_relation(sender, other);
+            match relation {
+                PatternRelation::Identical | PatternRelation::Subsumes => {
+                    // This sender subsumes or equals other
+                    any_subsumes_or_identical = true;
+                    all_subsumed = false; // this sender is not subsumed by other
+                }
+                PatternRelation::SubsumedBy => {
+                    // This sender is subsumed by other — keep all_subsumed true
+                }
+                PatternRelation::Overlaps { .. } => {
+                    any_overlaps = true;
+                    all_subsumed = false;
+                }
+                PatternRelation::Disjoint => {
+                    all_subsumed = false;
+                }
+            }
+        }
+
+        if all_subsumed {
+            // All senders are subsumed by other
+            PatternRelation::SubsumedBy
+        } else if any_subsumes_or_identical {
+            // Multi contains other (and possibly more)
+            PatternRelation::Subsumes
+        } else if any_overlaps {
+            PatternRelation::Overlaps {
+                description: "Some senders overlap".to_string(),
+            }
+        } else {
+            PatternRelation::Disjoint
         }
     }
 
@@ -831,7 +888,28 @@ pub fn parse_gmail_query(query: &str) -> FilterExpr {
         if let Some(end) = from_end {
             let from_pattern = &query[from_start + 6..end];
 
-            if from_pattern.starts_with("*@") {
+            if from_pattern.contains(" OR ") {
+                // Multiple senders with OR
+                let parts: Vec<FromClause> = from_pattern
+                    .split(" OR ")
+                    .filter_map(|part| {
+                        let part = part.trim();
+                        if part.starts_with("*@") {
+                            Some(FromClause::Domain(DomainPattern::new(part.trim_start_matches("*@"))))
+                        } else if part.contains('@') {
+                            EmailPattern::parse(part).map(FromClause::SpecificSender)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if parts.len() == 1 {
+                    expr.from_clause = Some(parts.into_iter().next().unwrap());
+                } else if parts.len() >= 2 {
+                    expr.from_clause = Some(FromClause::MultipleSenders(parts));
+                }
+            } else if from_pattern.starts_with("*@") {
                 // Domain pattern
                 let domain = from_pattern.trim_start_matches("*@");
                 expr.from_clause = Some(FromClause::Domain(DomainPattern::new(domain)));
@@ -901,6 +979,10 @@ pub fn to_gmail_query(expr: &FilterExpr) -> String {
             FromClause::SpecificSender(e) => {
                 parts.push(format!("from:({})", e.full_address()));
             }
+            FromClause::MultipleSenders(senders) => {
+                let sender_strs: Vec<String> = senders.iter().map(|s| s.describe()).collect();
+                parts.push(format!("from:({})", sender_strs.join(" OR ")));
+            }
         }
     }
 
@@ -911,6 +993,10 @@ pub fn to_gmail_query(expr: &FilterExpr) -> String {
             }
             FromClause::SpecificSender(e) => {
                 parts.push(format!("-from:({})", e.full_address()));
+            }
+            FromClause::MultipleSenders(senders) => {
+                let sender_strs: Vec<String> = senders.iter().map(|s| s.describe()).collect();
+                parts.push(format!("-from:({})", sender_strs.join(" OR ")));
             }
         }
     }
@@ -1326,5 +1412,61 @@ mod tests {
         // SUBJECT: single keyword is subsumed by multiple (SubsumedBy)
         // Combined: Overlaps (mixed directions)
         assert!(matches!(relation, PatternRelation::Overlaps { .. }));
+    }
+
+    #[test]
+    fn test_parse_gmail_query_or_senders() {
+        let expr = parse_gmail_query("from:(allsales@powerbuys.com.au OR dailydeals@powerbuys.com.au)");
+        assert!(expr.from_clause.is_some());
+        if let Some(FromClause::MultipleSenders(senders)) = &expr.from_clause {
+            assert_eq!(senders.len(), 2);
+        } else {
+            panic!("Expected MultipleSenders, got {:?}", expr.from_clause);
+        }
+    }
+
+    #[test]
+    fn test_multiple_senders_vs_single_sender_disjoint() {
+        let analyzer = FilterOverlapAnalyzer::new();
+        let multi = FromClause::MultipleSenders(vec![
+            FromClause::SpecificSender(EmailPattern::new("a", "x.com")),
+            FromClause::SpecificSender(EmailPattern::new("b", "x.com")),
+        ]);
+        let single = FromClause::SpecificSender(EmailPattern::new("c", "y.com"));
+        let relation = analyzer.analyze_from_relation(&multi, &single);
+        assert_eq!(relation, PatternRelation::Disjoint);
+    }
+
+    #[test]
+    fn test_multiple_senders_vs_single_sender_subsumes() {
+        let analyzer = FilterOverlapAnalyzer::new();
+        let multi = FromClause::MultipleSenders(vec![
+            FromClause::SpecificSender(EmailPattern::new("a", "x.com")),
+            FromClause::SpecificSender(EmailPattern::new("b", "x.com")),
+        ]);
+        let single = FromClause::SpecificSender(EmailPattern::new("a", "x.com"));
+        let relation = analyzer.analyze_from_relation(&multi, &single);
+        assert_eq!(relation, PatternRelation::Subsumes);
+    }
+
+    #[test]
+    fn test_domain_subsumes_multiple_senders_same_domain() {
+        let analyzer = FilterOverlapAnalyzer::new();
+        let domain = FromClause::Domain(DomainPattern::new("x.com"));
+        let multi = FromClause::MultipleSenders(vec![
+            FromClause::SpecificSender(EmailPattern::new("a", "x.com")),
+            FromClause::SpecificSender(EmailPattern::new("b", "x.com")),
+        ]);
+        let relation = analyzer.analyze_from_relation(&domain, &multi);
+        assert_eq!(relation, PatternRelation::Subsumes);
+    }
+
+    #[test]
+    fn test_powerbuys_vs_github_disjoint() {
+        let analyzer = FilterOverlapAnalyzer::new();
+        let expr_a = parse_gmail_query("from:(allsales@powerbuys.com.au OR dailydeals@powerbuys.com.au)");
+        let expr_b = parse_gmail_query("from:(noreply@github.com)");
+        let relation = analyzer.analyze_expr_relation(&expr_a, &expr_b);
+        assert_eq!(relation, PatternRelation::Disjoint);
     }
 }

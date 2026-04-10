@@ -452,6 +452,16 @@ impl OverlapDetector {
                     FromClause::SpecificSender(ep) => {
                         Some((ep.domain.to_lowercase(), Some(ep.full_address().to_lowercase())))
                     }
+                    FromClause::MultipleSenders(senders) => {
+                        // Use first sender's domain as representative
+                        senders.first().and_then(|s| match s {
+                            FromClause::Domain(dp) => Some((dp.domain.to_lowercase(), None)),
+                            FromClause::SpecificSender(ep) => {
+                                Some((ep.domain.to_lowercase(), Some(ep.full_address().to_lowercase())))
+                            }
+                            _ => None,
+                        })
+                    }
                 };
             }
         }
@@ -480,6 +490,11 @@ impl OverlapDetector {
                     }
                     FromClause::SpecificSender(ep) => {
                         (Some(ep.full_address()), true)
+                    }
+                    FromClause::MultipleSenders(senders) => {
+                        // Reconstruct OR pattern
+                        let parts: Vec<String> = senders.iter().map(|s| s.describe()).collect();
+                        (Some(parts.join(" OR ")), true)
                     }
                 };
             }

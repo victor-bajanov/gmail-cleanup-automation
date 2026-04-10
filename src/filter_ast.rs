@@ -154,6 +154,8 @@ pub enum FromClause {
     Domain(DomainPattern),
     /// Matches emails from a specific sender (e.g., noreply@github.com)
     SpecificSender(EmailPattern),
+    /// Matches emails from multiple senders (OR clause)
+    MultipleSenders(Vec<FromClause>),
 }
 
 impl FromClause {
@@ -162,6 +164,9 @@ impl FromClause {
         match self {
             FromClause::Domain(d) => d.describe(),
             FromClause::SpecificSender(e) => e.full_address(),
+            FromClause::MultipleSenders(senders) => {
+                senders.iter().map(|s| s.describe()).collect::<Vec<_>>().join(" OR ")
+            }
         }
     }
 
@@ -170,6 +175,9 @@ impl FromClause {
         match self {
             FromClause::Domain(d) => &d.domain,
             FromClause::SpecificSender(e) => &e.domain,
+            FromClause::MultipleSenders(senders) => {
+                senders.first().map(|s| s.domain()).unwrap_or("")
+            }
         }
     }
 }
