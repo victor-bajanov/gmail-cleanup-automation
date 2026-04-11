@@ -2,7 +2,10 @@
 
 use crate::events::{AppHandleExt, FilterOperation, FilterProgress};
 use crate::state::AppState;
-use gmail_automation::{DecisionAction, FilterManager, FilterRule, GmailClient};
+use gmail_automation::{
+    DecisionAction, FilterManager, FilterRule, GmailClient, LabelManager,
+    label_manager::create_labels_and_resolve_ids,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
@@ -334,6 +337,35 @@ pub async fn apply_filters(
     let mut created = 0;
     let mut errors = Vec::new();
 
+    // Create labels and resolve IDs before creating filters
+    let config = state.get_config().unwrap_or_default();
+    let label_prefix = config.labels.prefix.clone();
+    let label_client = std::sync::Arc::clone(&client);
+    let mut label_mgr = LabelManager::new(Box::new(label_client), label_prefix);
+
+    let name_to_id = match create_labels_and_resolve_ids(&mut label_mgr, &proposed, dry_run).await
+    {
+        Ok((map, stats)) => {
+            tracing::info!(
+                "Label resolution: {} created, {} already existed",
+                stats.created,
+                stats.skipped
+            );
+            map
+        }
+        Err(e) => {
+            return Err(format!("Failed to create/resolve labels: {}", e));
+        }
+    };
+
+    // Populate the AppState label cache with resolved IDs
+    {
+        let mut cache = state.label_cache.write();
+        for (name, id) in &name_to_id {
+            cache.insert(name.clone(), id.clone());
+        }
+    }
+
     // Create FilterManager - clone the Arc for ownership
     let client_clone = std::sync::Arc::clone(&client);
     let mut manager = FilterManager::new(Box::new(client_clone));
@@ -350,7 +382,24 @@ pub async fn apply_filters(
             tracing::info!("Dry run: would create filter {}", filter.name);
             created += 1;
         } else {
-            match manager.create_filter(filter).await {
+            // Look up the resolved Gmail label ID
+            let resolved_id =
+                match name_to_id.get(&filter.target_label_id.to_lowercase()) {
+                    Some(id) => id.clone(),
+                    None => {
+                        errors.push(format!(
+                            "Label ID not found for '{}' in filter '{}'",
+                            filter.target_label_id, filter.name
+                        ));
+                        continue;
+                    }
+                };
+
+            // Clone filter with the resolved label ID
+            let mut resolved_filter = filter.clone();
+            resolved_filter.target_label_id = resolved_id;
+
+            match manager.create_filter(&resolved_filter).await {
                 Ok(_) => {
                     created += 1;
                 }
