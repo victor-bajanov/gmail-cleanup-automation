@@ -850,6 +850,67 @@ impl LabelManager {
     }
 }
 
+/// Stats from the label creation pipeline
+#[derive(Debug, Default)]
+pub struct LabelCreationStats {
+    pub created: usize,
+    pub skipped: usize,
+}
+
+/// Extracts unique label names from filters, creates missing labels in Gmail,
+/// and returns a map of lowercase label name -> Gmail label ID.
+///
+/// This is the shared pipeline used by both CLI and GUI to ensure labels
+/// exist before creating filters.
+///
+/// In dry_run mode, stats.created counts what WOULD be created, but the
+/// returned map is empty (no real IDs are available).
+pub async fn create_labels_and_resolve_ids(
+    label_manager: &mut LabelManager,
+    filters: &[crate::models::FilterRule],
+    dry_run: bool,
+) -> crate::error::Result<(std::collections::HashMap<String, String>, LabelCreationStats)> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut stats = LabelCreationStats::default();
+    let mut name_to_id: HashMap<String, String> = HashMap::new();
+
+    // Collect unique label names from filters
+    let unique_labels: HashSet<String> = filters
+        .iter()
+        .map(|f| f.target_label_id.clone())
+        .collect();
+
+    // Load existing labels into the cache
+    label_manager.load_existing_labels().await?;
+
+    for label_name in &unique_labels {
+        let sanitized = label_manager.sanitize_label_name(label_name)?;
+        let key = sanitized.to_lowercase();
+
+        // Check if the label already exists in cache
+        if let Some(existing_id) = label_manager.cache_get(&sanitized) {
+            stats.skipped += 1;
+            name_to_id.insert(label_name.to_lowercase(), existing_id.clone());
+        } else if dry_run {
+            // In dry run, count as would-be-created but don't actually create
+            stats.created += 1;
+        } else {
+            // Create the label directly (name is the full path, not prefixed)
+            let label_id = label_manager.create_label_direct(&sanitized).await?;
+            stats.created += 1;
+            name_to_id.insert(label_name.to_lowercase(), label_id);
+        }
+    }
+
+    info!(
+        "Label pipeline: {} created, {} skipped (dry_run={})",
+        stats.created, stats.skipped, dry_run
+    );
+
+    Ok((name_to_id, stats))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1325,5 +1386,174 @@ mod tests {
         // automanaged/used should not be orphaned (it's actively used)
         assert!(!orphaned_names.contains(&"automanaged/used".to_string()),
             "Used label should not be orphaned");
+    }
+
+    // Helper macro to avoid repeating the mock definition in every test
+    macro_rules! define_mock_gmail_client {
+        () => {
+            mockall::mock! {
+                pub TestGmailClient {}
+
+                #[async_trait::async_trait]
+                impl crate::client::GmailClient for TestGmailClient {
+                    async fn list_message_ids(&self, query: &str) -> Result<Vec<String>>;
+                    async fn get_message(&self, id: &str) -> Result<crate::models::MessageMetadata>;
+                    async fn list_labels(&self) -> Result<Vec<crate::client::LabelInfo>>;
+                    async fn create_label(&self, name: &str) -> Result<String>;
+                    async fn delete_label(&self, label_id: &str) -> Result<()>;
+                    async fn create_filter(&self, filter: &crate::models::FilterRule) -> Result<String>;
+                    async fn list_filters(&self) -> Result<Vec<crate::client::ExistingFilterInfo>>;
+                    async fn delete_filter(&self, filter_id: &str) -> Result<()>;
+                    async fn update_filter(&self, filter_id: &str, filter: &crate::models::FilterRule) -> Result<String>;
+                    async fn create_filter_from_info(&self, info: &crate::client::ExistingFilterInfo) -> Result<String>;
+                    async fn apply_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                    async fn remove_label(&self, message_id: &str, label_id: &str) -> Result<()>;
+                    async fn batch_remove_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                    async fn batch_add_label(&self, message_ids: &[String], label_id: &str) -> Result<usize>;
+                    async fn batch_modify_labels(&self, message_ids: &[String], add_label_ids: &[String], remove_label_ids: &[String]) -> Result<usize>;
+                    async fn fetch_messages_batch(&self, message_ids: Vec<String>) -> Result<Vec<crate::models::MessageMetadata>>;
+                    async fn fetch_messages_with_progress(&self, message_ids: Vec<String>, on_progress: crate::client::ProgressCallback) -> Result<Vec<crate::models::MessageMetadata>>;
+                    async fn quota_stats(&self) -> crate::rate_limiter::QuotaStats;
+                }
+            }
+        };
+    }
+
+    fn make_filter_rule(target_label: &str) -> crate::models::FilterRule {
+        crate::models::FilterRule {
+            id: None,
+            name: format!("test-filter-{}", target_label),
+            from_pattern: Some("test@example.com".to_string()),
+            is_specific_sender: true,
+            excluded_senders: vec![],
+            subject_keywords: vec![],
+            excluded_subject_patterns: vec![],
+            target_label_id: target_label.to_string(),
+            should_archive: false,
+            estimated_matches: 10,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_labels_and_resolve_ids_creates_missing() {
+        define_mock_gmail_client!();
+
+        let mut mock_client = MockTestGmailClient::new();
+
+        // load_existing_labels calls list_labels
+        mock_client
+            .expect_list_labels()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        // The label "My Label" will be sanitized and created
+        mock_client
+            .expect_create_label()
+            .returning(|name| Ok(format!("id-for-{}", name)));
+
+        let mut manager = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
+        let filters = vec![make_filter_rule("My Label")];
+
+        let (map, stats) = create_labels_and_resolve_ids(&mut manager, &filters, false)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.created, 1);
+        assert_eq!(stats.skipped, 0);
+        assert!(map.contains_key("my label"));
+    }
+
+    #[tokio::test]
+    async fn test_create_labels_and_resolve_ids_skips_existing() {
+        define_mock_gmail_client!();
+
+        let mut mock_client = MockTestGmailClient::new();
+
+        // Return a label that already exists matching our filter's target
+        mock_client
+            .expect_list_labels()
+            .times(1)
+            .returning(|| {
+                Ok(vec![crate::client::LabelInfo {
+                    id: "existing-id-123".to_string(),
+                    name: "My Label".to_string(),
+                }])
+            });
+
+        // create_label should NOT be called
+        mock_client
+            .expect_create_label()
+            .times(0)
+            .returning(|_| panic!("should not be called"));
+
+        let mut manager = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
+        let filters = vec![make_filter_rule("My Label")];
+
+        let (map, stats) = create_labels_and_resolve_ids(&mut manager, &filters, false)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.created, 0);
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(map.get("my label").unwrap(), "existing-id-123");
+    }
+
+    #[tokio::test]
+    async fn test_create_labels_and_resolve_ids_dry_run() {
+        define_mock_gmail_client!();
+
+        let mut mock_client = MockTestGmailClient::new();
+
+        mock_client
+            .expect_list_labels()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        // create_label should NOT be called in dry run
+        mock_client
+            .expect_create_label()
+            .times(0)
+            .returning(|_| panic!("should not be called"));
+
+        let mut manager = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
+        let filters = vec![make_filter_rule("New Label")];
+
+        let (map, stats) = create_labels_and_resolve_ids(&mut manager, &filters, true)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.created, 1); // would be created
+        assert!(map.is_empty()); // but no real IDs
+    }
+
+    #[tokio::test]
+    async fn test_create_labels_deduplicates() {
+        define_mock_gmail_client!();
+
+        let mut mock_client = MockTestGmailClient::new();
+
+        mock_client
+            .expect_list_labels()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        // Should only create the label once despite two filters referencing it
+        mock_client
+            .expect_create_label()
+            .returning(|name| Ok(format!("id-for-{}", name)));
+
+        let mut manager = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
+        let filters = vec![
+            make_filter_rule("Same Label"),
+            make_filter_rule("Same Label"),
+        ];
+
+        let (map, stats) = create_labels_and_resolve_ids(&mut manager, &filters, false)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.created, 1);
+        assert_eq!(stats.skipped, 0);
+        assert!(map.contains_key("same label"));
     }
 }
