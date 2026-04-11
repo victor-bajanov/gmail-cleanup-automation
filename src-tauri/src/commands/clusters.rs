@@ -50,6 +50,23 @@ pub struct ClusterView {
     pub decision: Option<String>,
 }
 
+/// Derive a stable exclusion key for a cluster.
+///
+/// Domain clusters get `*@domain.com`, specific senders get `user@domain.com`.
+/// If the cluster has a subject pattern it is appended as `|subject:Pattern`.
+fn cluster_exclusion_key(cluster: &EmailCluster) -> String {
+    let base = if cluster.is_specific_sender {
+        cluster.sender_email.clone()
+    } else {
+        format!("*@{}", cluster.sender_domain)
+    };
+    if let Some(subject) = &cluster.subject_pattern {
+        format!("{}|subject:{}", base, subject)
+    } else {
+        base
+    }
+}
+
 /// Helper to build sender pattern from cluster
 fn build_sender_pattern(cluster: &EmailCluster) -> String {
     if cluster.is_specific_sender && !cluster.sender_email.is_empty() {
@@ -115,6 +132,7 @@ pub async fn get_clusters(
     let clusters = state.get_clusters();
     let decisions = state.get_gui_decisions();
     let min = min_emails.unwrap_or(1);
+    let exclusion_manager = state.exclusion_manager.read();
 
     let decision_map: std::collections::HashMap<usize, &GuiDecision> =
         decisions.iter().map(|d| (d.cluster_index, d)).collect();
@@ -123,6 +141,7 @@ pub async fn get_clusters(
         .iter()
         .enumerate()
         .filter(|(_, c)| c.message_ids.len() >= min)
+        .filter(|(_, c)| !exclusion_manager.is_excluded(&cluster_exclusion_key(c)))
         .map(|(i, c)| {
             let mut view = ClusterView::from(c);
             view.index = i;
@@ -212,6 +231,22 @@ pub async fn submit_cluster_decision(
         should_archive: input.archive.unwrap_or(cluster.should_archive),
         target_label: cluster.suggested_label.clone(),
     };
+
+    // Persist exclusion to disk if action is Exclude
+    if matches!(&decision.action, DecisionAction::Exclude) {
+        let key = cluster_exclusion_key(cluster);
+        let mut exclusion_manager = state.exclusion_manager.write();
+        exclusion_manager.add(key, Some("Excluded via GUI".to_string()));
+
+        // Save to disk next to credentials
+        let exclusions_path = state.credentials_path()
+            .parent()
+            .map(|p| p.join("exclusions.json"))
+            .unwrap_or_else(|| std::path::PathBuf::from("exclusions.json"));
+        if let Err(e) = exclusion_manager.save_sync(&exclusions_path) {
+            tracing::error!("Failed to save exclusions: {}", e);
+        }
+    }
 
     // Store decision
     state.add_gui_decision(decision);
@@ -371,4 +406,70 @@ pub async fn skip_all_existing(
     }
 
     Ok(skipped_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gmail_automation::EmailCategory;
+    use gmail_automation::interactive::ClusterSource;
+
+    /// Helper to create a minimal EmailCluster for tests
+    fn make_cluster(
+        sender_domain: &str,
+        sender_email: &str,
+        is_specific_sender: bool,
+        subject_pattern: Option<&str>,
+    ) -> EmailCluster {
+        EmailCluster {
+            sender_domain: sender_domain.to_string(),
+            sender_email: sender_email.to_string(),
+            is_specific_sender,
+            excluded_senders: vec![],
+            subject_pattern: subject_pattern.map(|s| s.to_string()),
+            excluded_subject_patterns: vec![],
+            message_ids: vec![],
+            suggested_category: EmailCategory::Newsletter,
+            suggested_label: String::new(),
+            confidence: 0.0,
+            sample_subjects: vec![],
+            should_archive: false,
+            existing_filter_id: None,
+            existing_filter_label_id: None,
+            existing_filter_label: None,
+            existing_filter_archive: None,
+            source: ClusterSource::default(),
+            default_action: None,
+        }
+    }
+
+    #[test]
+    fn test_cluster_exclusion_key_domain() {
+        let cluster = make_cluster("example.com", "", false, None);
+        assert_eq!(cluster_exclusion_key(&cluster), "*@example.com");
+    }
+
+    #[test]
+    fn test_cluster_exclusion_key_specific_sender() {
+        let cluster = make_cluster("example.com", "user@example.com", true, None);
+        assert_eq!(cluster_exclusion_key(&cluster), "user@example.com");
+    }
+
+    #[test]
+    fn test_cluster_exclusion_key_with_subject() {
+        let cluster = make_cluster("example.com", "", false, Some("Newsletter"));
+        assert_eq!(
+            cluster_exclusion_key(&cluster),
+            "*@example.com|subject:Newsletter"
+        );
+    }
+
+    #[test]
+    fn test_cluster_exclusion_key_specific_sender_with_subject() {
+        let cluster = make_cluster("example.com", "user@example.com", true, Some("Weekly Digest"));
+        assert_eq!(
+            cluster_exclusion_key(&cluster),
+            "user@example.com|subject:Weekly Digest"
+        );
+    }
 }

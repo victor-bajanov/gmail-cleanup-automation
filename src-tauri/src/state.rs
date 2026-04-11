@@ -9,6 +9,7 @@ use gmail_automation::{
     Classification, Config, EmailCluster, FilterRule,
     MessageMetadata, ProductionGmailClient,
 };
+use gmail_automation::exclusions::ExclusionManager;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -53,6 +54,8 @@ pub struct AppState {
     pub remediation_groups: RwLock<Vec<gmail_automation::filter_remediation::OverlapGroup>>,
     /// User decisions for remediation groups (group_id -> decision)
     pub remediation_decisions: RwLock<HashMap<String, gmail_automation::filter_remediation::GroupDecision>>,
+    /// Persistent exclusion manager for "Exclude Forever" decisions
+    pub exclusion_manager: RwLock<ExclusionManager>,
 }
 
 impl AppState {
@@ -109,6 +112,15 @@ impl AppState {
         let hidden_filters_data = load_hidden_filters();
         tracing::debug!("Loaded {} hidden filters from disk", hidden_filters_data.hidden_filters.len());
 
+        // Load exclusions from disk
+        let exclusions_path = gmail_dir.join("exclusions.json");
+        let exclusion_manager = ExclusionManager::load_sync(&exclusions_path)
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to load exclusions: {}, starting fresh", e);
+                ExclusionManager::new()
+            });
+        tracing::debug!("Loaded {} exclusions from disk", exclusion_manager.len());
+
         Self {
             credentials_path: RwLock::new(gmail_dir.join("credentials.json")),
             token_dir: RwLock::new(gmail_dir.clone()),
@@ -126,6 +138,7 @@ impl AppState {
             hidden_filters: RwLock::new(hidden_filters_data),
             remediation_groups: RwLock::new(vec![]),
             remediation_decisions: RwLock::new(HashMap::new()),
+            exclusion_manager: RwLock::new(exclusion_manager),
         }
     }
 
