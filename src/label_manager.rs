@@ -886,7 +886,6 @@ pub async fn create_labels_and_resolve_ids(
 
     for label_name in &unique_labels {
         let sanitized = label_manager.sanitize_label_name(label_name)?;
-        let key = sanitized.to_lowercase();
 
         // Check if the label already exists in cache
         if let Some(existing_id) = label_manager.cache_get(&sanitized) {
