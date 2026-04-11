@@ -25,6 +25,7 @@
 //!     })),
 //!     subject_clause: None,
 //!     exclusions: vec![],
+//!     subject_exclusions: vec![],
 //! };
 //! ```
 
@@ -43,6 +44,8 @@ pub struct FilterExpr {
     pub subject_clause: Option<SubjectClause>,
     /// Exclusion clauses - patterns to explicitly exclude
     pub exclusions: Vec<ExclusionClause>,
+    /// Negative subject clauses (-subject:(...)) — keywords to exclude
+    pub subject_exclusions: Vec<String>,
 }
 
 impl FilterExpr {
@@ -52,6 +55,7 @@ impl FilterExpr {
             from_clause: None,
             subject_clause: None,
             exclusions: vec![],
+            subject_exclusions: vec![],
         }
     }
 
@@ -64,6 +68,7 @@ impl FilterExpr {
             })),
             subject_clause: None,
             exclusions: vec![],
+            subject_exclusions: vec![],
         }
     }
 
@@ -84,6 +89,7 @@ impl FilterExpr {
             })),
             subject_clause: None,
             exclusions: vec![],
+            subject_exclusions: vec![],
         }
     }
 
@@ -156,6 +162,8 @@ pub enum FromClause {
     SpecificSender(EmailPattern),
     /// Matches emails from multiple senders (OR clause)
     MultipleSenders(Vec<FromClause>),
+    /// Matches emails by display name (no @ symbol, e.g., "iiNET Support")
+    DisplayName(String),
 }
 
 impl FromClause {
@@ -167,6 +175,7 @@ impl FromClause {
             FromClause::MultipleSenders(senders) => {
                 senders.iter().map(|s| s.describe()).collect::<Vec<_>>().join(" OR ")
             }
+            FromClause::DisplayName(name) => name.clone(),
         }
     }
 
@@ -178,6 +187,7 @@ impl FromClause {
             FromClause::MultipleSenders(senders) => {
                 senders.first().map(|s| s.domain()).unwrap_or("")
             }
+            FromClause::DisplayName(_) => "",
         }
     }
 }

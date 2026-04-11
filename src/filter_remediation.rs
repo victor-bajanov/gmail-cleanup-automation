@@ -462,6 +462,7 @@ impl OverlapDetector {
                             _ => None,
                         })
                     }
+                    FromClause::DisplayName(_) => None,
                 };
             }
         }
@@ -495,6 +496,9 @@ impl OverlapDetector {
                         // Reconstruct OR pattern
                         let parts: Vec<String> = senders.iter().map(|s| s.describe()).collect();
                         (Some(parts.join(" OR ")), true)
+                    }
+                    FromClause::DisplayName(name) => {
+                        (Some(name.clone()), false)
                     }
                 };
             }

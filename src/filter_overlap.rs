@@ -403,6 +403,12 @@ impl FilterOverlapAnalyzer {
                     other => other,
                 }
             }
+
+            // DisplayName is always disjoint with other pattern types
+            // (we can't reliably determine overlap between display names and email/domain patterns)
+            (FromClause::DisplayName(_), _) | (_, FromClause::DisplayName(_)) => {
+                PatternRelation::Disjoint
+            }
         }
     }
 
@@ -876,86 +882,113 @@ fn is_subdomain(child: &str, parent: &str) -> bool {
     child.ends_with(&format!(".{}", parent))
 }
 
+/// Trait for query parsing, enabling loose coupling and testability
+pub trait QueryParser {
+    /// Parse a Gmail query string into a FilterExpr AST
+    fn parse(&self, query: &str) -> FilterExpr;
+}
+
+/// Regex-based Gmail query parser
+///
+/// Properly handles positive and negative prefixes (`-`) for from/subject/to clauses,
+/// display names (tokens without `@`), and OR groups.
+pub struct RegexQueryParser;
+
+impl QueryParser for RegexQueryParser {
+    fn parse(&self, query: &str) -> FilterExpr {
+        parse_gmail_query(query)
+    }
+}
+
+/// Parses a single from-clause token into the appropriate FromClause variant
+fn parse_single_from(token: &str) -> FromClause {
+    let token = token.trim();
+    if token.starts_with("*@") {
+        FromClause::Domain(DomainPattern::new(token.trim_start_matches("*@")))
+    } else if token.contains('@') {
+        EmailPattern::parse(token)
+            .map(FromClause::SpecificSender)
+            .unwrap_or_else(|| FromClause::DisplayName(token.to_string()))
+    } else {
+        FromClause::DisplayName(token.to_string())
+    }
+}
+
+/// Parses the content inside `from:(...)`, handling OR groups and display names
+fn parse_from_content(content: &str) -> Option<FromClause> {
+    if content.contains(" OR ") {
+        let parts: Vec<FromClause> = content
+            .split(" OR ")
+            .map(|part| parse_single_from(part.trim()))
+            .collect();
+
+        if parts.len() == 1 {
+            Some(parts.into_iter().next().unwrap())
+        } else if parts.len() >= 2 {
+            Some(FromClause::MultipleSenders(parts))
+        } else {
+            None
+        }
+    } else {
+        Some(parse_single_from(content))
+    }
+}
+
 /// Parses a Gmail filter query into a FilterExpr
 ///
-/// This is useful for converting existing filters into AST form for analysis.
+/// Uses regex to properly handle positive and negative prefixes (`-`) on
+/// field clauses. This correctly distinguishes `subject:(X)` from `-subject:(X)`
+/// and parses display names (no `@`) as `FromClause::DisplayName`.
 pub fn parse_gmail_query(query: &str) -> FilterExpr {
+    use regex::Regex;
+
     let mut expr = FilterExpr::new();
 
-    // Parse from: clause
-    if let Some(from_start) = query.find("from:(") {
-        let from_end = query[from_start + 6..].find(')').map(|i| from_start + 6 + i);
-        if let Some(end) = from_end {
-            let from_pattern = &query[from_start + 6..end];
+    // Match clauses like: from:(...), -from:(...), subject:(...), -subject:(...)
+    let re = Regex::new(r"(-?)(from|subject|to):\(([^)]*)\)").unwrap();
 
-            if from_pattern.contains(" OR ") {
-                // Multiple senders with OR
-                let parts: Vec<FromClause> = from_pattern
+    for cap in re.captures_iter(query) {
+        let is_negative = &cap[1] == "-";
+        let field = &cap[2];
+        let content = &cap[3];
+
+        match (field, is_negative) {
+            ("from", false) => {
+                expr.from_clause = parse_from_content(content);
+            }
+            ("from", true) => {
+                // Negative from — parse as exclusion
+                let content_trimmed = content.trim();
+                if let Some(email) = EmailPattern::parse(content_trimmed) {
+                    expr.exclusions.push(crate::filter_ast::ExclusionClause {
+                        pattern: FromClause::SpecificSender(email),
+                    });
+                }
+            }
+            ("subject", false) => {
+                let keywords: Vec<String> = content
                     .split(" OR ")
-                    .filter_map(|part| {
-                        let part = part.trim();
-                        if part.starts_with("*@") {
-                            Some(FromClause::Domain(DomainPattern::new(part.trim_start_matches("*@"))))
-                        } else if part.contains('@') {
-                            EmailPattern::parse(part).map(FromClause::SpecificSender)
-                        } else {
-                            None
-                        }
-                    })
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
                     .collect();
 
-                if parts.len() == 1 {
-                    expr.from_clause = Some(parts.into_iter().next().unwrap());
-                } else if parts.len() >= 2 {
-                    expr.from_clause = Some(FromClause::MultipleSenders(parts));
-                }
-            } else if from_pattern.starts_with("*@") {
-                // Domain pattern
-                let domain = from_pattern.trim_start_matches("*@");
-                expr.from_clause = Some(FromClause::Domain(DomainPattern::new(domain)));
-            } else if from_pattern.contains('@') {
-                // Specific sender
-                if let Some(email) = EmailPattern::parse(from_pattern) {
-                    expr.from_clause = Some(FromClause::SpecificSender(email));
+                if !keywords.is_empty() {
+                    expr.subject_clause = Some(SubjectClause {
+                        keywords,
+                        match_mode: crate::filter_ast::SubjectMatchMode::Any,
+                    });
                 }
             }
-        }
-    }
-
-    // Parse -from: exclusions
-    let mut search_start = 0;
-    while let Some(pos) = query[search_start..].find("-from:(") {
-        let actual_pos = search_start + pos;
-        let end = query[actual_pos + 7..].find(')').map(|i| actual_pos + 7 + i);
-        if let Some(end_pos) = end {
-            let excluded = &query[actual_pos + 7..end_pos];
-            if let Some(email) = EmailPattern::parse(excluded) {
-                expr.exclusions.push(crate::filter_ast::ExclusionClause {
-                    pattern: FromClause::SpecificSender(email),
-                });
+            ("subject", true) => {
+                let keywords: Vec<String> = content
+                    .split(" OR ")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                expr.subject_exclusions.extend(keywords);
             }
-            search_start = end_pos;
-        } else {
-            break;
-        }
-    }
-
-    // Parse subject: clause
-    if let Some(subj_start) = query.find("subject:(") {
-        let subj_end = query[subj_start + 9..].find(')').map(|i| subj_start + 9 + i);
-        if let Some(end) = subj_end {
-            let subject_content = &query[subj_start + 9..end];
-            let keywords: Vec<String> = subject_content
-                .split(" OR ")
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-
-            if !keywords.is_empty() {
-                expr.subject_clause = Some(SubjectClause {
-                    keywords,
-                    match_mode: crate::filter_ast::SubjectMatchMode::Any,
-                });
+            _ => {
+                // to: and other fields — ignored for now
             }
         }
     }
@@ -983,6 +1016,9 @@ pub fn to_gmail_query(expr: &FilterExpr) -> String {
                 let sender_strs: Vec<String> = senders.iter().map(|s| s.describe()).collect();
                 parts.push(format!("from:({})", sender_strs.join(" OR ")));
             }
+            FromClause::DisplayName(name) => {
+                parts.push(format!("from:({})", name));
+            }
         }
     }
 
@@ -998,12 +1034,19 @@ pub fn to_gmail_query(expr: &FilterExpr) -> String {
                 let sender_strs: Vec<String> = senders.iter().map(|s| s.describe()).collect();
                 parts.push(format!("-from:({})", sender_strs.join(" OR ")));
             }
+            FromClause::DisplayName(name) => {
+                parts.push(format!("-from:({})", name));
+            }
         }
     }
 
     if let Some(ref subject) = expr.subject_clause {
         let keywords = subject.keywords.join(" OR ");
         parts.push(format!("subject:({})", keywords));
+    }
+
+    for kw in &expr.subject_exclusions {
+        parts.push(format!("-subject:({})", kw));
     }
 
     parts.join(" ")
@@ -1468,5 +1511,64 @@ mod tests {
         let expr_b = parse_gmail_query("from:(noreply@github.com)");
         let relation = analyzer.analyze_expr_relation(&expr_a, &expr_b);
         assert_eq!(relation, PatternRelation::Disjoint);
+    }
+
+    #[test]
+    fn test_parse_gmail_query_display_name() {
+        let expr = parse_gmail_query("from:(iiNET Support)");
+        assert!(expr.from_clause.is_some(), "Display name should not produce None from_clause");
+        match expr.from_clause.as_ref().unwrap() {
+            FromClause::DisplayName(name) => assert_eq!(name, "iiNET Support"),
+            other => panic!("Expected DisplayName, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_gmail_query_negative_subject() {
+        let expr = parse_gmail_query("from:(*@example.com) -subject:(Unsubscribe)");
+        assert!(expr.subject_clause.is_none(), "-subject should not be parsed as positive subject");
+        assert_eq!(expr.subject_exclusions, vec!["Unsubscribe"]);
+    }
+
+    #[test]
+    fn test_parse_gmail_query_negative_subject_not_confused_with_positive() {
+        let expr = parse_gmail_query("from:(*@example.com) -subject:(Promo OR Sale)");
+        assert!(expr.subject_clause.is_none());
+        assert_eq!(expr.subject_exclusions, vec!["Promo", "Sale"]);
+    }
+
+    #[test]
+    fn test_parse_gmail_query_both_positive_and_negative_subject() {
+        let expr = parse_gmail_query("from:(*@example.com) subject:(Invoice) -subject:(Draft)");
+        assert!(expr.subject_clause.is_some());
+        assert_eq!(expr.subject_clause.unwrap().keywords, vec!["Invoice"]);
+        assert_eq!(expr.subject_exclusions, vec!["Draft"]);
+    }
+
+    #[test]
+    fn test_display_name_overlap_is_disjoint() {
+        let analyzer = FilterOverlapAnalyzer::new();
+        let mut a = FilterExpr::new();
+        a.from_clause = Some(FromClause::DisplayName("iiNET Support".to_string()));
+        let mut b = FilterExpr::new();
+        b.from_clause = Some(FromClause::Domain(DomainPattern::new("iinet.com")));
+        let relation = analyzer.analyze_from_relation(
+            a.from_clause.as_ref().unwrap(),
+            b.from_clause.as_ref().unwrap(),
+        );
+        assert_eq!(relation, PatternRelation::Disjoint);
+    }
+
+    #[test]
+    fn test_parse_gmail_query_or_with_display_names() {
+        let expr = parse_gmail_query("from:(user@example.com OR iiNET Support)");
+        match expr.from_clause.as_ref().unwrap() {
+            FromClause::MultipleSenders(senders) => {
+                assert_eq!(senders.len(), 2);
+                assert!(matches!(&senders[0], FromClause::SpecificSender(_)));
+                assert!(matches!(&senders[1], FromClause::DisplayName(_)));
+            }
+            other => panic!("Expected MultipleSenders, got {:?}", other),
+        }
     }
 }
