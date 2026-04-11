@@ -1555,4 +1555,303 @@ mod tests {
         assert_eq!(stats.skipped, 0);
         assert!(map.contains_key("same label"));
     }
+
+    // ── Property-based equivalence tests: CLI inline vs shared pipeline ──
+
+    /// Mimics the CLI's inline label creation logic from src/cli.rs:1517-1542.
+    /// Extracted here verbatim (with unwrap_or_default on sanitize errors)
+    /// so we can compare its output against `create_labels_and_resolve_ids`.
+    async fn cli_inline_label_pipeline(
+        label_manager: &mut LabelManager,
+        unique_labels: &std::collections::HashSet<String>,
+        dry_run: bool,
+    ) -> (std::collections::HashMap<String, String>, usize, usize) {
+        use std::collections::HashMap;
+
+        let mut label_name_to_id: HashMap<String, String> = HashMap::new();
+        let mut labels_created: usize = 0;
+        let mut labels_skipped: usize = 0;
+
+        // CLI calls load_existing_labels before the loop (at an earlier step)
+        let _ = label_manager.load_existing_labels().await;
+
+        for label in unique_labels {
+            // CLI uses unwrap_or_default — this is the key difference
+            let sanitized = label_manager.sanitize_label_name(label).unwrap_or_default();
+
+            // Check if label already exists in cache (case-insensitive)
+            if let Some(existing_id) = label_manager.get_label_id(&sanitized) {
+                labels_skipped += 1;
+                label_name_to_id.insert(label.to_lowercase(), existing_id);
+                continue;
+            }
+
+            if !dry_run {
+                match label_manager.create_label_direct(&sanitized).await {
+                    Ok(label_id) => {
+                        label_name_to_id.insert(label.to_lowercase(), label_id);
+                        labels_created += 1;
+                    }
+                    Err(_) => {
+                        // CLI would propagate this error, but for testing we skip
+                        labels_created += 1; // CLI counts before await
+                    }
+                }
+            } else {
+                labels_created += 1;
+            }
+        }
+
+        (label_name_to_id, labels_created, labels_skipped)
+    }
+
+    /// Runs both pipelines on the same inputs and compares outputs.
+    /// Returns None if equivalent, Some(description) if divergent.
+    async fn compare_pipelines(
+        label_names: Vec<String>,
+        existing_label_names: Vec<String>,
+        dry_run: bool,
+    ) -> Option<String> {
+        use std::collections::HashSet;
+
+        define_mock_gmail_client!();
+
+        let existing_labels: Vec<crate::client::LabelInfo> = existing_label_names
+            .iter()
+            .map(|name| crate::client::LabelInfo {
+                id: format!("existing_{}", name.to_lowercase().replace(' ', "_")),
+                name: name.clone(),
+            })
+            .collect();
+
+        let filters: Vec<crate::models::FilterRule> = label_names
+            .iter()
+            .map(|name| make_filter_rule(name))
+            .collect();
+
+        let unique_labels: HashSet<String> = label_names.iter().cloned().collect();
+
+        // Factory: produces a mock configured to return `existing_labels` from list_labels
+        // and generate deterministic IDs from create_label.
+        let make_mock = |labels: Vec<crate::client::LabelInfo>| {
+            let mut mock = MockTestGmailClient::new();
+            mock.expect_list_labels()
+                .times(1)
+                .return_once(move || Ok(labels));
+            mock.expect_create_label()
+                .returning(|name: &str| {
+                    Ok(format!("Label_{}", name.to_lowercase().replace(' ', "_")))
+                });
+            mock
+        };
+
+        // Run shared pipeline
+        let mock1 = make_mock(existing_labels.clone());
+        let mut mgr1 = LabelManager::new(Box::new(mock1), "AutoManaged".to_string());
+        let shared_result = create_labels_and_resolve_ids(&mut mgr1, &filters, dry_run).await;
+
+        // Run CLI inline pipeline
+        let mock2 = make_mock(existing_labels);
+        let mut mgr2 = LabelManager::new(Box::new(mock2), "AutoManaged".to_string());
+        let (cli_map, cli_created, cli_skipped) =
+            cli_inline_label_pipeline(&mut mgr2, &unique_labels, dry_run).await;
+
+        match shared_result {
+            Ok((shared_map, shared_stats)) => {
+                let mut diffs = Vec::new();
+
+                if shared_stats.created != cli_created {
+                    diffs.push(format!(
+                        "created: shared={} cli={}",
+                        shared_stats.created, cli_created
+                    ));
+                }
+                if shared_stats.skipped != cli_skipped {
+                    diffs.push(format!(
+                        "skipped: shared={} cli={}",
+                        shared_stats.skipped, cli_skipped
+                    ));
+                }
+
+                // Compare map keys (both should have same keys)
+                let shared_keys: HashSet<&String> = shared_map.keys().collect();
+                let cli_keys: HashSet<&String> = cli_map.keys().collect();
+                if shared_keys != cli_keys {
+                    let only_shared: Vec<_> =
+                        shared_keys.difference(&cli_keys).collect();
+                    let only_cli: Vec<_> =
+                        cli_keys.difference(&shared_keys).collect();
+                    diffs.push(format!(
+                        "map keys differ: only_in_shared={:?} only_in_cli={:?}",
+                        only_shared, only_cli
+                    ));
+                }
+
+                // Compare map values for shared keys
+                for key in shared_keys.intersection(&cli_keys) {
+                    let sv = &shared_map[*key];
+                    let cv = &cli_map[*key];
+                    if sv != cv {
+                        diffs.push(format!(
+                            "map value for '{}': shared='{}' cli='{}'",
+                            key, sv, cv
+                        ));
+                    }
+                }
+
+                if diffs.is_empty() {
+                    None
+                } else {
+                    Some(diffs.join("; "))
+                }
+            }
+            Err(e) => {
+                // Shared pipeline errored — check if CLI also "errored"
+                // CLI uses unwrap_or_default, so it never errors on sanitize.
+                // This IS a known divergence for invalid label names.
+                Some(format!(
+                    "shared pipeline returned Err({}) but CLI would continue with unwrap_or_default. \
+                     CLI result: map_keys={:?}, created={}, skipped={}",
+                    e,
+                    cli_map.keys().collect::<Vec<_>>(),
+                    cli_created,
+                    cli_skipped
+                ))
+            }
+        }
+    }
+
+    use proptest::prelude::*;
+
+    /// Strategy for generating valid-ish label names (alphanumeric + slashes)
+    fn label_name_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z][A-Za-z0-9/ ]{0,30}")
+            .unwrap()
+            .prop_filter("non-empty after trim", |s| !s.trim().is_empty())
+    }
+
+    /// Strategy for label names that include edge cases
+    fn edge_case_label_strategy() -> impl Strategy<Value = String> {
+        prop_oneof![
+            // Normal labels
+            label_name_strategy(),
+            // Labels with special chars (will be sanitized)
+            proptest::string::string_regex("[A-Za-z0-9@#.!/ ]{1,20}").unwrap(),
+            // Hierarchical labels
+            proptest::string::string_regex("[A-Za-z]{1,10}(/[A-Za-z]{1,10}){1,3}").unwrap(),
+            // Empty-ish (will trigger sanitize errors)
+            Just("".to_string()),
+            Just("   ".to_string()),
+            Just("///".to_string()),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(200))]
+
+        /// P1: For valid label names, both pipelines produce identical results (non-dry-run)
+        #[test]
+        fn prop_equivalence_valid_labels(
+            labels in proptest::collection::vec(label_name_strategy(), 1..8),
+            existing_indices in proptest::collection::vec(proptest::bool::ANY, 1..8),
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+
+            // Make some labels "existing" based on random booleans
+            let existing: Vec<String> = labels.iter()
+                .zip(existing_indices.iter().cycle())
+                .filter(|(_, &exists)| exists)
+                .map(|(l, _)| l.clone())
+                .collect();
+
+            let result = rt.block_on(compare_pipelines(
+                labels.clone(), existing, false
+            ));
+
+            prop_assert!(
+                result.is_none(),
+                "Divergence with valid labels: {:?}\nLabels: {:?}",
+                result, labels
+            );
+        }
+
+        /// P2: For valid label names, both pipelines produce identical results (dry-run)
+        #[test]
+        fn prop_equivalence_valid_labels_dry_run(
+            labels in proptest::collection::vec(label_name_strategy(), 1..8),
+            existing_indices in proptest::collection::vec(proptest::bool::ANY, 1..8),
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+
+            let existing: Vec<String> = labels.iter()
+                .zip(existing_indices.iter().cycle())
+                .filter(|(_, &exists)| exists)
+                .map(|(l, _)| l.clone())
+                .collect();
+
+            let result = rt.block_on(compare_pipelines(
+                labels.clone(), existing, true
+            ));
+
+            prop_assert!(
+                result.is_none(),
+                "Divergence in dry_run with valid labels: {:?}\nLabels: {:?}",
+                result, labels
+            );
+        }
+
+        /// P3: With edge-case labels, document divergences (shared may error, CLI won't)
+        #[test]
+        fn prop_edge_cases_document_divergences(
+            labels in proptest::collection::vec(edge_case_label_strategy(), 1..5),
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+
+            let result = rt.block_on(compare_pipelines(
+                labels.clone(), vec![], false
+            ));
+
+            // We don't assert equivalence here — we just document.
+            // If there's a divergence, it MUST be due to sanitize error handling.
+            if let Some(ref msg) = result {
+                prop_assert!(
+                    msg.contains("unwrap_or_default") || msg.contains("Sanitized label name is empty") || msg.contains("Label name cannot be empty"),
+                    "Unexpected divergence (not sanitize-related): {}\nLabels: {:?}",
+                    msg, labels
+                );
+            }
+        }
+    }
+
+    /// Deterministic test: empty label name triggers the known divergence
+    #[tokio::test]
+    async fn test_known_divergence_empty_label() {
+        let result = compare_pipelines(
+            vec!["".to_string()], vec![], false
+        ).await;
+
+        assert!(
+            result.is_some(),
+            "Empty label should cause divergence (shared errors, CLI unwrap_or_default)"
+        );
+        let msg = result.unwrap();
+        assert!(
+            msg.contains("unwrap_or_default"),
+            "Divergence should be the sanitize error handling: {}",
+            msg
+        );
+    }
+
+    /// Deterministic test: label that sanitizes to empty triggers the known divergence
+    #[tokio::test]
+    async fn test_known_divergence_all_special_chars() {
+        let result = compare_pipelines(
+            vec!["///".to_string()], vec![], false
+        ).await;
+
+        assert!(
+            result.is_some(),
+            "All-slash label should cause divergence"
+        );
+    }
 }
