@@ -855,13 +855,19 @@ impl LabelManager {
 pub struct LabelCreationStats {
     pub created: usize,
     pub skipped: usize,
+    /// Names of labels that already existed (original, unsanitized names)
+    pub existing_names: Vec<String>,
+    /// Names of labels that would be created in dry-run mode (original, unsanitized names)
+    pub planned_names: Vec<String>,
+    /// IDs of labels that were actually created (for checkpointing)
+    pub created_ids: Vec<String>,
 }
 
 /// Extracts unique label names from filters, creates missing labels in Gmail,
 /// and returns a map of lowercase label name -> Gmail label ID.
 ///
 /// This is the shared pipeline used by both CLI and GUI to ensure labels
-/// exist before creating filters.
+/// exist before creating filters. It calls `load_existing_labels` internally.
 ///
 /// In dry_run mode, stats.created counts what WOULD be created, but the
 /// returned map is empty (no real IDs are available).
@@ -870,10 +876,7 @@ pub async fn create_labels_and_resolve_ids(
     filters: &[crate::models::FilterRule],
     dry_run: bool,
 ) -> crate::error::Result<(std::collections::HashMap<String, String>, LabelCreationStats)> {
-    use std::collections::{HashMap, HashSet};
-
-    let mut stats = LabelCreationStats::default();
-    let mut name_to_id: HashMap<String, String> = HashMap::new();
+    use std::collections::HashSet;
 
     // Collect unique label names from filters
     let unique_labels: HashSet<String> = filters
@@ -884,20 +887,44 @@ pub async fn create_labels_and_resolve_ids(
     // Load existing labels into the cache
     label_manager.load_existing_labels().await?;
 
-    for label_name in &unique_labels {
+    create_labels_from_names(label_manager, &unique_labels, dry_run).await
+}
+
+/// Creates or resolves labels from a set of label names.
+///
+/// Unlike `create_labels_and_resolve_ids`, this does NOT call `load_existing_labels` —
+/// the caller must ensure the label cache is already populated. This avoids
+/// redundant API calls when the caller has already loaded labels.
+///
+/// Returns a map of lowercase label name -> Gmail label ID, plus stats including
+/// which labels were created, skipped, and their names/IDs for reporting.
+pub async fn create_labels_from_names(
+    label_manager: &mut LabelManager,
+    unique_labels: &std::collections::HashSet<String>,
+    dry_run: bool,
+) -> crate::error::Result<(std::collections::HashMap<String, String>, LabelCreationStats)> {
+    use std::collections::HashMap;
+
+    let mut stats = LabelCreationStats::default();
+    let mut name_to_id: HashMap<String, String> = HashMap::new();
+
+    for label_name in unique_labels {
         let sanitized = label_manager.sanitize_label_name(label_name)?;
 
         // Check if the label already exists in cache
         if let Some(existing_id) = label_manager.cache_get(&sanitized) {
             stats.skipped += 1;
+            stats.existing_names.push(label_name.clone());
             name_to_id.insert(label_name.to_lowercase(), existing_id.clone());
         } else if dry_run {
             // In dry run, count as would-be-created but don't actually create
             stats.created += 1;
+            stats.planned_names.push(label_name.clone());
         } else {
             // Create the label directly (name is the full path, not prefixed)
             let label_id = label_manager.create_label_direct(&sanitized).await?;
             stats.created += 1;
+            stats.created_ids.push(label_id.clone());
             name_to_id.insert(label_name.to_lowercase(), label_id);
         }
     }
@@ -1556,62 +1583,213 @@ mod tests {
         assert!(map.contains_key("same label"));
     }
 
-    // ── Property-based equivalence tests: CLI inline vs shared pipeline ──
+    // ── Behavioral tests for create_labels_from_names ──
+    // These verify the label creation behavior at the right abstraction level.
+    // They must pass both before and after the CLI refactor (unchanged).
 
-    /// Mimics the CLI's inline label creation logic from src/cli.rs:1517-1542.
-    /// Extracted here verbatim (with unwrap_or_default on sanitize errors)
-    /// so we can compare its output against `create_labels_and_resolve_ids`.
-    async fn cli_inline_label_pipeline(
-        label_manager: &mut LabelManager,
-        unique_labels: &std::collections::HashSet<String>,
-        dry_run: bool,
-    ) -> (std::collections::HashMap<String, String>, usize, usize) {
-        use std::collections::HashMap;
+    #[tokio::test]
+    async fn test_from_names_creates_new_labels() {
+        define_mock_gmail_client!();
 
-        let mut label_name_to_id: HashMap<String, String> = HashMap::new();
-        let mut labels_created: usize = 0;
-        let mut labels_skipped: usize = 0;
+        let mut mock_client = MockTestGmailClient::new();
+        mock_client
+            .expect_list_labels()
+            .times(1)
+            .returning(|| Ok(vec![]));
+        mock_client
+            .expect_create_label()
+            .returning(|name: &str| Ok(format!("id-for-{}", name)));
 
-        // CLI calls load_existing_labels before the loop (at an earlier step)
-        let _ = label_manager.load_existing_labels().await;
+        let mut mgr = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
+        mgr.load_existing_labels().await.unwrap();
 
-        for label in unique_labels {
-            // CLI uses unwrap_or_default — this is the key difference
-            let sanitized = label_manager.sanitize_label_name(label).unwrap_or_default();
+        let labels: std::collections::HashSet<String> =
+            ["auto/newsletters/example".to_string()].into_iter().collect();
 
-            // Check if label already exists in cache (case-insensitive)
-            if let Some(existing_id) = label_manager.get_label_id(&sanitized) {
-                labels_skipped += 1;
-                label_name_to_id.insert(label.to_lowercase(), existing_id);
-                continue;
-            }
+        let (map, stats) = create_labels_from_names(&mut mgr, &labels, false)
+            .await
+            .unwrap();
 
-            if !dry_run {
-                match label_manager.create_label_direct(&sanitized).await {
-                    Ok(label_id) => {
-                        label_name_to_id.insert(label.to_lowercase(), label_id);
-                        labels_created += 1;
-                    }
-                    Err(_) => {
-                        // CLI would propagate this error, but for testing we skip
-                        labels_created += 1; // CLI counts before await
-                    }
-                }
-            } else {
-                labels_created += 1;
-            }
-        }
-
-        (label_name_to_id, labels_created, labels_skipped)
+        assert_eq!(stats.created, 1);
+        assert_eq!(stats.skipped, 0);
+        assert_eq!(stats.created_ids.len(), 1);
+        assert!(stats.existing_names.is_empty());
+        assert!(stats.planned_names.is_empty());
+        assert!(map.contains_key("auto/newsletters/example"));
     }
 
-    /// Runs both pipelines on the same inputs and compares outputs.
-    /// Returns None if equivalent, Some(description) if divergent.
-    async fn compare_pipelines(
+    #[tokio::test]
+    async fn test_from_names_skips_existing_labels() {
+        define_mock_gmail_client!();
+
+        let mut mock_client = MockTestGmailClient::new();
+        mock_client
+            .expect_list_labels()
+            .times(1)
+            .returning(|| {
+                Ok(vec![crate::client::LabelInfo {
+                    id: "existing-id".to_string(),
+                    name: "auto/newsletters/example".to_string(),
+                }])
+            });
+        mock_client
+            .expect_create_label()
+            .times(0)
+            .returning(|_| panic!("should not create"));
+
+        let mut mgr = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
+        mgr.load_existing_labels().await.unwrap();
+
+        let labels: std::collections::HashSet<String> =
+            ["auto/newsletters/example".to_string()].into_iter().collect();
+
+        let (map, stats) = create_labels_from_names(&mut mgr, &labels, false)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.created, 0);
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(stats.existing_names, vec!["auto/newsletters/example"]);
+        assert!(stats.created_ids.is_empty());
+        assert!(stats.planned_names.is_empty());
+        assert_eq!(map.get("auto/newsletters/example").unwrap(), "existing-id");
+    }
+
+    #[tokio::test]
+    async fn test_from_names_dry_run_tracks_planned() {
+        define_mock_gmail_client!();
+
+        let mut mock_client = MockTestGmailClient::new();
+        mock_client
+            .expect_list_labels()
+            .times(1)
+            .returning(|| Ok(vec![]));
+        mock_client
+            .expect_create_label()
+            .times(0)
+            .returning(|_| panic!("should not create in dry run"));
+
+        let mut mgr = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
+        mgr.load_existing_labels().await.unwrap();
+
+        let labels: std::collections::HashSet<String> =
+            ["auto/newsletters/new".to_string()].into_iter().collect();
+
+        let (map, stats) = create_labels_from_names(&mut mgr, &labels, true)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.created, 1);
+        assert_eq!(stats.skipped, 0);
+        assert_eq!(stats.planned_names, vec!["auto/newsletters/new"]);
+        assert!(stats.created_ids.is_empty());
+        assert!(map.is_empty()); // no real IDs in dry run
+    }
+
+    #[tokio::test]
+    async fn test_from_names_mixed_existing_and_new() {
+        define_mock_gmail_client!();
+
+        let mut mock_client = MockTestGmailClient::new();
+        mock_client
+            .expect_list_labels()
+            .times(1)
+            .returning(|| {
+                Ok(vec![crate::client::LabelInfo {
+                    id: "existing-id-a".to_string(),
+                    name: "auto/existing".to_string(),
+                }])
+            });
+        mock_client
+            .expect_create_label()
+            .returning(|name: &str| Ok(format!("new-id-{}", name)));
+
+        let mut mgr = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
+        mgr.load_existing_labels().await.unwrap();
+
+        let labels: std::collections::HashSet<String> =
+            ["auto/existing".to_string(), "auto/brand-new".to_string()]
+                .into_iter()
+                .collect();
+
+        let (map, stats) = create_labels_from_names(&mut mgr, &labels, false)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.created, 1);
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(stats.existing_names.len(), 1);
+        assert!(stats.existing_names.contains(&"auto/existing".to_string()));
+        assert_eq!(stats.created_ids.len(), 1);
+        assert!(stats.planned_names.is_empty());
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("auto/existing").unwrap(), "existing-id-a");
+    }
+
+    #[tokio::test]
+    async fn test_from_names_dry_run_mixed_existing_and_new() {
+        define_mock_gmail_client!();
+
+        let mut mock_client = MockTestGmailClient::new();
+        mock_client
+            .expect_list_labels()
+            .times(1)
+            .returning(|| {
+                Ok(vec![crate::client::LabelInfo {
+                    id: "existing-id-b".to_string(),
+                    name: "auto/existing".to_string(),
+                }])
+            });
+        mock_client
+            .expect_create_label()
+            .times(0)
+            .returning(|_| panic!("should not create in dry run"));
+
+        let mut mgr = LabelManager::new(Box::new(mock_client), "AutoManaged".to_string());
+        mgr.load_existing_labels().await.unwrap();
+
+        let labels: std::collections::HashSet<String> =
+            ["auto/existing".to_string(), "auto/brand-new".to_string()]
+                .into_iter()
+                .collect();
+
+        let (map, stats) = create_labels_from_names(&mut mgr, &labels, true)
+            .await
+            .unwrap();
+
+        assert_eq!(stats.created, 1);
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(stats.existing_names.len(), 1);
+        assert!(stats.existing_names.contains(&"auto/existing".to_string()));
+        assert_eq!(stats.planned_names.len(), 1);
+        assert!(stats.planned_names.contains(&"auto/brand-new".to_string()));
+        assert!(stats.created_ids.is_empty());
+        // Only the existing label has an ID in dry run
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("auto/existing").unwrap(), "existing-id-b");
+    }
+
+    // ── Property-based behavioral tests for create_labels_from_names ──
+    //
+    // These replaced the old CLI-vs-shared equivalence tests. Now that the CLI
+    // calls create_labels_from_names directly, there is no divergence to test.
+    // Instead, these property tests verify invariants of the shared function.
+
+    use proptest::prelude::*;
+
+    /// Strategy for generating valid label names (alphanumeric + slashes)
+    fn label_name_strategy() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[A-Za-z][A-Za-z0-9/ ]{0,30}")
+            .unwrap()
+            .prop_filter("non-empty after trim", |s| !s.trim().is_empty())
+    }
+
+    /// Helper: run create_labels_from_names with mocked existing labels
+    async fn run_from_names(
         label_names: Vec<String>,
         existing_label_names: Vec<String>,
         dry_run: bool,
-    ) -> Option<String> {
+    ) -> crate::error::Result<(std::collections::HashMap<String, String>, LabelCreationStats)> {
         use std::collections::HashSet;
 
         define_mock_gmail_client!();
@@ -1624,162 +1802,31 @@ mod tests {
             })
             .collect();
 
-        let filters: Vec<crate::models::FilterRule> = label_names
-            .iter()
-            .map(|name| make_filter_rule(name))
-            .collect();
+        let mut mock = MockTestGmailClient::new();
+        mock.expect_list_labels()
+            .times(1)
+            .return_once(move || Ok(existing_labels));
+        mock.expect_create_label()
+            .returning(|name: &str| {
+                Ok(format!("Label_{}", name.to_lowercase().replace(' ', "_")))
+            });
 
-        let unique_labels: HashSet<String> = label_names.iter().cloned().collect();
+        let mut mgr = LabelManager::new(Box::new(mock), "AutoManaged".to_string());
+        mgr.load_existing_labels().await.unwrap();
 
-        // Factory: produces a mock configured to return `existing_labels` from list_labels
-        // and generate deterministic IDs from create_label.
-        let make_mock = |labels: Vec<crate::client::LabelInfo>| {
-            let mut mock = MockTestGmailClient::new();
-            mock.expect_list_labels()
-                .times(1)
-                .return_once(move || Ok(labels));
-            mock.expect_create_label()
-                .returning(|name: &str| {
-                    Ok(format!("Label_{}", name.to_lowercase().replace(' ', "_")))
-                });
-            mock
-        };
-
-        // Run shared pipeline
-        let mock1 = make_mock(existing_labels.clone());
-        let mut mgr1 = LabelManager::new(Box::new(mock1), "AutoManaged".to_string());
-        let shared_result = create_labels_and_resolve_ids(&mut mgr1, &filters, dry_run).await;
-
-        // Run CLI inline pipeline
-        let mock2 = make_mock(existing_labels);
-        let mut mgr2 = LabelManager::new(Box::new(mock2), "AutoManaged".to_string());
-        let (cli_map, cli_created, cli_skipped) =
-            cli_inline_label_pipeline(&mut mgr2, &unique_labels, dry_run).await;
-
-        match shared_result {
-            Ok((shared_map, shared_stats)) => {
-                let mut diffs = Vec::new();
-
-                if shared_stats.created != cli_created {
-                    diffs.push(format!(
-                        "created: shared={} cli={}",
-                        shared_stats.created, cli_created
-                    ));
-                }
-                if shared_stats.skipped != cli_skipped {
-                    diffs.push(format!(
-                        "skipped: shared={} cli={}",
-                        shared_stats.skipped, cli_skipped
-                    ));
-                }
-
-                // Compare map keys (both should have same keys)
-                let shared_keys: HashSet<&String> = shared_map.keys().collect();
-                let cli_keys: HashSet<&String> = cli_map.keys().collect();
-                if shared_keys != cli_keys {
-                    let only_shared: Vec<_> =
-                        shared_keys.difference(&cli_keys).collect();
-                    let only_cli: Vec<_> =
-                        cli_keys.difference(&shared_keys).collect();
-                    diffs.push(format!(
-                        "map keys differ: only_in_shared={:?} only_in_cli={:?}",
-                        only_shared, only_cli
-                    ));
-                }
-
-                // Compare map values for shared keys
-                for key in shared_keys.intersection(&cli_keys) {
-                    let sv = &shared_map[*key];
-                    let cv = &cli_map[*key];
-                    if sv != cv {
-                        diffs.push(format!(
-                            "map value for '{}': shared='{}' cli='{}'",
-                            key, sv, cv
-                        ));
-                    }
-                }
-
-                if diffs.is_empty() {
-                    None
-                } else {
-                    Some(diffs.join("; "))
-                }
-            }
-            Err(e) => {
-                // Shared pipeline errored — check if CLI also "errored"
-                // CLI uses unwrap_or_default, so it never errors on sanitize.
-                // This IS a known divergence for invalid label names.
-                Some(format!(
-                    "shared pipeline returned Err({}) but CLI would continue with unwrap_or_default. \
-                     CLI result: map_keys={:?}, created={}, skipped={}",
-                    e,
-                    cli_map.keys().collect::<Vec<_>>(),
-                    cli_created,
-                    cli_skipped
-                ))
-            }
-        }
-    }
-
-    use proptest::prelude::*;
-
-    /// Strategy for generating valid-ish label names (alphanumeric + slashes)
-    fn label_name_strategy() -> impl Strategy<Value = String> {
-        proptest::string::string_regex("[A-Za-z][A-Za-z0-9/ ]{0,30}")
-            .unwrap()
-            .prop_filter("non-empty after trim", |s| !s.trim().is_empty())
-    }
-
-    /// Strategy for label names that include edge cases
-    fn edge_case_label_strategy() -> impl Strategy<Value = String> {
-        prop_oneof![
-            // Normal labels
-            label_name_strategy(),
-            // Labels with special chars (will be sanitized)
-            proptest::string::string_regex("[A-Za-z0-9@#.!/ ]{1,20}").unwrap(),
-            // Hierarchical labels
-            proptest::string::string_regex("[A-Za-z]{1,10}(/[A-Za-z]{1,10}){1,3}").unwrap(),
-            // Empty-ish (will trigger sanitize errors)
-            Just("".to_string()),
-            Just("   ".to_string()),
-            Just("///".to_string()),
-        ]
+        let unique: HashSet<String> = label_names.into_iter().collect();
+        create_labels_from_names(&mut mgr, &unique, dry_run).await
     }
 
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(200))]
 
-        /// P1: For valid label names, both pipelines produce identical results (non-dry-run)
+        /// P1: created + skipped == total unique labels (for valid names)
         #[test]
-        fn prop_equivalence_valid_labels(
+        fn prop_counts_sum_to_total(
             labels in proptest::collection::vec(label_name_strategy(), 1..8),
             existing_indices in proptest::collection::vec(proptest::bool::ANY, 1..8),
-        ) {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-
-            // Make some labels "existing" based on random booleans
-            let existing: Vec<String> = labels.iter()
-                .zip(existing_indices.iter().cycle())
-                .filter(|(_, &exists)| exists)
-                .map(|(l, _)| l.clone())
-                .collect();
-
-            let result = rt.block_on(compare_pipelines(
-                labels.clone(), existing, false
-            ));
-
-            prop_assert!(
-                result.is_none(),
-                "Divergence with valid labels: {:?}\nLabels: {:?}",
-                result, labels
-            );
-        }
-
-        /// P2: For valid label names, both pipelines produce identical results (dry-run)
-        #[test]
-        fn prop_equivalence_valid_labels_dry_run(
-            labels in proptest::collection::vec(label_name_strategy(), 1..8),
-            existing_indices in proptest::collection::vec(proptest::bool::ANY, 1..8),
+            dry_run in proptest::bool::ANY,
         ) {
             let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -1789,69 +1836,151 @@ mod tests {
                 .map(|(l, _)| l.clone())
                 .collect();
 
-            let result = rt.block_on(compare_pipelines(
-                labels.clone(), existing, true
+            let unique_count = labels.iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+
+            let result = rt.block_on(run_from_names(
+                labels.clone(), existing, dry_run
             ));
 
-            prop_assert!(
-                result.is_none(),
-                "Divergence in dry_run with valid labels: {:?}\nLabels: {:?}",
-                result, labels
+            let (_, stats) = result.unwrap();
+            prop_assert_eq!(
+                stats.created + stats.skipped,
+                unique_count,
+                "created ({}) + skipped ({}) != unique labels ({})",
+                stats.created, stats.skipped, unique_count
             );
         }
 
-        /// P3: With edge-case labels, document divergences (shared may error, CLI won't)
+        /// P2: existing_names.len() == skipped, planned/created counts are consistent
         #[test]
-        fn prop_edge_cases_document_divergences(
-            labels in proptest::collection::vec(edge_case_label_strategy(), 1..5),
+        fn prop_stats_vectors_consistent(
+            labels in proptest::collection::vec(label_name_strategy(), 1..8),
+            existing_indices in proptest::collection::vec(proptest::bool::ANY, 1..8),
+            dry_run in proptest::bool::ANY,
         ) {
             let rt = tokio::runtime::Runtime::new().unwrap();
 
-            let result = rt.block_on(compare_pipelines(
-                labels.clone(), vec![], false
+            let existing: Vec<String> = labels.iter()
+                .zip(existing_indices.iter().cycle())
+                .filter(|(_, &exists)| exists)
+                .map(|(l, _)| l.clone())
+                .collect();
+
+            let result = rt.block_on(run_from_names(
+                labels.clone(), existing, dry_run
             ));
 
-            // We don't assert equivalence here — we just document.
-            // If there's a divergence, it MUST be due to sanitize error handling.
-            if let Some(ref msg) = result {
-                prop_assert!(
-                    msg.contains("unwrap_or_default") || msg.contains("Sanitized label name is empty") || msg.contains("Label name cannot be empty"),
-                    "Unexpected divergence (not sanitize-related): {}\nLabels: {:?}",
-                    msg, labels
-                );
+            let (map, stats) = result.unwrap();
+
+            // existing_names count matches skipped
+            prop_assert_eq!(stats.existing_names.len(), stats.skipped);
+
+            if dry_run {
+                // In dry run: planned_names == created, no created_ids
+                prop_assert_eq!(stats.planned_names.len(), stats.created);
+                prop_assert!(stats.created_ids.is_empty());
+                // Map only has existing labels
+                prop_assert_eq!(map.len(), stats.skipped);
+            } else {
+                // In real mode: created_ids == created, no planned_names
+                prop_assert_eq!(stats.created_ids.len(), stats.created);
+                prop_assert!(stats.planned_names.is_empty());
+                // Map has all labels
+                prop_assert_eq!(map.len(), stats.created + stats.skipped);
             }
+        }
+
+        /// P3: create_labels_and_resolve_ids and create_labels_from_names produce
+        /// identical results (the former just adds load_existing_labels)
+        #[test]
+        fn prop_resolve_ids_delegates_to_from_names(
+            labels in proptest::collection::vec(label_name_strategy(), 1..8),
+            existing_indices in proptest::collection::vec(proptest::bool::ANY, 1..8),
+            dry_run in proptest::bool::ANY,
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+
+            let existing: Vec<String> = labels.iter()
+                .zip(existing_indices.iter().cycle())
+                .filter(|(_, &exists)| exists)
+                .map(|(l, _)| l.clone())
+                .collect();
+
+            let result = rt.block_on(async {
+                use std::collections::HashSet;
+
+                define_mock_gmail_client!();
+
+                let existing_labels: Vec<crate::client::LabelInfo> = existing.iter()
+                    .map(|name| crate::client::LabelInfo {
+                        id: format!("existing_{}", name.to_lowercase().replace(' ', "_")),
+                        name: name.clone(),
+                    })
+                    .collect();
+
+                let filters: Vec<crate::models::FilterRule> = labels.iter()
+                    .map(|name| make_filter_rule(name))
+                    .collect();
+
+                // Run via create_labels_and_resolve_ids
+                let make_mock = |lbls: Vec<crate::client::LabelInfo>| {
+                    let mut mock = MockTestGmailClient::new();
+                    mock.expect_list_labels()
+                        .times(1)
+                        .return_once(move || Ok(lbls));
+                    mock.expect_create_label()
+                        .returning(|name: &str| {
+                            Ok(format!("Label_{}", name.to_lowercase().replace(' ', "_")))
+                        });
+                    mock
+                };
+
+                let mock1 = make_mock(existing_labels.clone());
+                let mut mgr1 = LabelManager::new(Box::new(mock1), "AutoManaged".to_string());
+                let r1 = create_labels_and_resolve_ids(&mut mgr1, &filters, dry_run).await.unwrap();
+
+                // Run via create_labels_from_names
+                let mock2 = make_mock(existing_labels);
+                let mut mgr2 = LabelManager::new(Box::new(mock2), "AutoManaged".to_string());
+                mgr2.load_existing_labels().await.unwrap();
+                let unique: HashSet<String> = labels.iter().cloned().collect();
+                let r2 = create_labels_from_names(&mut mgr2, &unique, dry_run).await.unwrap();
+
+                (r1, r2)
+            });
+
+            let ((map1, stats1), (map2, stats2)) = result;
+            prop_assert_eq!(stats1.created, stats2.created);
+            prop_assert_eq!(stats1.skipped, stats2.skipped);
+            prop_assert_eq!(map1, map2);
         }
     }
 
-    /// Deterministic test: empty label name triggers the known divergence
+    /// Empty label names should produce an error (no more unwrap_or_default divergence)
     #[tokio::test]
-    async fn test_known_divergence_empty_label() {
-        let result = compare_pipelines(
+    async fn test_empty_label_returns_error() {
+        let result = run_from_names(
             vec!["".to_string()], vec![], false
         ).await;
 
         assert!(
-            result.is_some(),
-            "Empty label should cause divergence (shared errors, CLI unwrap_or_default)"
-        );
-        let msg = result.unwrap();
-        assert!(
-            msg.contains("unwrap_or_default"),
-            "Divergence should be the sanitize error handling: {}",
-            msg
+            result.is_err(),
+            "Empty label should return an error from sanitize"
         );
     }
 
-    /// Deterministic test: label that sanitizes to empty triggers the known divergence
+    /// Label names that sanitize to empty should produce an error
     #[tokio::test]
-    async fn test_known_divergence_all_special_chars() {
-        let result = compare_pipelines(
+    async fn test_all_special_chars_returns_error() {
+        let result = run_from_names(
             vec!["///".to_string()], vec![], false
         ).await;
 
         assert!(
-            result.is_some(),
-            "All-slash label should cause divergence"
+            result.is_err(),
+            "All-slash label should return an error from sanitize"
         );
     }
 }

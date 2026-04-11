@@ -582,7 +582,7 @@ use crate::filter_manager::FilterManager;
 use crate::interactive::{
     create_clusters, ClusterDecision, ClusterSource, DecisionAction, EmailCluster, ReviewSession,
 };
-use crate::label_manager::LabelManager;
+use crate::label_manager::{create_labels_from_names, LabelManager};
 use crate::models::{Classification, FilterRule, MessageMetadata};
 use crate::state::{ProcessingPhase, ProcessingState};
 use chrono::Utc;
@@ -1511,35 +1511,16 @@ pub async fn run_pipeline(
 
             // Create labels (or collect planned labels in dry run mode)
             // Also build a map from label name -> label ID for filter creation
-            labels_created = 0; // Reset for this run
-            let mut labels_skipped = 0;
+            let (name_to_id, label_stats) =
+                create_labels_from_names(&mut label_manager, &unique_labels, dry_run).await?;
 
-            for label in &unique_labels {
-                // The label from suggested_label already has full path like "auto/other/domain"
-                // We need to create it directly without adding another prefix
-                let sanitized = label_manager.sanitize_label_name(label).unwrap_or_default();
+            label_name_to_id.extend(name_to_id);
+            labels_created = label_stats.created;
+            existing_label_names.extend(label_stats.existing_names);
+            planned_labels.extend(label_stats.planned_names);
+            state.labels_created.extend(label_stats.created_ids);
 
-                // Check if label already exists in cache (case-insensitive)
-                if let Some(existing_id) = label_manager.get_label_id(&sanitized) {
-                    labels_skipped += 1;
-                    existing_label_names.push(label.clone());
-                    // Store with lowercase key for case-insensitive lookup later
-                    label_name_to_id.insert(label.to_lowercase(), existing_id);
-                    continue;
-                }
-
-                if !dry_run {
-                    // Create the label directly (it already has the full path)
-                    let label_id = label_manager.create_label_direct(&sanitized).await?;
-                    state.labels_created.push(label_id.clone());
-                    // Store with lowercase key for case-insensitive lookup later
-                    label_name_to_id.insert(label.to_lowercase(), label_id);
-                    labels_created += 1;
-                } else {
-                    planned_labels.push(label.clone());
-                    labels_created += 1;
-                }
-            }
+            let labels_skipped = label_stats.skipped;
 
             let label_action = if dry_run { "Would create" } else { "Created" };
             let skip_msg = if labels_skipped > 0 {
