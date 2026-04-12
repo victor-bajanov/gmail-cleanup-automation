@@ -308,5 +308,68 @@ export interface EditorFiltersResponse {
   label_map: Record<string, string>;
 }
 
+// Remediation types
+export interface OverlapFilter {
+  id: string;
+  from: string | null;
+  query: string | null;
+  subject: string | null;
+  add_label_ids: string[];
+  remove_label_ids: string[];
+}
+
+export type ResolutionType =
+  | { Consolidate: { keep_filter_id: string; remove_filter_ids: string[] } }
+  | { MechanicalFix: { proposed_replacements: FilterRule[] } }
+  | 'PickWinner';
+
+export interface FilterRule {
+  id: string | null;
+  name: string;
+  from_pattern: string | null;
+  is_specific_sender: boolean;
+  excluded_senders: string[];
+  subject_keywords: string[];
+  excluded_subject_patterns: string[];
+  target_label_id: string;
+  should_archive: boolean;
+}
+
+export interface OverlapGroup {
+  group_id: string;
+  from_pattern: string;
+  filters: OverlapFilter[];
+  label_names: string[];
+  resolution_type: ResolutionType;
+}
+
+export type GroupDecision =
+  | { Consolidate: { keep_filter_id: string; remove_filter_ids: string[] } }
+  | { ReplaceWithExclusive: { replacement_filters: FilterRule[] } }
+  | { KeepOne: { keep_filter_id: string } }
+  | 'Skip'
+  | { Rescan: { from_pattern: string } };
+
+export interface RemediationResult {
+  deleted: string[];
+  created: string[];
+  skipped: number;
+  errors: string[];
+}
+
+export interface LabelSwap {
+  query: string;
+  add_label_id: string;
+  remove_label_ids: string[];
+}
+
+export interface ApplyResult {
+  messages_relabeled: number;
+  messages_failed: number;
+  errors: string[];
+}
+
+export type RemediationPhase = 'idle' | 'detecting' | 'deciding' | 'confirming' | 'executing' | 'results';
+
 // App state
-export type AppView = 'auth' | 'scan' | 'review' | 'filters' | 'coverage' | 'editor' | 'settings';
+export type AppView = 'auth' | 'scan' | 'review' | 'filters' | 'coverage' | 'editor' | 'remediation' | 'settings';
