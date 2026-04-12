@@ -102,8 +102,8 @@ const ReviewView: Component = () => {
         case 'a': {
           const idx = selectedIndex();
           if (idx === null) break;
-          const updated = review.clusters().map((c, i) =>
-            i === idx ? { ...c, should_archive: !c.should_archive } : c
+          const updated = review.clusters().map((c) =>
+            c.index === idx ? { ...c, should_archive: !c.should_archive } : c
           );
           review.setClusters(updated);
           break;
@@ -127,14 +127,17 @@ const ReviewView: Component = () => {
   const currentCluster = () => {
     const idx = selectedIndex();
     if (idx === null) return null;
-    return review.clusters()[idx] || null;
+    return review.clusters().find(c => c.index === idx) || null;
   };
 
   const navigateCluster = (delta: number) => {
     const idx = selectedIndex();
     if (idx === null) return;
-    const newIdx = Math.max(0, Math.min(review.clusters().length - 1, idx + delta));
-    setSelectedIndex(newIdx);
+    const sorted = sortedClusters();
+    const currentPos = sorted.findIndex(c => c.index === idx);
+    if (currentPos === -1) return;
+    const newPos = Math.max(0, Math.min(sorted.length - 1, currentPos + delta));
+    setSelectedIndex(sorted[newPos].index);
   };
 
   const handleDecision = async (action: string, label?: string) => {
@@ -531,8 +534,8 @@ const ReviewView: Component = () => {
                 onClick={() => {
                   const idx = selectedIndex();
                   if (idx === null) return;
-                  const updated = review.clusters().map((c, i) =>
-                    i === idx ? { ...c, should_archive: !c.should_archive } : c
+                  const updated = review.clusters().map((c) =>
+                    c.index === idx ? { ...c, should_archive: !c.should_archive } : c
                   );
                   review.setClusters(updated);
                 }}
