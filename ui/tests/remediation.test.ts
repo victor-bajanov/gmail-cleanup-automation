@@ -225,4 +225,137 @@ describe('Remediation UI', () => {
       await page.close();
     }
   });
+
+  it('enables Review Plan button only when all groups are decided', async () => {
+    const groups = [consolidateGroup, pickWinnerGroup];
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({ detect_overlaps: groups }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+
+      // Button should be disabled initially
+      const disabledAttr = await page.$eval('[data-testid="review-plan-btn"]', el => (el as HTMLButtonElement).disabled);
+      assert.strictEqual(disabledAttr, true, 'Review Plan should be disabled with undecided groups');
+
+      // Decide on first group
+      await clickAndWait(page, '[data-testid="accept-consolidate-1"]');
+
+      // Still disabled (one group undecided)
+      const stillDisabled = await page.$eval('[data-testid="review-plan-btn"]', el => (el as HTMLButtonElement).disabled);
+      assert.strictEqual(stillDisabled, true, 'Should still be disabled with 1 undecided');
+
+      // Decide on second group
+      await clickAndWait(page, '[data-testid="filter-row-f5"]');
+
+      // Now enabled
+      const nowEnabled = await page.$eval('[data-testid="review-plan-btn"]', el => (el as HTMLButtonElement).disabled);
+      assert.strictEqual(nowEnabled, false, 'Should be enabled when all decided');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('shows summary and execute button in confirm phase', async () => {
+    const summaryText = 'Remediation plan: 1 groups, 1 deletions, 0 creations, 0 skipped\n  consolidate-1 — consolidate (same label), delete 1 redundant filters';
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: [consolidateGroup],
+        remediation_summary: summaryText,
+      }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      await clickAndWait(page, '[data-testid="accept-consolidate-1"]');
+      await clickAndWait(page, '[data-testid="review-plan-btn"]');
+
+      const summary = await page.$eval('[data-testid="plan-summary"]', el => el.textContent);
+      assert.ok(summary?.includes('1 deletions'), 'Should show summary text');
+
+      const executeBtn = await page.$('[data-testid="execute-btn"]');
+      assert.ok(executeBtn, 'Execute button should exist');
+
+      const backBtn = await page.$('[data-testid="back-to-decisions-btn"]');
+      assert.ok(backBtn, 'Back to Decisions button should exist');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('shows execution results with apply button when swaps exist', async () => {
+    const swaps = [
+      { query: 'from:news.com', add_label_id: 'L4', remove_label_ids: ['L5'] },
+    ];
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: [consolidateGroup],
+        remediation_summary: 'plan',
+        execute_remediation: { deleted: ['f2'], created: [], skipped: 0, errors: [] },
+        collect_remediation_swaps: swaps,
+      }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      await clickAndWait(page, '[data-testid="accept-consolidate-1"]');
+      await clickAndWait(page, '[data-testid="review-plan-btn"]');
+      await clickAndWait(page, '[data-testid="execute-btn"]');
+
+      const deleted = await page.$eval('[data-testid="result-deleted"]', el => el.textContent);
+      assert.ok(deleted?.includes('1'), 'Should show 1 deleted');
+
+      const applyBtn = await page.$('[data-testid="apply-swaps-btn"]');
+      assert.ok(applyBtn, 'Apply Label Changes button should exist');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('shows relabeled count after applying swaps', async () => {
+    const swaps = [
+      { query: 'from:news.com', add_label_id: 'L4', remove_label_ids: ['L5'] },
+    ];
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: [consolidateGroup],
+        remediation_summary: 'plan',
+        execute_remediation: { deleted: ['f2'], created: [], skipped: 0, errors: [] },
+        collect_remediation_swaps: swaps,
+        apply_remediation_swaps: { messages_relabeled: 42, messages_failed: 0, errors: [] },
+      }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      await clickAndWait(page, '[data-testid="accept-consolidate-1"]');
+      await clickAndWait(page, '[data-testid="review-plan-btn"]');
+      await clickAndWait(page, '[data-testid="execute-btn"]');
+      await clickAndWait(page, '[data-testid="apply-swaps-btn"]');
+
+      const relabeled = await page.$eval('[data-testid="apply-relabeled"]', el => el.textContent);
+      assert.ok(relabeled?.includes('42'), 'Should show 42 messages relabeled');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('shows no label changes needed when no swaps', async () => {
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: [consolidateGroup],
+        remediation_summary: 'plan',
+        execute_remediation: { deleted: ['f2'], created: [], skipped: 0, errors: [] },
+        collect_remediation_swaps: [],
+      }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      await clickAndWait(page, '[data-testid="accept-consolidate-1"]');
+      await clickAndWait(page, '[data-testid="review-plan-btn"]');
+      await clickAndWait(page, '[data-testid="execute-btn"]');
+
+      const msg = await page.$eval('[data-testid="no-swaps"]', el => el.textContent);
+      assert.ok(msg?.includes('No label changes'), 'Should show no swaps message');
+    } finally {
+      await page.close();
+    }
+  });
 });

@@ -60,6 +60,39 @@ const RemediationView: Component = () => {
     return null;
   };
 
+  const handleReviewPlan = async () => {
+    try {
+      const summary = await api.remediationSummary();
+      remediation.setSummary(summary);
+      remediation.setPhase('confirming');
+    } catch (e: any) {
+      remediation.setError(e?.message ?? String(e));
+    }
+  };
+
+  const handleExecute = async () => {
+    remediation.setPhase('executing');
+    try {
+      const result = await api.executeRemediation();
+      remediation.setResult(result);
+      const swaps = await api.collectRemediationSwaps();
+      remediation.setSwaps(swaps);
+      remediation.setPhase('results');
+    } catch (e: any) {
+      remediation.setError(e?.message ?? String(e));
+      remediation.setPhase('confirming');
+    }
+  };
+
+  const handleApplySwaps = async () => {
+    try {
+      const result = await api.applyRemediationSwaps();
+      remediation.setApplyResult(result);
+    } catch (e: any) {
+      remediation.setError(e?.message ?? String(e));
+    }
+  };
+
   const handleSkip = async (group: OverlapGroup) => {
     try {
       await api.submitGroupDecision(group.group_id, 'Skip');
@@ -266,6 +299,167 @@ const RemediationView: Component = () => {
               </div>
             )}
           </For>
+
+          {/* Sticky footer */}
+          <div class="sticky bottom-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 p-4 mt-4 -mx-4 flex items-center justify-between rounded-b-lg">
+            <span class="text-sm text-gray-600 dark:text-gray-400">
+              {remediation.decidedCount()}/{remediation.groups().length} decided
+            </span>
+            <button
+              data-testid="review-plan-btn"
+              disabled={!remediation.allDecided()}
+              onClick={handleReviewPlan}
+              class="btn-primary"
+              classList={{ 'opacity-50 cursor-not-allowed': !remediation.allDecided() }}
+            >
+              Review Plan
+            </button>
+          </div>
+        </div>
+      </Show>
+
+      {/* Confirm phase */}
+      <Show when={remediation.phase() === 'confirming'}>
+        <div class="card p-6 space-y-4">
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+            Remediation Plan
+          </h3>
+          <pre
+            data-testid="plan-summary"
+            class="text-sm font-mono bg-gray-50 dark:bg-gray-700 p-4 rounded-lg whitespace-pre-wrap text-gray-700 dark:text-gray-300"
+          >
+            {remediation.summary()}
+          </pre>
+          <div class="flex gap-3">
+            <button
+              data-testid="execute-btn"
+              onClick={handleExecute}
+              class="btn-primary"
+            >
+              Execute
+            </button>
+            <button
+              data-testid="back-to-decisions-btn"
+              onClick={() => remediation.setPhase('deciding')}
+              class="btn-secondary"
+            >
+              Back to Decisions
+            </button>
+          </div>
+        </div>
+      </Show>
+
+      {/* Executing phase */}
+      <Show when={remediation.phase() === 'executing'}>
+        <div class="card p-8 text-center">
+          <div class="animate-spin w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full mx-auto mb-4" />
+          <p class="text-gray-500 dark:text-gray-400">Executing remediation plan...</p>
+        </div>
+      </Show>
+
+      {/* Results phase */}
+      <Show when={remediation.phase() === 'results'}>
+        <div class="space-y-4">
+          <div class="card p-6">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+              Execution Results
+            </h3>
+            <div class="grid grid-cols-3 gap-4">
+              <div class="text-center p-4 bg-red-50 dark:bg-red-900/30 rounded-lg">
+                <div data-testid="result-deleted" class="text-2xl font-bold text-red-600 dark:text-red-400">
+                  {remediation.result()?.deleted.length ?? 0}
+                </div>
+                <div class="text-sm text-gray-500 dark:text-gray-400">Deleted</div>
+              </div>
+              <div class="text-center p-4 bg-green-50 dark:bg-green-900/30 rounded-lg">
+                <div data-testid="result-created" class="text-2xl font-bold text-green-600 dark:text-green-400">
+                  {remediation.result()?.created.length ?? 0}
+                </div>
+                <div class="text-sm text-gray-500 dark:text-gray-400">Created</div>
+              </div>
+              <div class="text-center p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                <div data-testid="result-skipped" class="text-2xl font-bold text-gray-400">
+                  {remediation.result()?.skipped ?? 0}
+                </div>
+                <div class="text-sm text-gray-500 dark:text-gray-400">Skipped</div>
+              </div>
+            </div>
+
+            <Show when={(remediation.result()?.errors.length ?? 0) > 0}>
+              <div class="mt-4 p-3 bg-red-50 dark:bg-red-900/30 rounded-lg">
+                <p class="text-sm font-medium text-red-700 dark:text-red-300 mb-2">Errors:</p>
+                <ul class="text-sm text-red-600 dark:text-red-400 space-y-1">
+                  <For each={remediation.result()?.errors ?? []}>
+                    {(err) => <li>- {err}</li>}
+                  </For>
+                </ul>
+              </div>
+            </Show>
+          </div>
+
+          {/* Label swaps section */}
+          <Show when={remediation.swaps().length > 0 && !remediation.applyResult()}>
+            <div class="card p-6">
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                Label Changes for Existing Emails
+              </h3>
+              <div class="space-y-2 mb-4">
+                <For each={remediation.swaps()}>
+                  {(swap) => (
+                    <div class="text-sm font-mono bg-gray-50 dark:bg-gray-700 p-2 rounded">
+                      {swap.query} — remove {swap.remove_label_ids.join(', ')} → add {swap.add_label_id}
+                    </div>
+                  )}
+                </For>
+              </div>
+              <button
+                data-testid="apply-swaps-btn"
+                onClick={handleApplySwaps}
+                class="btn-primary"
+              >
+                Apply Label Changes
+              </button>
+            </div>
+          </Show>
+
+          <Show when={remediation.swaps().length === 0 && !remediation.applyResult()}>
+            <div data-testid="no-swaps" class="card p-6 text-center">
+              <p class="text-gray-500 dark:text-gray-400">
+                No label changes needed for existing emails.
+              </p>
+            </div>
+          </Show>
+
+          {/* Apply result */}
+          <Show when={remediation.applyResult()}>
+            <div class="card p-6">
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                Label Application Results
+              </h3>
+              <div data-testid="apply-relabeled" class="text-sm text-gray-700 dark:text-gray-300">
+                {remediation.applyResult()!.messages_relabeled} messages relabeled
+              </div>
+              <Show when={remediation.applyResult()!.messages_failed > 0}>
+                <div class="text-sm text-red-600 dark:text-red-400 mt-1">
+                  {remediation.applyResult()!.messages_failed} messages failed
+                </div>
+              </Show>
+            </div>
+          </Show>
+
+          {/* Done button */}
+          <div class="flex justify-center">
+            <button
+              data-testid="done-btn"
+              onClick={() => {
+                remediation.reset();
+                setHasDetected(false);
+              }}
+              class="btn-secondary"
+            >
+              Done
+            </button>
+          </div>
         </div>
       </Show>
     </div>
