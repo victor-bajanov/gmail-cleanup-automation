@@ -163,4 +163,67 @@ describe('Review — cluster selection with index gaps', () => {
       await page.close();
     }
   });
+
+  it('advances to next cluster in sorted order after deciding (even when all decided)', async () => {
+    // Sorted visual order: charlie(existing), alpha, delta.
+    // After deciding alpha (middle), should advance to delta (next down).
+    // Mock returns ALL decided + get_next_undecided_cluster: null
+    // to test that advancement uses visual order, not backend undecided logic.
+    const allDecided = clustersWithGaps.map(c => ({ ...c, decided: true, decision: 'Accept' }));
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, reviewMock({
+        get_clusters: allDecided,
+        get_review_summary: { total: 3, accepted: 3, rejected: 0, skipped: 0, deleted: 0, excluded: 0, remaining: 0, existing_filters: 1, existing_remaining: 0 },
+        get_next_undecided_cluster: null,
+      }));
+      await clickAndWait(page, '[data-testid="nav-review"]');
+      await page.waitForSelector('.font-mono', { timeout: 5000 });
+      await new Promise(r => setTimeout(r, 500));
+
+      // Click alpha.com to select it (second in sorted order)
+      await page.evaluate(() => {
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+          if (btn.textContent?.includes('alpha.com')) {
+            btn.click();
+            return;
+          }
+        }
+      });
+      await new Promise(r => setTimeout(r, 500));
+
+      const beforeDecision = await page.evaluate(() => {
+        const h2 = document.querySelector('h2.font-mono');
+        return h2?.textContent ?? '';
+      });
+      assert.ok(beforeDecision.includes('alpha.com'), 'Should start on alpha.com');
+
+      // Click Skip button (a decision action) — button has <kbd>S</kbd> Skip
+      await page.evaluate(() => {
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+          const text = btn.textContent ?? '';
+          if (text.includes('Skip') && !text.includes('All') && !text.includes('Existing')) {
+            btn.click();
+            return;
+          }
+        }
+      });
+      await new Promise(r => setTimeout(r, 1000));
+
+      // Should advance to delta.com (next down in sorted order),
+      // NOT blank the selection even though getNextUndecidedCluster returns null
+      const afterDecision = await page.evaluate(() => {
+        const h2 = document.querySelector('h2.font-mono');
+        return h2?.textContent ?? '';
+      });
+      assert.ok(
+        afterDecision.includes('delta.com'),
+        `After deciding alpha, should advance to delta.com (next down) but got: "${afterDecision}"`
+      );
+    } finally {
+      await page.close();
+    }
+  });
 });

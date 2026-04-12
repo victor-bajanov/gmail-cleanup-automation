@@ -156,6 +156,13 @@ const ReviewView: Component = () => {
 
       await api.submitClusterDecision(input);
 
+      // Remember current position in sorted order before refresh
+      const currentIdx = selectedIndex();
+      const sortedBefore = sortedClusters();
+      const currentPos = currentIdx !== null
+        ? sortedBefore.findIndex(c => c.index === currentIdx)
+        : -1;
+
       // Refresh clusters and summary
       const clusters = await api.getClusters();
       review.setClusters(clusters);
@@ -163,10 +170,16 @@ const ReviewView: Component = () => {
       const summary = await api.getReviewSummary();
       review.setSummary(summary);
 
-      // Move to next undecided
-      const nextIndex = await api.getNextUndecidedCluster();
-      if (nextIndex !== null) {
-        setSelectedIndex(nextIndex);
+      // Advance to next cluster down in sorted visual order
+      // (fall back to same position if at the end of the list)
+      const sortedAfter = [...clusters].sort((a, b) => {
+        if (a.has_existing_filter && !b.has_existing_filter) return -1;
+        if (!a.has_existing_filter && b.has_existing_filter) return 1;
+        return a.index - b.index;
+      });
+      if (sortedAfter.length > 0 && currentPos !== -1) {
+        const nextPos = Math.min(currentPos + 1, sortedAfter.length - 1);
+        setSelectedIndex(sortedAfter[nextPos].index);
       }
 
       setShowCustomLabel(false);
