@@ -14,6 +14,12 @@ import type {
   ErrorEvent,
   EditorFilter,
   FilterAction,
+  OverlapGroup,
+  GroupDecision,
+  RemediationResult,
+  RemediationPhase,
+  LabelSwap,
+  ApplyResult,
 } from '../types';
 
 // ============ Auth State ============
@@ -151,6 +157,55 @@ export const editor = {
   },
 };
 
+// ============ Remediation State ============
+
+const [remediationPhase, setRemediationPhase] = createSignal<RemediationPhase>('idle');
+const [remediationGroups, setRemediationGroups] = createSignal<OverlapGroup[]>([]);
+const [remediationDecisions, setRemediationDecisions] = createSignal<Record<string, GroupDecision>>({});
+const [remediationSummaryText, setRemediationSummaryText] = createSignal('');
+const [remediationResult, setRemediationResult] = createSignal<RemediationResult | null>(null);
+const [remediationSwaps, setRemediationSwaps] = createSignal<LabelSwap[]>([]);
+const [remediationApplyResult, setRemediationApplyResult] = createSignal<ApplyResult | null>(null);
+const [remediationError, setRemediationError] = createSignal<string | null>(null);
+
+export const remediation = {
+  phase: remediationPhase,
+  groups: remediationGroups,
+  decisions: remediationDecisions,
+  summary: remediationSummaryText,
+  result: remediationResult,
+  swaps: remediationSwaps,
+  applyResult: remediationApplyResult,
+  error: remediationError,
+  setPhase: setRemediationPhase,
+  setGroups: setRemediationGroups,
+  setDecisions: setRemediationDecisions,
+  setSummary: setRemediationSummaryText,
+  setResult: setRemediationResult,
+  setSwaps: setRemediationSwaps,
+  setApplyResult: setRemediationApplyResult,
+  setError: setRemediationError,
+  setDecision: (groupId: string, decision: GroupDecision) => {
+    setRemediationDecisions(prev => ({ ...prev, [groupId]: decision }));
+  },
+  decidedCount: createMemo(() => Object.keys(remediationDecisions()).length),
+  allDecided: createMemo(() => {
+    const groups = remediationGroups();
+    const decisions = remediationDecisions();
+    return groups.length > 0 && groups.every(g => g.group_id in decisions);
+  }),
+  reset: () => {
+    setRemediationPhase('idle');
+    setRemediationGroups([]);
+    setRemediationDecisions({});
+    setRemediationSummaryText('');
+    setRemediationResult(null);
+    setRemediationSwaps([]);
+    setRemediationApplyResult(null);
+    setRemediationError(null);
+  },
+};
+
 // ============ Coverage State ============
 
 const [coverageAnalysis, setCoverageAnalysis] = createSignal<CoverageAnalysis | null>(null);
@@ -214,6 +269,7 @@ export function resetAllState() {
   review.reset();
   filters.reset();
   coverage.reset();
+  remediation.reset();
   editor.reset();
   errorState.clear();
 }

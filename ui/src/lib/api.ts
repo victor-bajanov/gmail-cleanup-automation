@@ -30,6 +30,11 @@ import type {
   EditorApplyResult,
   EditorFilter,
   EditorFiltersResponse,
+  OverlapGroup,
+  GroupDecision,
+  RemediationResult,
+  LabelSwap,
+  ApplyResult,
 } from '../types';
 
 // ============ Authentication Commands ============
@@ -191,6 +196,32 @@ export async function editorApply(actions: FilterAction[]): Promise<EditorApplyR
 
 export async function editorGetFilters(refresh?: boolean): Promise<EditorFiltersResponse> {
   return invoke<EditorFiltersResponse>('editor_get_filters', { refresh });
+}
+
+// ============ Remediation Commands ============
+
+export async function detectOverlaps(): Promise<OverlapGroup[]> {
+  return invoke<OverlapGroup[]>('detect_overlaps');
+}
+
+export async function submitGroupDecision(groupId: string, decision: GroupDecision): Promise<void> {
+  return invoke<void>('submit_group_decision', { groupId, decision });
+}
+
+export async function executeRemediation(): Promise<RemediationResult> {
+  return invoke<RemediationResult>('execute_remediation');
+}
+
+export async function remediationSummary(): Promise<string> {
+  return invoke<string>('remediation_summary');
+}
+
+export async function collectRemediationSwaps(): Promise<LabelSwap[]> {
+  return invoke<LabelSwap[]>('collect_remediation_swaps');
+}
+
+export async function applyRemediationSwaps(): Promise<ApplyResult> {
+  return invoke<ApplyResult>('apply_remediation_swaps');
 }
 
 // ============ Settings Commands ============

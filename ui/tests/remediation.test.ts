@@ -1,10 +1,11 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
-import { setupBrowser, teardownBrowser, newPage, navigateWithMock } from './setup.ts';
+import { setupBrowser, teardownBrowser, newPage, navigateWithMock, clickAndWait } from './setup.ts';
 import { buildMockScript } from './mock-tauri.ts';
 
 function baseMock(overrides: Record<string, unknown> = {}): string {
   return buildMockScript({
+    'plugin:event|listen': 0,
     check_auth_status: { authenticated: true, email: 'test@example.com', credentials_path: '', credentials_exist: true, token_exists: true },
     initialize_client: true,
     detect_overlaps: [],
@@ -27,6 +28,18 @@ describe('Remediation UI', () => {
       await navigateWithMock(page, baseMock());
       const body = await page.$('body');
       assert.ok(body, 'Page body should exist');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('navigates to remediation view via sidebar', async () => {
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock());
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      const heading = await page.$eval('[data-testid="remediation-view"]', el => el.textContent);
+      assert.ok(heading, 'Remediation view should be rendered');
     } finally {
       await page.close();
     }

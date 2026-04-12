@@ -10,6 +10,7 @@ import ReviewView from './components/views/ReviewView';
 import FiltersView from './components/views/FiltersView';
 import CoverageView from './components/views/CoverageView';
 import EditorView from './components/views/EditorView';
+import RemediationView from './components/views/RemediationView';
 import SettingsView from './components/views/SettingsView';
 
 // Layout components
@@ -99,6 +100,9 @@ const App: Component = () => {
             </Match>
             <Match when={navigation.currentView() === 'coverage'}>
               <CoverageView />
+            </Match>
+            <Match when={navigation.currentView() === 'remediation'}>
+              <RemediationView />
             </Match>
             <Match when={navigation.currentView() === 'editor'}>
               <EditorView />

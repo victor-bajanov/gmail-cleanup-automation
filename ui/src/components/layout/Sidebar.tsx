@@ -13,6 +13,7 @@ const navItems: NavItem[] = [
   { id: 'scan', label: 'Scan', icon: '📧' },
   { id: 'review', label: 'Review', icon: '✓', badge: () => review.undecidedCount() || null },
   { id: 'filters', label: 'Filters', icon: '🔧' },
+  { id: 'remediation', label: 'Remediation', icon: '🔀' },
   { id: 'coverage', label: 'Coverage', icon: '📊' },
   { id: 'editor', label: 'Editor', icon: '✏️' },
 ];
@@ -40,6 +41,7 @@ const Sidebar: Component = () => {
             {(item) => (
               <li>
                 <button
+                  data-testid={`nav-${item.id}`}
                   onClick={() => navigation.goTo(item.id)}
                   class="w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors"
                   classList={{
