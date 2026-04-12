@@ -25,6 +25,7 @@ const RemediationView: Component = () => {
   };
 
   const handleAccept = async (group: OverlapGroup) => {
+    remediation.setError(null);
     const resType = group.resolution_type;
     let decision: GroupDecision;
     if (typeof resType === 'object' && 'Consolidate' in resType) {
@@ -43,6 +44,7 @@ const RemediationView: Component = () => {
   };
 
   const handlePickWinner = async (group: OverlapGroup, filterId: string) => {
+    remediation.setError(null);
     const decision: GroupDecision = { KeepOne: { keep_filter_id: filterId } };
     try {
       await api.submitGroupDecision(group.group_id, decision);
@@ -61,6 +63,7 @@ const RemediationView: Component = () => {
   };
 
   const handleReviewPlan = async () => {
+    remediation.setError(null);
     try {
       const summary = await api.remediationSummary();
       remediation.setSummary(summary);
@@ -71,6 +74,7 @@ const RemediationView: Component = () => {
   };
 
   const handleExecute = async () => {
+    remediation.setError(null);
     remediation.setPhase('executing');
     try {
       const result = await api.executeRemediation();
@@ -85,6 +89,7 @@ const RemediationView: Component = () => {
   };
 
   const handleApplySwaps = async () => {
+    remediation.setError(null);
     try {
       const result = await api.applyRemediationSwaps();
       remediation.setApplyResult(result);
@@ -94,6 +99,7 @@ const RemediationView: Component = () => {
   };
 
   const handleSkip = async (group: OverlapGroup) => {
+    remediation.setError(null);
     try {
       await api.submitGroupDecision(group.group_id, 'Skip');
       remediation.setDecision(group.group_id, 'Skip');
@@ -327,9 +333,7 @@ const RemediationView: Component = () => {
           <pre
             data-testid="plan-summary"
             class="text-sm font-mono bg-gray-50 dark:bg-gray-700 p-4 rounded-lg whitespace-pre-wrap text-gray-700 dark:text-gray-300"
-          >
-            {remediation.summary()}
-          </pre>
+          >{remediation.summary()}</pre>
           <div class="flex gap-3">
             <button
               data-testid="execute-btn"

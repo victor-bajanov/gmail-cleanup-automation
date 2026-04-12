@@ -312,6 +312,7 @@ export interface EditorFiltersResponse {
 export interface OverlapFilter {
   id: string;
   from: string | null;
+  to: string | null;
   query: string | null;
   subject: string | null;
   add_label_ids: string[];
@@ -333,6 +334,7 @@ export interface FilterRule {
   excluded_subject_patterns: string[];
   target_label_id: string;
   should_archive: boolean;
+  estimated_matches: number;
 }
 
 export interface OverlapGroup {
