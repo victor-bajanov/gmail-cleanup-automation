@@ -337,6 +337,56 @@ describe('Remediation UI', () => {
     }
   });
 
+  it('completes full flow: detect -> decide -> confirm -> execute -> apply -> done', async () => {
+    const groups = [consolidateGroup, pickWinnerGroup];
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: groups,
+        remediation_summary: 'Remediation plan: 2 groups, 2 deletions, 0 creations, 0 skipped',
+        execute_remediation: { deleted: ['f2', 'f6'], created: [], skipped: 0, errors: [] },
+        collect_remediation_swaps: [
+          { query: 'from:news.com', add_label_id: 'L4', remove_label_ids: ['L5'] },
+        ],
+        apply_remediation_swaps: { messages_relabeled: 10, messages_failed: 0, errors: [] },
+      }));
+
+      // Navigate
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+
+      // Detect
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      const header = await page.$eval('[data-testid="decide-header"]', el => el.textContent);
+      assert.ok(header?.includes('2'), 'Should show 2 groups');
+
+      // Decide
+      await clickAndWait(page, '[data-testid="accept-consolidate-1"]');
+      await clickAndWait(page, '[data-testid="filter-row-f5"]');
+
+      // Review
+      await clickAndWait(page, '[data-testid="review-plan-btn"]');
+      const summary = await page.$('[data-testid="plan-summary"]');
+      assert.ok(summary, 'Should show plan summary');
+
+      // Execute
+      await clickAndWait(page, '[data-testid="execute-btn"]');
+      const deleted = await page.$eval('[data-testid="result-deleted"]', el => el.textContent);
+      assert.ok(deleted?.includes('2'), 'Should show 2 deleted');
+
+      // Apply
+      await clickAndWait(page, '[data-testid="apply-swaps-btn"]');
+      const relabeled = await page.$eval('[data-testid="apply-relabeled"]', el => el.textContent);
+      assert.ok(relabeled?.includes('10'), 'Should show 10 relabeled');
+
+      // Done
+      await clickAndWait(page, '[data-testid="done-btn"]');
+      const detectBtn = await page.$('[data-testid="detect-btn"]');
+      assert.ok(detectBtn, 'Should be back at idle phase with detect button');
+    } finally {
+      await page.close();
+    }
+  });
+
   it('shows no label changes needed when no swaps', async () => {
     const page = await newPage();
     try {
