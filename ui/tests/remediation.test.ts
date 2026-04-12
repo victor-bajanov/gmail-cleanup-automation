@@ -14,6 +14,45 @@ const consolidateGroup = {
   resolution_type: { Consolidate: { keep_filter_id: 'f1', remove_filter_ids: ['f2'] } },
 };
 
+const mechanicalFixGroup = {
+  group_id: 'mechfix-1',
+  from_pattern: 'store.com',
+  filters: [
+    { id: 'f3', from: 'store.com', query: null, subject: null, add_label_ids: ['L2'], remove_label_ids: [] },
+    { id: 'f4', from: 'store.com', query: null, subject: 'receipt', add_label_ids: ['L3'], remove_label_ids: [] },
+  ],
+  label_names: ['Shopping', 'Receipts'],
+  resolution_type: {
+    MechanicalFix: {
+      proposed_replacements: [
+        {
+          id: null, name: 'store.com', from_pattern: 'store.com',
+          is_specific_sender: false, excluded_senders: [],
+          subject_keywords: [], excluded_subject_patterns: ['receipt'],
+          target_label_id: 'L2', should_archive: false,
+        },
+        {
+          id: null, name: 'store.com-receipt', from_pattern: 'store.com',
+          is_specific_sender: false, excluded_senders: [],
+          subject_keywords: ['receipt'], excluded_subject_patterns: [],
+          target_label_id: 'L3', should_archive: false,
+        },
+      ],
+    },
+  },
+};
+
+const pickWinnerGroup = {
+  group_id: 'pick-1',
+  from_pattern: 'news.com',
+  filters: [
+    { id: 'f5', from: 'news.com', query: null, subject: null, add_label_ids: ['L4'], remove_label_ids: [] },
+    { id: 'f6', from: 'news.com', query: null, subject: 'digest', add_label_ids: ['L5'], remove_label_ids: [] },
+  ],
+  label_names: ['News', 'Digests'],
+  resolution_type: 'PickWinner' as const,
+};
+
 function baseMock(overrides: Record<string, unknown> = {}): string {
   return buildMockScript({
     'plugin:event|listen': 0,
@@ -134,6 +173,54 @@ describe('Remediation UI', () => {
       await clickAndWait(page, '[data-testid="accept-consolidate-1"]');
       const borderClass = await page.$eval('[data-testid="group-card-consolidate-1"]', el => el.className);
       assert.ok(borderClass.includes('border-l-green'), 'Card should have green left border when decided');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('renders mechanical fix card with accept fix and skip buttons', async () => {
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({ detect_overlaps: [mechanicalFixGroup] }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      const card = await page.$('[data-testid="group-card-mechfix-1"]');
+      assert.ok(card, 'MechanicalFix card should be rendered');
+      const acceptBtn = await page.$('[data-testid="accept-mechfix-1"]');
+      assert.ok(acceptBtn, 'Accept Fix button should exist');
+      const text = await page.$eval('[data-testid="group-card-mechfix-1"]', el => el.textContent);
+      assert.ok(text?.includes('Auto-fixable'), 'Should indicate auto-fixable');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('renders pick winner card with clickable filter rows', async () => {
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({ detect_overlaps: [pickWinnerGroup] }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      const row1 = await page.$('[data-testid="filter-row-f5"]');
+      const row2 = await page.$('[data-testid="filter-row-f6"]');
+      assert.ok(row1, 'Filter row f5 should exist');
+      assert.ok(row2, 'Filter row f6 should exist');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('highlights selected winner and marks card as decided', async () => {
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({ detect_overlaps: [pickWinnerGroup] }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      await clickAndWait(page, '[data-testid="filter-row-f5"]');
+      const classes = await page.$eval('[data-testid="filter-row-f5"]', el => el.className);
+      assert.ok(classes.includes('ring-2') || classes.includes('border-primary') || classes.includes('bg-primary'), 'Selected row should be visually highlighted');
+      const cardClasses = await page.$eval('[data-testid="group-card-pick-1"]', el => el.className);
+      assert.ok(cardClasses.includes('border-l-green'), 'Card should show decided state');
     } finally {
       await page.close();
     }

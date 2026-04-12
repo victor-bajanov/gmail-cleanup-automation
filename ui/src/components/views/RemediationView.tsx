@@ -29,6 +29,8 @@ const RemediationView: Component = () => {
     let decision: GroupDecision;
     if (typeof resType === 'object' && 'Consolidate' in resType) {
       decision = { Consolidate: resType.Consolidate };
+    } else if (typeof resType === 'object' && 'MechanicalFix' in resType) {
+      decision = { ReplaceWithExclusive: { replacement_filters: resType.MechanicalFix.proposed_replacements } };
     } else {
       return;
     }
@@ -38,6 +40,24 @@ const RemediationView: Component = () => {
     } catch (e: any) {
       remediation.setError(e?.message ?? String(e));
     }
+  };
+
+  const handlePickWinner = async (group: OverlapGroup, filterId: string) => {
+    const decision: GroupDecision = { KeepOne: { keep_filter_id: filterId } };
+    try {
+      await api.submitGroupDecision(group.group_id, decision);
+      remediation.setDecision(group.group_id, decision);
+    } catch (e: any) {
+      remediation.setError(e?.message ?? String(e));
+    }
+  };
+
+  const getPickedFilterId = (groupId: string): string | null => {
+    const d = remediation.decisions()[groupId];
+    if (d && typeof d === 'object' && 'KeepOne' in d) {
+      return d.KeepOne.keep_filter_id;
+    }
+    return null;
   };
 
   const handleSkip = async (group: OverlapGroup) => {
@@ -66,6 +86,15 @@ const RemediationView: Component = () => {
   const isConsolidate = (group: OverlapGroup) => {
     const r = group.resolution_type;
     return typeof r === 'object' && 'Consolidate' in r;
+  };
+
+  const isMechanicalFix = (group: OverlapGroup) => {
+    const r = group.resolution_type;
+    return typeof r === 'object' && 'MechanicalFix' in r;
+  };
+
+  const isPickWinner = (group: OverlapGroup) => {
+    return group.resolution_type === 'PickWinner';
   };
 
   const redundantCount = (group: OverlapGroup) => {
@@ -155,6 +184,54 @@ const RemediationView: Component = () => {
                     </div>
                   </Show>
 
+                  <Show when={isMechanicalFix(group)}>
+                    <div class="text-sm text-gray-600 dark:text-gray-300">
+                      Auto-fixable &mdash; add subject exclusions
+                    </div>
+                    <div class="mt-2 space-y-1">
+                      <For each={typeof group.resolution_type === 'object' && 'MechanicalFix' in group.resolution_type ? group.resolution_type.MechanicalFix.proposed_replacements : []}>
+                        {(rule) => (
+                          <div class="text-xs font-mono bg-gray-50 dark:bg-gray-800 rounded px-2 py-1 text-gray-700 dark:text-gray-300">
+                            {rule.from_pattern} &rarr; {rule.name}
+                            <Show when={rule.excluded_subject_patterns.length > 0}>
+                              {' '}<span class="text-red-500">-[{rule.excluded_subject_patterns.join(', ')}]</span>
+                            </Show>
+                            <Show when={rule.subject_keywords.length > 0}>
+                              {' '}<span class="text-green-500">+[{rule.subject_keywords.join(', ')}]</span>
+                            </Show>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+
+                  <Show when={isPickWinner(group)}>
+                    <div class="text-sm text-gray-600 dark:text-gray-300">
+                      Different labels &mdash; pick which filter to keep
+                    </div>
+                    <div class="mt-2 space-y-1">
+                      <For each={group.filters}>
+                        {(filter) => (
+                          <button
+                            data-testid={`filter-row-${filter.id}`}
+                            class={`w-full text-left text-sm rounded border px-3 py-2 transition ${
+                              getPickedFilterId(group.group_id) === filter.id
+                                ? 'ring-2 ring-primary-300 border-primary-500 bg-primary-50 dark:bg-primary-900/30'
+                                : 'border-gray-200 dark:border-gray-600 hover:border-gray-300'
+                            }`}
+                            onClick={() => handlePickWinner(group, filter.id)}
+                          >
+                            <span class="font-medium text-gray-900 dark:text-white">{filter.from || filter.query || 'All'}</span>
+                            <Show when={filter.subject}>
+                              <span class="ml-2 text-gray-500">subject: {filter.subject}</span>
+                            </Show>
+                            <span class="ml-2 text-gray-400">&rarr; {filter.add_label_ids.join(', ')}</span>
+                          </button>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+
                   {/* Action buttons - hidden after decision */}
                   <Show when={getDecisionState(group.group_id) === 'undecided'}>
                     <div class="flex gap-2 mt-3">
@@ -165,6 +242,15 @@ const RemediationView: Component = () => {
                           onClick={() => handleAccept(group)}
                         >
                           Accept
+                        </button>
+                      </Show>
+                      <Show when={isMechanicalFix(group)}>
+                        <button
+                          data-testid={`accept-${group.group_id}`}
+                          class="btn-primary text-sm"
+                          onClick={() => handleAccept(group)}
+                        >
+                          Accept Fix
                         </button>
                       </Show>
                       <button
