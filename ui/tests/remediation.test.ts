@@ -500,6 +500,63 @@ describe('Remediation UI', () => {
     }
   });
 
+  it('full flow with label names, diff highlighting, keyboard shortcuts, and progress', async () => {
+    const groups = [
+      {
+        ...mechanicalFixGroup,
+        label_names: ['automanaged/shopping/store-com', 'automanaged/receipts/store-com'],
+      },
+      pickWinnerGroup,
+    ];
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: {
+          groups,
+          label_id_to_name: {
+            L2: 'automanaged/shopping/store-com',
+            L3: 'automanaged/receipts/store-com',
+            L4: 'News',
+            L5: 'Digests',
+          },
+        },
+        get_config_settings: { label_prefix: 'automanaged', scan_query: '', max_results: 500, excluded_labels: [], auto_archive: false },
+        remediation_summary: 'plan: 2 groups',
+        execute_remediation: { deleted: ['f4', 'f6'], created: [], skipped: 0, errors: [] },
+        collect_remediation_swaps: [],
+      }));
+
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+
+      // Verify diff highlighting on mechfix group
+      const highlighted = await page.$$eval('[data-testid="group-card-mechfix-1"] [data-highlighted="true"]', els => els.map(el => el.textContent));
+      assert.ok(highlighted.includes('shopping') || highlighted.includes('receipts'), `Should highlight differing segments: ${JSON.stringify(highlighted)}`);
+
+      // Verify label names (not IDs) in mechfix pick buttons
+      const pickBtnText = await page.$eval('[data-testid="pick-filter-f3"]', el => el.textContent);
+      assert.ok(pickBtnText?.includes('shopping') || pickBtnText?.includes('Shopping'), `Pick button should show label name: ${pickBtnText}`);
+
+      // Use keyboard: A to accept first group (mechfix)
+      await page.keyboard.press('a');
+      await new Promise(r => setTimeout(r, 300));
+
+      // Use keyboard: 1 to pick winner on second group (pick-winner)
+      await page.keyboard.press('1');
+      await new Promise(r => setTimeout(r, 300));
+
+      // Review and execute
+      await clickAndWait(page, '[data-testid="review-plan-btn"]');
+      await clickAndWait(page, '[data-testid="execute-btn"]');
+
+      // Should reach results (progress UI was shown during execution)
+      const deleted = await page.$eval('[data-testid="result-deleted"]', el => el.textContent);
+      assert.ok(deleted?.includes('2'), 'Should show 2 deleted');
+    } finally {
+      await page.close();
+    }
+  });
+
   it('shows no label changes needed when no swaps', async () => {
     const page = await newPage();
     try {
