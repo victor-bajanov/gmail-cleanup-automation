@@ -39,6 +39,27 @@ pub async fn detect_overlaps(
         .get_client()
         .ok_or_else(|| "Not authenticated".to_string())?;
 
+    // Ensure label cache is warm
+    {
+        let is_empty = state.label_cache.read().is_empty();
+        if is_empty {
+            use gmail_automation::client::GmailClient;
+            tracing::info!("Label cache cold, warming from Gmail API");
+            match client.list_labels().await {
+                Ok(labels) => {
+                    let mut cache = state.label_cache.write();
+                    for label in &labels {
+                        cache.insert(label.name.to_lowercase(), label.id.clone());
+                    }
+                    tracing::info!("Warmed label cache with {} labels", labels.len());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to warm label cache: {}", e);
+                }
+            }
+        }
+    }
+
     // label_cache is name->id, but OverlapDetector needs id->name; reverse it
     let label_cache = state.label_cache.read().clone();
     let id_to_name: HashMap<String, String> = label_cache

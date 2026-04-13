@@ -203,5 +203,25 @@ pub async fn initialize_client(state: State<'_, AppState>) -> Result<bool, Strin
     state.set_client(client);
     state.set_config(config);
 
+    // Preload label cache in background
+    if let Some(client_arc) = state.get_client() {
+        let label_cache = state.label_cache.clone();
+        tauri::async_runtime::spawn(async move {
+            use gmail_automation::client::GmailClient;
+            match client_arc.list_labels().await {
+                Ok(labels) => {
+                    let mut cache = label_cache.write();
+                    for label in &labels {
+                        cache.insert(label.name.to_lowercase(), label.id.clone());
+                    }
+                    tracing::info!("Preloaded {} labels into cache", labels.len());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to preload labels: {}", e);
+                }
+            }
+        });
+    }
+
     Ok(true)
 }
