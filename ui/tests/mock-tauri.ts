@@ -10,6 +10,12 @@ export function buildMockScript(mockResponses: Record<string, unknown>): string 
     window.__TAURI_INTERNALS__ = {
       invoke: async (cmd, args) => {
         const responses = ${JSON.stringify(mockResponses)};
+        if (cmd === 'plugin:event|listen') {
+          return 0;
+        }
+        if (cmd === 'plugin:event|unlisten') {
+          return;
+        }
         if (cmd in responses) {
           return responses[cmd];
         }

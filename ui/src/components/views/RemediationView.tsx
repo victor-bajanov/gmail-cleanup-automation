@@ -1,6 +1,7 @@
 import { Component, Show, For, createSignal, createMemo, onMount, onCleanup } from 'solid-js';
 import { remediation } from '../../stores/app';
 import * as api from '../../lib/api';
+import { onRemediationProgress } from '../../lib/events';
 import { resolveLabelId, stripPrefix, diffLabelSegments } from '../../lib/label-format';
 import type { OverlapGroup, GroupDecision } from '../../types';
 
@@ -115,9 +116,48 @@ const RemediationView: Component = () => {
     }
   };
 
+  const estimatedTimeRemaining = (): string => {
+    const ticks = remediation.progressTicks();
+    const done = remediation.progressDone();
+    const total = remediation.progressTotal();
+    const remaining = total - done;
+
+    if (ticks.length < 3 || remaining <= 0) return 'Estimating...';
+
+    const recentTicks = ticks.slice(-10);
+    const intervals: number[] = [];
+    for (let i = 1; i < recentTicks.length; i++) {
+      intervals.push(recentTicks[i] - recentTicks[i - 1]);
+    }
+    const avgMs = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+    const etaSeconds = Math.ceil((avgMs * remaining) / 1000);
+
+    if (etaSeconds < 60) return `~${etaSeconds}s remaining`;
+    const mins = Math.floor(etaSeconds / 60);
+    const secs = etaSeconds % 60;
+    return `~${mins}m ${secs}s remaining`;
+  };
+
   const handleExecute = async () => {
     remediation.setError(null);
     remediation.setPhase('executing');
+    remediation.setProgressDone(0);
+    remediation.setProgressTotal(remediation.groups().length);
+
+    let unlisten: (() => void) | null = null;
+    try {
+      const unlistenFn = await onRemediationProgress((progress) => {
+        remediation.setProgressDone(progress.done);
+        remediation.setProgressTotal(progress.total);
+        remediation.addProgressTick();
+      });
+      if (typeof unlistenFn === 'function') {
+        unlisten = unlistenFn;
+      }
+    } catch {
+      // listen may fail in test/mock environments; continue without progress events
+    }
+
     try {
       const result = await api.executeRemediation();
       remediation.setResult(result);
@@ -127,6 +167,10 @@ const RemediationView: Component = () => {
     } catch (e: any) {
       remediation.setError(e?.message ?? String(e));
       remediation.setPhase('confirming');
+    } finally {
+      if (unlisten) {
+        try { unlisten(); } catch { /* ignore */ }
+      }
     }
   };
 
@@ -463,9 +507,19 @@ const RemediationView: Component = () => {
 
       {/* Executing phase */}
       <Show when={remediation.phase() === 'executing'}>
-        <div class="card p-8 text-center">
-          <div class="animate-spin w-8 h-8 border-4 border-primary-200 border-t-primary-600 rounded-full mx-auto mb-4" />
-          <p class="text-gray-500 dark:text-gray-400">Executing remediation plan...</p>
+        <div data-testid="execution-progress" class="card p-8 text-center">
+          <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mb-4">
+            <div
+              class="bg-primary-600 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${remediation.progressTotal() > 0 ? (remediation.progressDone() / remediation.progressTotal()) * 100 : 0}%` }}
+            />
+          </div>
+          <p data-testid="progress-counter" class="text-gray-700 dark:text-gray-300 font-medium">
+            {remediation.progressDone()}/{remediation.progressTotal()} groups
+          </p>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            {estimatedTimeRemaining()}
+          </p>
         </div>
       </Show>
 

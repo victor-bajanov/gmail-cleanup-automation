@@ -81,6 +81,17 @@ pub enum ClusterEventType {
     DecisionUndone,
 }
 
+/// Progress update for remediation execution
+#[derive(Debug, Clone, Serialize)]
+pub struct RemediationProgress {
+    /// Number of groups completed
+    pub done: usize,
+    /// Total groups
+    pub total: usize,
+    /// ID of the group just completed
+    pub group_id: String,
+}
+
 /// Event emitter helper for typed events
 pub struct EventEmitter<'a> {
     app: &'a AppHandle,
@@ -105,6 +116,11 @@ impl<'a> EventEmitter<'a> {
     /// Emits a cluster event
     pub fn emit_cluster(&self, event: ClusterEvent) {
         let _ = self.app.emit("cluster:event", event);
+    }
+
+    /// Emits a remediation progress event
+    pub fn emit_remediation_progress(&self, progress: RemediationProgress) {
+        let _ = self.app.emit("remediation:progress", progress);
     }
 
     /// Convenience method for scan fetching phase

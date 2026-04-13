@@ -169,6 +169,9 @@ const [remediationApplyResult, setRemediationApplyResult] = createSignal<ApplyRe
 const [remediationError, setRemediationError] = createSignal<string | null>(null);
 const [remediationLabelMap, setRemediationLabelMap] = createSignal<Record<string, string>>({});
 const [remediationLabelPrefix, setRemediationLabelPrefix] = createSignal('');
+const [remediationProgressDone, setRemediationProgressDone] = createSignal(0);
+const [remediationProgressTotal, setRemediationProgressTotal] = createSignal(0);
+const [remediationProgressTicks, setRemediationProgressTicks] = createSignal<number[]>([]);
 
 export const remediation = {
   phase: remediationPhase,
@@ -191,6 +194,14 @@ export const remediation = {
   labelPrefix: remediationLabelPrefix,
   setLabelMap: setRemediationLabelMap,
   setLabelPrefix: setRemediationLabelPrefix,
+  progressDone: remediationProgressDone,
+  progressTotal: remediationProgressTotal,
+  progressTicks: remediationProgressTicks,
+  setProgressDone: setRemediationProgressDone,
+  setProgressTotal: setRemediationProgressTotal,
+  addProgressTick: () => {
+    setRemediationProgressTicks(prev => [...prev, Date.now()]);
+  },
   setDecision: (groupId: string, decision: GroupDecision) => {
     setRemediationDecisions(prev => ({ ...prev, [groupId]: decision }));
   },
@@ -211,6 +222,9 @@ export const remediation = {
     setRemediationError(null);
     setRemediationLabelMap({});
     setRemediationLabelPrefix('');
+    setRemediationProgressDone(0);
+    setRemediationProgressTotal(0);
+    setRemediationProgressTicks([]);
   },
 };
 

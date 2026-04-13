@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use std::collections::HashMap;
 
 use gmail_automation::filter_remediation::{
@@ -71,6 +71,7 @@ pub async fn submit_group_decision(
 
 #[tauri::command]
 pub async fn execute_remediation(
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<RemediationResult, String> {
     let client = state
@@ -78,9 +79,16 @@ pub async fn execute_remediation(
         .ok_or_else(|| "Not authenticated".to_string())?;
 
     let plan = build_plan_from_state(&state);
+    let total = plan.groups.len();
 
     let result = plan
-        .execute(client.as_ref())
+        .execute_with_progress(client.as_ref(), |done, group_id| {
+            let _ = app.emit("remediation:progress", serde_json::json!({
+                "done": done,
+                "total": total,
+                "group_id": group_id,
+            }));
+        })
         .await
         .map_err(|e| format!("Execution failed: {}", e))?;
 

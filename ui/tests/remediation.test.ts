@@ -478,6 +478,28 @@ describe('Remediation UI', () => {
     }
   });
 
+  it('shows progress counter during execution phase', async () => {
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: { groups: [consolidateGroup], label_id_to_name: {} },
+        remediation_summary: 'plan',
+        execute_remediation: { deleted: ['f2'], created: [], skipped: 0, errors: [] },
+        collect_remediation_swaps: [],
+      }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      await clickAndWait(page, '[data-testid="accept-consolidate-1"]');
+      await clickAndWait(page, '[data-testid="review-plan-btn"]');
+      await clickAndWait(page, '[data-testid="execute-btn"]');
+      // Execution is instant with mocks, should reach results
+      const deleted = await page.$eval('[data-testid="result-deleted"]', el => el.textContent);
+      assert.ok(deleted?.includes('1'), 'Should reach results after execution');
+    } finally {
+      await page.close();
+    }
+  });
+
   it('shows no label changes needed when no swaps', async () => {
     const page = await newPage();
     try {

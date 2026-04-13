@@ -75,6 +75,22 @@ export async function onLabelProgress(handler: LabelProgressHandler): Promise<Un
   });
 }
 
+// ============ Remediation Events ============
+
+export interface RemediationProgress {
+  done: number;
+  total: number;
+  group_id: string;
+}
+
+export type RemediationProgressHandler = (progress: RemediationProgress) => void;
+
+export async function onRemediationProgress(handler: RemediationProgressHandler): Promise<UnlistenFn> {
+  return listen<RemediationProgress>('remediation:progress', (event) => {
+    handler(event.payload);
+  });
+}
+
 // ============ Utility: Combined Listener ============
 
 export interface EventListeners {
@@ -83,6 +99,7 @@ export interface EventListeners {
   labelProgress?: LabelProgressHandler;
   clusterEvent?: ClusterEventHandler;
   authStatus?: AuthEventHandler;
+  remediationProgress?: RemediationProgressHandler;
   error?: ErrorHandler;
 }
 
@@ -111,6 +128,10 @@ export async function setupEventListeners(listeners: EventListeners): Promise<()
 
   if (listeners.authStatus) {
     unlisteners.push(await onAuthStatus(listeners.authStatus));
+  }
+
+  if (listeners.remediationProgress) {
+    unlisteners.push(await onRemediationProgress(listeners.remediationProgress));
   }
 
   if (listeners.error) {
