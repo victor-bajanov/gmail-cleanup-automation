@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::client::{ExistingFilterInfo, GmailClient};
-use crate::filter_ast::FromClause;
+use crate::filter_ast::{DomainPattern, EmailPattern, FilterExpr, FromClause, SubjectClause};
 use crate::filter_overlap::parse_gmail_query;
 use crate::models::FilterRule;
 
@@ -468,6 +468,72 @@ impl OverlapDetector {
         }
 
         None
+    }
+
+    /// Convert an ExistingFilterInfo to a FilterExpr for overlap analysis.
+    ///
+    /// Prefers the `query` field (richer — includes exclusions, subject clauses).
+    /// Falls back to `from` and `subject` fields if no query.
+    pub fn filter_to_expr(filter: &ExistingFilterInfo) -> FilterExpr {
+        // If query exists, parse it — it has the richest information
+        if let Some(ref query) = filter.query {
+            let mut expr = parse_gmail_query(query);
+
+            // If parse_gmail_query didn't find a from_clause but filter.from exists,
+            // supplement from the from field
+            if expr.from_clause.is_none() {
+                if let Some(ref from) = filter.from {
+                    expr.from_clause = Self::parse_from_field(from);
+                }
+            }
+
+            // If no subject_clause from query but filter.subject exists, use it
+            if expr.subject_clause.is_none() {
+                if let Some(ref subj) = filter.subject {
+                    if !subj.is_empty() {
+                        expr.subject_clause = Some(SubjectClause::any_of(
+                            vec![subj.clone()],
+                        ));
+                    }
+                }
+            }
+
+            return expr;
+        }
+
+        // No query — build from individual fields
+        let mut expr = FilterExpr::new();
+
+        if let Some(ref from) = filter.from {
+            expr.from_clause = Self::parse_from_field(from);
+        }
+
+        if let Some(ref subj) = filter.subject {
+            if !subj.is_empty() {
+                expr.subject_clause = Some(SubjectClause::any_of(
+                    vec![subj.clone()],
+                ));
+            }
+        }
+
+        expr
+    }
+
+    /// Parse a raw `from` field value into a FromClause.
+    fn parse_from_field(from: &str) -> Option<FromClause> {
+        let from_normalized = from.trim().to_lowercase();
+        if from_normalized.is_empty() {
+            return None;
+        }
+        if from_normalized.contains('@') {
+            EmailPattern::parse(&from_normalized)
+                .map(FromClause::SpecificSender)
+        } else {
+            Some(FromClause::Domain(DomainPattern {
+                domain: from_normalized,
+                include_subdomains: false,
+            }))
+        }
     }
 
     /// Extract a FilterRule-compatible from_pattern from an ExistingFilterInfo.
@@ -2116,5 +2182,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_filter_to_expr_from_field() {
+        let filter = make_filter("f1", Some("noreply@example.com"), None, "lbl_fin");
+        let expr = OverlapDetector::filter_to_expr(&filter);
+        assert!(expr.from_clause.is_some(), "from_clause should be set from filter.from");
+        assert!(expr.subject_clause.is_none());
+        assert!(expr.exclusions.is_empty());
+    }
+
+    #[test]
+    fn test_filter_to_expr_query_with_exclusions() {
+        let filter = make_filter_with_query(
+            "f1",
+            None,
+            Some("from:(*@amazon.com.au) -from:(orders@amazon.com.au) -from:(shipping@amazon.com.au)"),
+            None,
+            "lbl_rec",
+        );
+        let expr = OverlapDetector::filter_to_expr(&filter);
+        assert!(expr.from_clause.is_some(), "from_clause should be set from query");
+        assert_eq!(expr.exclusions.len(), 2, "should have 2 FROM exclusions");
+    }
+
+    #[test]
+    fn test_filter_to_expr_subject_field() {
+        let filter = make_filter("f1", Some("noreply@example.com"), Some("Order Confirmation"), "lbl_rec");
+        let expr = OverlapDetector::filter_to_expr(&filter);
+        assert!(expr.from_clause.is_some());
+        assert!(expr.subject_clause.is_some(), "subject from filter.subject field");
+    }
+
+    #[test]
+    fn test_filter_to_expr_prefers_query_over_from_field() {
+        let filter = make_filter_with_query(
+            "f1",
+            Some("amazon.com.au"),
+            Some("from:(*@amazon.com.au) -from:(orders@amazon.com.au)"),
+            None,
+            "lbl_rec",
+        );
+        let expr = OverlapDetector::filter_to_expr(&filter);
+        assert!(expr.from_clause.is_some());
+        assert_eq!(expr.exclusions.len(), 1, "should parse exclusion from query");
     }
 }
