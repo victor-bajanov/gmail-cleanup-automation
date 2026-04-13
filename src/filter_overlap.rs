@@ -40,6 +40,7 @@
 
 use crate::filter_ast::{
     ActionConflict, DomainPattern, EmailPattern, Filter, FilterExpr, FromClause, SubjectClause,
+    SubjectMatchMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -347,6 +348,11 @@ impl FilterOverlapAnalyzer {
             return PatternRelation::Disjoint;
         }
 
+        // Check if subject exclusions resolve overlap
+        if self.subject_exclusions_resolve_overlap(expr_a, expr_b) {
+            return PatternRelation::Disjoint;
+        }
+
         // Combine relations
         self.combine_relations(from_relation, subject_relation)
     }
@@ -569,6 +575,57 @@ impl FilterOverlapAnalyzer {
         }
 
         false
+    }
+
+    /// Checks if subject exclusions make two filters mutually exclusive.
+    ///
+    /// Gmail semantics: `subject:(Y)` requires Y in subject; `-subject:(Y)` requires Y NOT in subject.
+    /// If one filter requires keywords that the other explicitly excludes, they are disjoint.
+    pub fn subject_exclusions_resolve_overlap(&self, expr_a: &FilterExpr, expr_b: &FilterExpr) -> bool {
+        // Check if B's subject_exclusions exclude A's subject_clause
+        if let Some(ref subj_a) = expr_a.subject_clause {
+            if !expr_b.subject_exclusions.is_empty() {
+                let excluded = self.subject_keywords_excluded(subj_a, &expr_b.subject_exclusions);
+                if excluded {
+                    return true;
+                }
+            }
+        }
+
+        // Check if A's subject_exclusions exclude B's subject_clause
+        if let Some(ref subj_b) = expr_b.subject_clause {
+            if !expr_a.subject_exclusions.is_empty() {
+                let excluded = self.subject_keywords_excluded(subj_b, &expr_a.subject_exclusions);
+                if excluded {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Returns true if the given subject exclusions make the subject clause unmatchable.
+    ///
+    /// For SubjectMatchMode::Any: disjoint only if ALL required keywords are excluded
+    ///   (because any single non-excluded keyword could still match)
+    /// For SubjectMatchMode::All: disjoint if ANY required keyword is excluded
+    ///   (because the email must contain all keywords, and one is forbidden)
+    fn subject_keywords_excluded(&self, subject: &SubjectClause, exclusions: &[String]) -> bool {
+        match subject.match_mode {
+            SubjectMatchMode::All => {
+                // ALL mode: email must have every keyword. If any keyword is excluded, impossible.
+                subject.keywords.iter().any(|kw| {
+                    exclusions.iter().any(|ex| ex.to_lowercase() == kw.to_lowercase())
+                })
+            }
+            SubjectMatchMode::Any => {
+                // ANY mode: email needs just one keyword. Only disjoint if all keywords are excluded.
+                subject.keywords.iter().all(|kw| {
+                    exclusions.iter().any(|ex| ex.to_lowercase() == kw.to_lowercase())
+                })
+            }
+        }
     }
 
     /// Combines FROM and SUBJECT relations into overall relation
