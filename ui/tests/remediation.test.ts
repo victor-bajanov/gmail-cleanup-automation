@@ -408,6 +408,34 @@ describe('Remediation UI', () => {
     }
   });
 
+  it('highlights differing label segments in group header', async () => {
+    const group = {
+      group_id: 'diff-1',
+      from_pattern: 'airbnb.com',
+      filters: [
+        { id: 'f10', from: 'airbnb.com', query: null, subject: null, add_label_ids: ['L10'], remove_label_ids: [] },
+        { id: 'f11', from: 'airbnb.com', query: null, subject: 'receipt', add_label_ids: ['L11'], remove_label_ids: [] },
+      ],
+      label_names: ['automanaged/other/airbnb-com', 'automanaged/marketing/airbnb-com'],
+      resolution_type: 'PickWinner' as const,
+    };
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: { groups: [group], label_id_to_name: { L10: 'automanaged/other/airbnb-com', L11: 'automanaged/marketing/airbnb-com' } },
+        get_config_settings: { label_prefix: 'automanaged', scan_query: '', max_results: 500, excluded_labels: [], auto_archive: false },
+      }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+
+      const highlighted = await page.$$eval('[data-testid="group-card-diff-1"] [data-highlighted="true"]', els => els.map(el => el.textContent));
+      assert.ok(highlighted.includes('other'), `Should highlight "other", got: ${JSON.stringify(highlighted)}`);
+      assert.ok(highlighted.includes('marketing'), `Should highlight "marketing", got: ${JSON.stringify(highlighted)}`);
+    } finally {
+      await page.close();
+    }
+  });
+
   it('shows no label changes needed when no swaps', async () => {
     const page = await newPage();
     try {

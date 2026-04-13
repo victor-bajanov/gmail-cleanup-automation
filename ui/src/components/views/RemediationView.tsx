@@ -1,8 +1,44 @@
 import { Component, Show, For, createSignal, createMemo } from 'solid-js';
 import { remediation } from '../../stores/app';
 import * as api from '../../lib/api';
-import { resolveLabelId, stripPrefix } from '../../lib/label-format';
+import { resolveLabelId, stripPrefix, diffLabelSegments } from '../../lib/label-format';
 import type { OverlapGroup, GroupDecision } from '../../types';
+
+const DiffLabels = (props: { labels: string[]; prefix: string }) => {
+  const stripped = () => props.labels.map(l => stripPrefix(l, props.prefix));
+  const diffed = () => diffLabelSegments(stripped());
+
+  return (
+    <span class="inline-flex flex-wrap gap-x-2">
+      <For each={diffed()}>
+        {(segments, labelIdx) => (
+          <>
+            <Show when={labelIdx() > 0}>
+              <span class="text-gray-400">vs</span>
+            </Show>
+            <span>
+              <For each={segments}>
+                {(seg, segIdx) => (
+                  <>
+                    <Show when={segIdx() > 0}>
+                      <span class="text-gray-400">/</span>
+                    </Show>
+                    <span
+                      data-highlighted={seg.highlighted ? 'true' : 'false'}
+                      class={seg.highlighted ? 'font-bold text-primary-600 dark:text-primary-400' : 'text-gray-500 dark:text-gray-400'}
+                    >
+                      {seg.text}
+                    </span>
+                  </>
+                )}
+              </For>
+            </span>
+          </>
+        )}
+      </For>
+    </span>
+  );
+};
 
 const RemediationView: Component = () => {
   const [hasDetected, setHasDetected] = createSignal(false);
@@ -226,7 +262,10 @@ const RemediationView: Component = () => {
                   </div>
 
                   <div class="text-sm text-gray-500 dark:text-gray-400">
-                    Labels: {group.label_names.map(n => stripPrefix(n, remediation.labelPrefix())).join(', ')} &middot; {group.filters.length} filter{group.filters.length !== 1 ? 's' : ''}
+                    <Show when={group.label_names.length > 1} fallback={<>Labels: {stripPrefix(group.label_names[0] ?? '', remediation.labelPrefix())}</>}>
+                      Labels: <DiffLabels labels={group.label_names} prefix={remediation.labelPrefix()} />
+                    </Show>
+                    {' '}&middot; {group.filters.length} filter{group.filters.length !== 1 ? 's' : ''}
                   </div>
 
                   <Show when={isConsolidate(group)}>
