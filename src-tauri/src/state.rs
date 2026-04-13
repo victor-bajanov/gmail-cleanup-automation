@@ -47,7 +47,7 @@ pub struct AppState {
     /// Existing Gmail filters (fetched from API)
     pub existing_filters: RwLock<Vec<gmail_automation::client::ExistingFilterInfo>>,
     /// Label ID cache (name -> ID)
-    pub label_cache: Arc<RwLock<HashMap<String, String>>>,
+    pub label_cache: RwLock<HashMap<String, String>>,
     /// Hidden filters data (persisted to disk)
     pub hidden_filters: RwLock<HiddenFiltersData>,
     /// Detected overlap groups for remediation
@@ -134,7 +134,7 @@ impl AppState {
             gui_decision_history: RwLock::new(Vec::new()),
             proposed_filters: RwLock::new(Vec::new()),
             existing_filters: RwLock::new(Vec::new()),
-            label_cache: Arc::new(RwLock::new(HashMap::new())),
+            label_cache: RwLock::new(HashMap::new()),
             hidden_filters: RwLock::new(hidden_filters_data),
             remediation_groups: RwLock::new(vec![]),
             remediation_decisions: RwLock::new(HashMap::new()),
