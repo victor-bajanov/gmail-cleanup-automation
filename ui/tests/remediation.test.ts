@@ -436,6 +436,48 @@ describe('Remediation UI', () => {
     }
   });
 
+  it('allows picking a winner on a mechanical fix card by clicking a filter label', async () => {
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: { groups: [mechanicalFixGroup], label_id_to_name: { L2: 'Shopping', L3: 'Receipts' } },
+      }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      await clickAndWait(page, '[data-testid="pick-filter-f3"]');
+      const borderClass = await page.$eval('[data-testid="group-card-mechfix-1"]', el => el.className);
+      assert.ok(borderClass.includes('border-l-green'), 'Card should show decided state after picking winner');
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('accepts mechanical fix with A key and picks winner with number keys', async () => {
+    const groups = [mechanicalFixGroup, pickWinnerGroup];
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: { groups, label_id_to_name: { L2: 'Shopping', L3: 'Receipts', L4: 'News', L5: 'Digests' } },
+      }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+
+      // Press A to accept first (mechfix) group
+      await page.keyboard.press('a');
+      await new Promise(r => setTimeout(r, 300));
+      const mechfixClass = await page.$eval('[data-testid="group-card-mechfix-1"]', el => el.className);
+      assert.ok(mechfixClass.includes('border-l-green'), 'MechFix card should be decided after A key');
+
+      // Press 1 to pick first filter as winner on second (pick-winner) group
+      await page.keyboard.press('1');
+      await new Promise(r => setTimeout(r, 300));
+      const pickClass = await page.$eval('[data-testid="group-card-pick-1"]', el => el.className);
+      assert.ok(pickClass.includes('border-l-green'), 'PickWinner card should be decided after 1 key');
+    } finally {
+      await page.close();
+    }
+  });
+
   it('shows no label changes needed when no swaps', async () => {
     const page = await newPage();
     try {

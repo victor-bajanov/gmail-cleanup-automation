@@ -1,4 +1,4 @@
-import { Component, Show, For, createSignal, createMemo } from 'solid-js';
+import { Component, Show, For, createSignal, createMemo, onMount, onCleanup } from 'solid-js';
 import { remediation } from '../../stores/app';
 import * as api from '../../lib/api';
 import { resolveLabelId, stripPrefix, diffLabelSegments } from '../../lib/label-format';
@@ -192,6 +192,44 @@ const RemediationView: Component = () => {
     return 0;
   };
 
+  const currentUndecidedGroup = () =>
+    remediation.groups().find(g => getDecisionState(g.group_id) === 'undecided');
+
+  onMount(() => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      if (remediation.phase() !== 'deciding') return;
+      const group = currentUndecidedGroup();
+      if (!group) return;
+
+      const key = e.key.toLowerCase();
+
+      if (key === 'a') {
+        e.preventDefault();
+        if (isConsolidate(group) || isMechanicalFix(group)) {
+          await handleAccept(group);
+        }
+        return;
+      }
+
+      if (key === 's') {
+        e.preventDefault();
+        await handleSkip(group);
+        return;
+      }
+
+      // Number keys: pick winner by filter index (1-based)
+      const num = parseInt(e.key, 10);
+      if (!isNaN(num) && num >= 1 && num <= group.filters.length) {
+        e.preventDefault();
+        await handlePickWinner(group, group.filters[num - 1].id);
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    onCleanup(() => window.removeEventListener('keydown', handleKeyDown));
+  });
+
   return (
     <div data-testid="remediation-view" class="max-w-4xl mx-auto space-y-6">
       <h2 class="text-xl font-bold text-gray-900 dark:text-white">
@@ -290,6 +328,25 @@ const RemediationView: Component = () => {
                               {' '}<span class="text-green-500">+[{rule.subject_keywords.join(', ')}]</span>
                             </Show>
                           </div>
+                        )}
+                      </For>
+                    </div>
+                    <div class="mt-2 space-y-1">
+                      <For each={group.filters}>
+                        {(filter, idx) => (
+                          <button
+                            data-testid={`pick-filter-${filter.id}`}
+                            class={`w-full text-left text-xs rounded border px-2 py-1 transition ${
+                              getPickedFilterId(group.group_id) === filter.id
+                                ? 'ring-2 ring-primary-300 border-primary-500 bg-primary-50 dark:bg-primary-900/30'
+                                : 'border-gray-200 dark:border-gray-600 hover:border-gray-300'
+                            }`}
+                            onClick={() => handlePickWinner(group, filter.id)}
+                          >
+                            <span class="text-gray-500">{idx() + 1}.</span>{' '}
+                            <span class="font-medium">{resolveFilterLabel(filter.add_label_ids)}</span>
+                            <span class="ml-1 text-gray-400">— pick as winner</span>
+                          </button>
                         )}
                       </For>
                     </div>
