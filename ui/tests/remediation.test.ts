@@ -58,7 +58,8 @@ function baseMock(overrides: Record<string, unknown> = {}): string {
     'plugin:event|listen': 0,
     check_auth_status: { authenticated: true, email: 'test@example.com', credentials_path: '', credentials_exist: true, token_exists: true },
     initialize_client: true,
-    detect_overlaps: [],
+    detect_overlaps: { groups: [], label_id_to_name: {} },
+    get_config_settings: { label_prefix: '', scan_query: '', max_results: 500, excluded_labels: [], auto_archive: false },
     submit_group_decision: null,
     execute_remediation: { deleted: [], created: [], skipped: 0, errors: [] },
     remediation_summary: 'Remediation plan: 0 groups, 0 deletions, 0 creations, 0 skipped',
@@ -124,7 +125,7 @@ describe('Remediation UI', () => {
     ];
     const page = await newPage();
     try {
-      await navigateWithMock(page, baseMock({ detect_overlaps: mockGroups }));
+      await navigateWithMock(page, baseMock({ detect_overlaps: { groups: mockGroups, label_id_to_name: {} } }));
       await clickAndWait(page, '[data-testid="nav-remediation"]');
       await clickAndWait(page, '[data-testid="detect-btn"]');
       const heading = await page.$eval('[data-testid="decide-header"]', el => el.textContent);
@@ -137,7 +138,7 @@ describe('Remediation UI', () => {
   it('shows empty state when no overlaps detected', async () => {
     const page = await newPage();
     try {
-      await navigateWithMock(page, baseMock({ detect_overlaps: [] }));
+      await navigateWithMock(page, baseMock({ detect_overlaps: { groups: [], label_id_to_name: {} } }));
       await clickAndWait(page, '[data-testid="nav-remediation"]');
       await clickAndWait(page, '[data-testid="detect-btn"]');
       const msg = await page.$eval('[data-testid="no-overlaps"]', el => el.textContent);
@@ -150,7 +151,7 @@ describe('Remediation UI', () => {
   it('renders consolidate card with accept and skip buttons', async () => {
     const page = await newPage();
     try {
-      await navigateWithMock(page, baseMock({ detect_overlaps: [consolidateGroup] }));
+      await navigateWithMock(page, baseMock({ detect_overlaps: { groups: [consolidateGroup], label_id_to_name: {} } }));
       await clickAndWait(page, '[data-testid="nav-remediation"]');
       await clickAndWait(page, '[data-testid="detect-btn"]');
       const card = await page.$('[data-testid="group-card-consolidate-1"]');
@@ -167,7 +168,7 @@ describe('Remediation UI', () => {
   it('marks consolidate card as decided after accepting', async () => {
     const page = await newPage();
     try {
-      await navigateWithMock(page, baseMock({ detect_overlaps: [consolidateGroup] }));
+      await navigateWithMock(page, baseMock({ detect_overlaps: { groups: [consolidateGroup], label_id_to_name: {} } }));
       await clickAndWait(page, '[data-testid="nav-remediation"]');
       await clickAndWait(page, '[data-testid="detect-btn"]');
       await clickAndWait(page, '[data-testid="accept-consolidate-1"]');
@@ -181,7 +182,7 @@ describe('Remediation UI', () => {
   it('renders mechanical fix card with accept fix and skip buttons', async () => {
     const page = await newPage();
     try {
-      await navigateWithMock(page, baseMock({ detect_overlaps: [mechanicalFixGroup] }));
+      await navigateWithMock(page, baseMock({ detect_overlaps: { groups: [mechanicalFixGroup], label_id_to_name: {} } }));
       await clickAndWait(page, '[data-testid="nav-remediation"]');
       await clickAndWait(page, '[data-testid="detect-btn"]');
       const card = await page.$('[data-testid="group-card-mechfix-1"]');
@@ -198,7 +199,7 @@ describe('Remediation UI', () => {
   it('renders pick winner card with clickable filter rows', async () => {
     const page = await newPage();
     try {
-      await navigateWithMock(page, baseMock({ detect_overlaps: [pickWinnerGroup] }));
+      await navigateWithMock(page, baseMock({ detect_overlaps: { groups: [pickWinnerGroup], label_id_to_name: {} } }));
       await clickAndWait(page, '[data-testid="nav-remediation"]');
       await clickAndWait(page, '[data-testid="detect-btn"]');
       const row1 = await page.$('[data-testid="filter-row-f5"]');
@@ -213,7 +214,7 @@ describe('Remediation UI', () => {
   it('highlights selected winner and marks card as decided', async () => {
     const page = await newPage();
     try {
-      await navigateWithMock(page, baseMock({ detect_overlaps: [pickWinnerGroup] }));
+      await navigateWithMock(page, baseMock({ detect_overlaps: { groups: [pickWinnerGroup], label_id_to_name: {} } }));
       await clickAndWait(page, '[data-testid="nav-remediation"]');
       await clickAndWait(page, '[data-testid="detect-btn"]');
       await clickAndWait(page, '[data-testid="filter-row-f5"]');
@@ -230,7 +231,7 @@ describe('Remediation UI', () => {
     const groups = [consolidateGroup, pickWinnerGroup];
     const page = await newPage();
     try {
-      await navigateWithMock(page, baseMock({ detect_overlaps: groups }));
+      await navigateWithMock(page, baseMock({ detect_overlaps: { groups, label_id_to_name: {} } }));
       await clickAndWait(page, '[data-testid="nav-remediation"]');
       await clickAndWait(page, '[data-testid="detect-btn"]');
 
@@ -261,7 +262,7 @@ describe('Remediation UI', () => {
     const page = await newPage();
     try {
       await navigateWithMock(page, baseMock({
-        detect_overlaps: [consolidateGroup],
+        detect_overlaps: { groups: [consolidateGroup], label_id_to_name: {} },
         remediation_summary: summaryText,
       }));
       await clickAndWait(page, '[data-testid="nav-remediation"]');
@@ -289,7 +290,7 @@ describe('Remediation UI', () => {
     const page = await newPage();
     try {
       await navigateWithMock(page, baseMock({
-        detect_overlaps: [consolidateGroup],
+        detect_overlaps: { groups: [consolidateGroup], label_id_to_name: {} },
         remediation_summary: 'plan',
         execute_remediation: { deleted: ['f2'], created: [], skipped: 0, errors: [] },
         collect_remediation_swaps: swaps,
@@ -317,7 +318,7 @@ describe('Remediation UI', () => {
     const page = await newPage();
     try {
       await navigateWithMock(page, baseMock({
-        detect_overlaps: [consolidateGroup],
+        detect_overlaps: { groups: [consolidateGroup], label_id_to_name: {} },
         remediation_summary: 'plan',
         execute_remediation: { deleted: ['f2'], created: [], skipped: 0, errors: [] },
         collect_remediation_swaps: swaps,
@@ -342,7 +343,7 @@ describe('Remediation UI', () => {
     const page = await newPage();
     try {
       await navigateWithMock(page, baseMock({
-        detect_overlaps: groups,
+        detect_overlaps: { groups, label_id_to_name: {} },
         remediation_summary: 'Remediation plan: 2 groups, 2 deletions, 0 creations, 0 skipped',
         execute_remediation: { deleted: ['f2', 'f6'], created: [], skipped: 0, errors: [] },
         collect_remediation_swaps: [
@@ -387,11 +388,31 @@ describe('Remediation UI', () => {
     }
   });
 
+  it('displays label names instead of IDs in pick-winner rows', async () => {
+    const page = await newPage();
+    try {
+      await navigateWithMock(page, baseMock({
+        detect_overlaps: {
+          groups: [pickWinnerGroup],
+          label_id_to_name: { L4: 'automanaged/news/news-com', L5: 'automanaged/digests/news-com' },
+        },
+        get_config_settings: { label_prefix: 'automanaged', scan_query: '', max_results: 500, excluded_labels: [], auto_archive: false },
+      }));
+      await clickAndWait(page, '[data-testid="nav-remediation"]');
+      await clickAndWait(page, '[data-testid="detect-btn"]');
+      const row1Text = await page.$eval('[data-testid="filter-row-f5"]', el => el.textContent);
+      assert.ok(row1Text?.includes('news/news-com'), `Expected label name but got: ${row1Text}`);
+      assert.ok(!row1Text?.includes('L4'), `Should not show raw ID L4: ${row1Text}`);
+    } finally {
+      await page.close();
+    }
+  });
+
   it('shows no label changes needed when no swaps', async () => {
     const page = await newPage();
     try {
       await navigateWithMock(page, baseMock({
-        detect_overlaps: [consolidateGroup],
+        detect_overlaps: { groups: [consolidateGroup], label_id_to_name: {} },
         remediation_summary: 'plan',
         execute_remediation: { deleted: ['f2'], created: [], skipped: 0, errors: [] },
         collect_remediation_swaps: [],

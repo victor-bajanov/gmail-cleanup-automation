@@ -31,6 +31,7 @@ import type {
   EditorFilter,
   EditorFiltersResponse,
   OverlapGroup,
+  DetectOverlapsResponse,
   GroupDecision,
   RemediationResult,
   LabelSwap,
@@ -200,8 +201,8 @@ export async function editorGetFilters(refresh?: boolean): Promise<EditorFilters
 
 // ============ Remediation Commands ============
 
-export async function detectOverlaps(): Promise<OverlapGroup[]> {
-  return invoke<OverlapGroup[]>('detect_overlaps');
+export async function detectOverlaps(): Promise<DetectOverlapsResponse> {
+  return invoke<DetectOverlapsResponse>('detect_overlaps');
 }
 
 export async function submitGroupDecision(groupId: string, decision: GroupDecision): Promise<void> {

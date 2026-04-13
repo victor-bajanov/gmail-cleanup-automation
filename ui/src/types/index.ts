@@ -345,6 +345,11 @@ export interface OverlapGroup {
   resolution_type: ResolutionType;
 }
 
+export interface DetectOverlapsResponse {
+  groups: OverlapGroup[];
+  label_id_to_name: Record<string, string>;
+}
+
 export type GroupDecision =
   | { Consolidate: { keep_filter_id: string; remove_filter_ids: string[] } }
   | { ReplaceWithExclusive: { replacement_filters: FilterRule[] } }

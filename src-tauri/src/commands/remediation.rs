@@ -24,10 +24,16 @@ fn build_plan_from_state(state: &AppState) -> RemediationPlan {
     plan
 }
 
+#[derive(serde::Serialize)]
+pub struct DetectOverlapsResponse {
+    pub groups: Vec<OverlapGroup>,
+    pub label_id_to_name: HashMap<String, String>,
+}
+
 #[tauri::command]
 pub async fn detect_overlaps(
     state: State<'_, AppState>,
-) -> Result<Vec<OverlapGroup>, String> {
+) -> Result<DetectOverlapsResponse, String> {
     let client = state
         .get_client()
         .ok_or_else(|| "Not authenticated".to_string())?;
@@ -47,7 +53,10 @@ pub async fn detect_overlaps(
     *state.remediation_groups.write() = groups.clone();
     *state.remediation_decisions.write() = HashMap::new();
 
-    Ok(groups)
+    Ok(DetectOverlapsResponse {
+        groups,
+        label_id_to_name: id_to_name,
+    })
 }
 
 #[tauri::command]

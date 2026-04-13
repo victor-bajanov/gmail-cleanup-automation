@@ -167,6 +167,8 @@ const [remediationResult, setRemediationResult] = createSignal<RemediationResult
 const [remediationSwaps, setRemediationSwaps] = createSignal<LabelSwap[]>([]);
 const [remediationApplyResult, setRemediationApplyResult] = createSignal<ApplyResult | null>(null);
 const [remediationError, setRemediationError] = createSignal<string | null>(null);
+const [remediationLabelMap, setRemediationLabelMap] = createSignal<Record<string, string>>({});
+const [remediationLabelPrefix, setRemediationLabelPrefix] = createSignal('');
 
 export const remediation = {
   phase: remediationPhase,
@@ -185,6 +187,10 @@ export const remediation = {
   setSwaps: setRemediationSwaps,
   setApplyResult: setRemediationApplyResult,
   setError: setRemediationError,
+  labelMap: remediationLabelMap,
+  labelPrefix: remediationLabelPrefix,
+  setLabelMap: setRemediationLabelMap,
+  setLabelPrefix: setRemediationLabelPrefix,
   setDecision: (groupId: string, decision: GroupDecision) => {
     setRemediationDecisions(prev => ({ ...prev, [groupId]: decision }));
   },
@@ -203,6 +209,8 @@ export const remediation = {
     setRemediationSwaps([]);
     setRemediationApplyResult(null);
     setRemediationError(null);
+    setRemediationLabelMap({});
+    setRemediationLabelPrefix('');
   },
 };
 

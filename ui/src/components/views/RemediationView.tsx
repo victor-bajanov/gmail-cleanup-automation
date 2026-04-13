@@ -1,6 +1,7 @@
 import { Component, Show, For, createSignal, createMemo } from 'solid-js';
 import { remediation } from '../../stores/app';
 import * as api from '../../lib/api';
+import { resolveLabelId, stripPrefix } from '../../lib/label-format';
 import type { OverlapGroup, GroupDecision } from '../../types';
 
 const RemediationView: Component = () => {
@@ -10,10 +11,15 @@ const RemediationView: Component = () => {
     remediation.setPhase('detecting');
     remediation.setError(null);
     try {
-      const groups = await api.detectOverlaps();
-      remediation.setGroups(groups);
+      const [response, config] = await Promise.all([
+        api.detectOverlaps(),
+        api.getConfigSettings(),
+      ]);
+      remediation.setGroups(response.groups);
+      remediation.setLabelMap(response.label_id_to_name);
+      remediation.setLabelPrefix(config.label_prefix);
       setHasDetected(true);
-      if (groups.length > 0) {
+      if (response.groups.length > 0) {
         remediation.setPhase('deciding');
       } else {
         remediation.setPhase('idle');
@@ -122,6 +128,12 @@ const RemediationView: Component = () => {
     return 'border-l-gray-300 dark:border-l-gray-600';
   };
 
+  const resolveFilterLabel = (labelIds: string[]): string => {
+    return labelIds
+      .map(id => resolveLabelId(id, remediation.labelMap(), remediation.labelPrefix()))
+      .join(', ');
+  };
+
   const isConsolidate = (group: OverlapGroup) => {
     const r = group.resolution_type;
     return typeof r === 'object' && 'Consolidate' in r;
@@ -214,7 +226,7 @@ const RemediationView: Component = () => {
                   </div>
 
                   <div class="text-sm text-gray-500 dark:text-gray-400">
-                    Labels: {group.label_names.join(', ')} &middot; {group.filters.length} filter{group.filters.length !== 1 ? 's' : ''}
+                    Labels: {group.label_names.map(n => stripPrefix(n, remediation.labelPrefix())).join(', ')} &middot; {group.filters.length} filter{group.filters.length !== 1 ? 's' : ''}
                   </div>
 
                   <Show when={isConsolidate(group)}>
@@ -264,7 +276,7 @@ const RemediationView: Component = () => {
                             <Show when={filter.subject}>
                               <span class="ml-2 text-gray-500">subject: {filter.subject}</span>
                             </Show>
-                            <span class="ml-2 text-gray-400">&rarr; {filter.add_label_ids.join(', ')}</span>
+                            <span class="ml-2 text-gray-400">&rarr; {resolveFilterLabel(filter.add_label_ids)}</span>
                           </button>
                         )}
                       </For>
@@ -411,7 +423,7 @@ const RemediationView: Component = () => {
                 <For each={remediation.swaps()}>
                   {(swap) => (
                     <div class="text-sm font-mono bg-gray-50 dark:bg-gray-700 p-2 rounded">
-                      {swap.query} — remove {swap.remove_label_ids.join(', ')} → add {swap.add_label_id}
+                      {swap.query} — remove {resolveFilterLabel(swap.remove_label_ids)} → add {resolveFilterLabel([swap.add_label_id])}
                     </div>
                   )}
                 </For>
