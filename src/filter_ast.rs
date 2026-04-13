@@ -109,6 +109,12 @@ impl FilterExpr {
         self
     }
 
+    /// Adds a negative subject keyword (-subject:(...))
+    pub fn with_subject_exclusion(mut self, keyword: impl Into<String>) -> Self {
+        self.subject_exclusions.push(keyword.into());
+        self
+    }
+
     /// Adds a subject keyword requirement
     pub fn with_subject_keywords(mut self, keywords: Vec<String>, match_mode: SubjectMatchMode) -> Self {
         self.subject_clause = Some(SubjectClause {
