@@ -1145,6 +1145,89 @@ mod tests {
     }
 
     #[test]
+    fn test_subject_exclusions_resolve_overlap_exact() {
+        // subject:(Y) vs -subject:(Y) with same FROM = mutually exclusive
+        let analyzer = FilterOverlapAnalyzer::new();
+
+        let expr_a = FilterExpr::from_sender("noreply@example.com")
+            .with_subject_keywords(vec!["Notification".to_string()], SubjectMatchMode::Any);
+
+        let expr_b = FilterExpr::from_sender("noreply@example.com")
+            .with_subject_exclusion("Notification");
+
+        let relation = analyzer.analyze_expr_relation(&expr_a, &expr_b);
+        assert!(
+            matches!(relation, PatternRelation::Disjoint),
+            "subject:(X) vs -subject:(X) should be disjoint, got: {:?}",
+            relation
+        );
+    }
+
+    #[test]
+    fn test_subject_exclusions_resolve_overlap_symmetric() {
+        // Same as above but arguments reversed
+        let analyzer = FilterOverlapAnalyzer::new();
+
+        let expr_a = FilterExpr::from_sender("noreply@example.com")
+            .with_subject_exclusion("Notification");
+
+        let expr_b = FilterExpr::from_sender("noreply@example.com")
+            .with_subject_keywords(vec!["Notification".to_string()], SubjectMatchMode::Any);
+
+        let relation = analyzer.analyze_expr_relation(&expr_a, &expr_b);
+        assert!(
+            matches!(relation, PatternRelation::Disjoint),
+            "-subject:(X) vs subject:(X) should be disjoint, got: {:?}",
+            relation
+        );
+    }
+
+    #[test]
+    fn test_subject_exclusions_all_keywords_covered() {
+        // subject:(A B) vs -subject:(A) -subject:(B) = disjoint
+        let analyzer = FilterOverlapAnalyzer::new();
+
+        let expr_a = FilterExpr::from_sender("noreply@example.com")
+            .with_subject_keywords(
+                vec!["Order".to_string(), "Confirmation".to_string()],
+                SubjectMatchMode::All,
+            );
+
+        let expr_b = FilterExpr::from_sender("noreply@example.com")
+            .with_subject_exclusion("Order")
+            .with_subject_exclusion("Confirmation");
+
+        let relation = analyzer.analyze_expr_relation(&expr_a, &expr_b);
+        assert!(
+            matches!(relation, PatternRelation::Disjoint),
+            "subject:(A AND B) vs -subject:(A) -subject:(B) should be disjoint, got: {:?}",
+            relation
+        );
+    }
+
+    #[test]
+    fn test_subject_exclusions_partial_no_disjoint() {
+        // subject:(A B) with match_mode Any vs -subject:(A) = NOT disjoint
+        let analyzer = FilterOverlapAnalyzer::new();
+
+        let expr_a = FilterExpr::from_sender("noreply@example.com")
+            .with_subject_keywords(
+                vec!["Order".to_string(), "Shipping".to_string()],
+                SubjectMatchMode::Any,
+            );
+
+        let expr_b = FilterExpr::from_sender("noreply@example.com")
+            .with_subject_exclusion("Order");
+
+        let relation = analyzer.analyze_expr_relation(&expr_a, &expr_b);
+        assert!(
+            !matches!(relation, PatternRelation::Disjoint),
+            "subject:(A OR B) vs -subject:(A) should NOT be disjoint (B still overlaps), got: {:?}",
+            relation
+        );
+    }
+
+    #[test]
     fn test_analyze_all_finds_conflicts() {
         let analyzer = FilterOverlapAnalyzer::new();
 
