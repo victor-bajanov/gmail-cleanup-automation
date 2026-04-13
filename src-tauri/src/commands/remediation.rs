@@ -1,6 +1,7 @@
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 use std::collections::HashMap;
 
+use crate::events::{AppHandleExt, RemediationProgress};
 use gmail_automation::filter_remediation::{
     ApplyResult, GroupDecision, LabelSwap, OverlapDetector, OverlapGroup,
     RemediationApplicator, RemediationPlan, RemediationResult,
@@ -83,11 +84,11 @@ pub async fn execute_remediation(
 
     let result = plan
         .execute_with_progress(client.as_ref(), |done, group_id| {
-            let _ = app.emit("remediation:progress", serde_json::json!({
-                "done": done,
-                "total": total,
-                "group_id": group_id,
-            }));
+            app.events().emit_remediation_progress(RemediationProgress {
+                done,
+                total,
+                group_id: group_id.to_string(),
+            });
         })
         .await
         .map_err(|e| format!("Execution failed: {}", e))?;
