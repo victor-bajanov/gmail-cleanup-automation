@@ -1986,6 +1986,38 @@ mod tests {
         assert_eq!(groups.len(), 2, "Two separate domains = two groups");
     }
 
+    /// Fixture: filters without from_clause (to:, has:attachment, etc.) must not
+    /// connect unrelated filters into one giant group.
+    #[test]
+    fn test_fixture_no_from_filters_dont_bridge_groups() {
+        let filters = vec![
+            make_filter("f1", Some("github.com"), None, "lbl_rec"),
+            make_filter("f2", Some("noreply@github.com"), None, "lbl_fin"),
+            // Filter with no from — only has:attachment in query, no from field
+            make_filter_with_query("f3", None, Some("has:attachment"), None, "lbl_oth"),
+            make_filter("f4", Some("gitlab.com"), None, "lbl_rec"),
+            make_filter("f5", Some("alerts@gitlab.com"), None, "lbl_oth"),
+            // Another no-from filter
+            ExistingFilterInfo {
+                id: "f6".to_string(),
+                query: None,
+                from: None,
+                to: Some("me@example.com".to_string()),
+                subject: None,
+                add_label_ids: vec!["lbl_per".to_string()],
+                remove_label_ids: vec![],
+            },
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        // github.com group (f1+f2), gitlab.com group (f4+f5)
+        // f3 and f6 have no from_clause — must NOT bridge the two domain groups
+        assert_eq!(groups.len(), 2,
+            "No-from filters must not connect unrelated domains. Got {} groups: {:?}",
+            groups.len(),
+            groups.iter().map(|g| (&g.group_id, g.filters.len())).collect::<Vec<_>>()
+        );
+    }
+
     mod property_tests {
         use super::*;
         use proptest::prelude::*;
@@ -2135,6 +2167,7 @@ mod tests {
                         Just("catchall_ex"),
                         Just("subject_pos"),
                         Just("subject_neg"),
+                        Just("no_from"),
                     ],
                     label_strategy(),
                 ),
@@ -2192,6 +2225,18 @@ mod tests {
                                     None,
                                     label,
                                 )
+                            }
+                            "no_from" => {
+                                // Filter without from_clause (e.g. to:, has:attachment)
+                                ExistingFilterInfo {
+                                    id: format!("f{}", i),
+                                    query: Some("has:attachment".to_string()),
+                                    from: None,
+                                    to: None,
+                                    subject: None,
+                                    add_label_ids: vec![label.clone()],
+                                    remove_label_ids: vec![],
+                                }
                             }
                             _ => unreachable!(),
                         }
