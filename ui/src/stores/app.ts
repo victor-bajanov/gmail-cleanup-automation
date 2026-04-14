@@ -205,12 +205,12 @@ export const remediation = {
   setDecision: (groupId: string, decision: GroupDecision) => {
     setRemediationDecisions(prev => ({ ...prev, [groupId]: decision }));
   },
-  decidedCount: createMemo(() => Object.keys(remediationDecisions()).length),
-  allDecided: createMemo(() => {
+  decidedCount: () => Object.keys(remediationDecisions()).length,
+  allDecided: () => {
     const groups = remediationGroups();
     const decisions = remediationDecisions();
     return groups.length > 0 && groups.every(g => g.group_id in decisions);
-  }),
+  },
   reset: () => {
     setRemediationPhase('idle');
     setRemediationGroups([]);

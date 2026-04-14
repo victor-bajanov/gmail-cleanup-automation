@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::client::{ExistingFilterInfo, GmailClient};
 use crate::filter_ast::{DomainPattern, EmailPattern, FilterExpr, FromClause, SubjectClause};
-use crate::filter_overlap::parse_gmail_query;
+use crate::filter_overlap::{parse_gmail_query, FilterOverlapAnalyzer, PatternRelation};
 use crate::models::FilterRule;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -739,26 +739,81 @@ impl OverlapDetector {
     /// Group filters by overlapping from-patterns.
     /// Filters sharing the same domain land in the same group.
     /// Groups of size 1 are discarded (no overlap).
+    /// Group filters by actual overlap analysis using union-find.
+    ///
+    /// Instead of grouping by domain string, we parse each filter into a FilterExpr
+    /// and run pairwise overlap analysis. Filters that are not Disjoint are connected.
+    /// Connected components become overlap groups. Singletons are discarded.
     pub fn group_filters(
         filters: &[ExistingFilterInfo],
         label_map: &HashMap<String, String>,
     ) -> Vec<OverlapGroup> {
-        let mut domain_groups: HashMap<String, Vec<ExistingFilterInfo>> = HashMap::new();
+        let n = filters.len();
+        if n < 2 {
+            return vec![];
+        }
 
-        for filter in filters {
-            if let Some((domain, _specific_sender)) = Self::parse_from_key(filter) {
-                domain_groups
-                    .entry(domain)
-                    .or_default()
-                    .push(filter.clone());
+        // Parse all filters into FilterExpr
+        let exprs: Vec<FilterExpr> = filters.iter().map(Self::filter_to_expr).collect();
+
+        // Union-Find
+        let mut parent: Vec<usize> = (0..n).collect();
+        let mut rank: Vec<usize> = vec![0; n];
+
+        fn find(parent: &mut [usize], i: usize) -> usize {
+            if parent[i] != i {
+                parent[i] = find(parent, parent[i]);
+            }
+            parent[i]
+        }
+
+        fn union(parent: &mut [usize], rank: &mut [usize], a: usize, b: usize) {
+            let ra = find(parent, a);
+            let rb = find(parent, b);
+            if ra == rb {
+                return;
+            }
+            if rank[ra] < rank[rb] {
+                parent[ra] = rb;
+            } else if rank[ra] > rank[rb] {
+                parent[rb] = ra;
+            } else {
+                parent[rb] = ra;
+                rank[ra] += 1;
             }
         }
 
-        // Discard singletons, build OverlapGroup for each group
-        let mut groups: Vec<OverlapGroup> = domain_groups
-            .into_iter()
-            .filter(|(_, group_filters)| group_filters.len() > 1)
-            .map(|(domain, group_filters)| {
+        // Pairwise overlap analysis
+        let analyzer = FilterOverlapAnalyzer::new();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let relation = analyzer.analyze_expr_relation(&exprs[i], &exprs[j]);
+                if !matches!(relation, PatternRelation::Disjoint) {
+                    union(&mut parent, &mut rank, i, j);
+                }
+            }
+        }
+
+        // Collect connected components
+        let mut components: HashMap<usize, Vec<usize>> = HashMap::new();
+        for i in 0..n {
+            let root = find(&mut parent, i);
+            components.entry(root).or_default().push(i);
+        }
+
+        // Build OverlapGroups from components with 2+ members
+        let mut groups: Vec<OverlapGroup> = components
+            .into_values()
+            .filter(|members| members.len() > 1)
+            .map(|members| {
+                let group_filters: Vec<ExistingFilterInfo> =
+                    members.iter().map(|&i| filters[i].clone()).collect();
+
+                let domain = group_filters
+                    .iter()
+                    .find_map(|f| Self::parse_from_key(f).map(|(d, _)| d))
+                    .unwrap_or_else(|| "unknown".to_string());
+
                 let label_names: Vec<String> = group_filters
                     .iter()
                     .flat_map(|f| &f.add_label_ids)
@@ -775,7 +830,6 @@ impl OverlapDetector {
             })
             .collect();
 
-        // Sort for deterministic output
         groups.sort_by(|a, b| a.group_id.cmp(&b.group_id));
         groups
     }
@@ -857,6 +911,72 @@ mod tests {
         ];
         let groups = OverlapDetector::group_filters(&filters, &label_map());
         assert_eq!(groups.len(), 0);
+    }
+
+    #[test]
+    fn test_group_excludes_disjoint_catchall_with_exclusions() {
+        let filters = vec![
+            make_filter_with_query(
+                "f1", None,
+                Some("from:(*@amazon.com.au) -from:(orders@amazon.com.au) -from:(shipping@amazon.com.au)"),
+                None, "lbl_rec",
+            ),
+            make_filter("f2", Some("orders@amazon.com.au"), None, "lbl_rec"),
+            make_filter("f3", Some("shipping@amazon.com.au"), None, "lbl_rec"),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 0, "Disjoint filters should not be grouped: {:?}", groups);
+    }
+
+    #[test]
+    fn test_group_keeps_genuine_overlaps() {
+        let filters = vec![
+            make_filter("f1", Some("amazon.com.au"), None, "lbl_rec"),
+            make_filter("f2", Some("orders@amazon.com.au"), None, "lbl_fin"),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 1, "Genuinely overlapping filters should be grouped");
+        assert_eq!(groups[0].filters.len(), 2);
+    }
+
+    #[test]
+    fn test_group_transitive_overlap() {
+        let filters = vec![
+            make_filter("f1", Some("amazon.com.au"), None, "lbl_rec"),
+            make_filter("f2", Some("orders@amazon.com.au"), None, "lbl_fin"),
+            make_filter("f3", Some("shipping@amazon.com.au"), None, "lbl_oth"),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 1, "Transitively connected filters should be in one group");
+        assert_eq!(groups[0].filters.len(), 3);
+    }
+
+    #[test]
+    fn test_group_subject_exclusion_disjoint() {
+        let filters = vec![
+            make_filter_with_query(
+                "f1", Some("noreply@example.com"),
+                Some("from:(noreply@example.com) subject:(Notification)"),
+                None, "lbl_rec",
+            ),
+            make_filter_with_query(
+                "f2", Some("noreply@example.com"),
+                Some("from:(noreply@example.com) -subject:(Notification)"),
+                None, "lbl_oth",
+            ),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 0, "Subject-excluded filters should not be grouped");
+    }
+
+    #[test]
+    fn test_group_different_domains_never_grouped() {
+        let filters = vec![
+            make_filter("f1", Some("github.com"), None, "lbl_rec"),
+            make_filter("f2", Some("gitlab.com"), None, "lbl_rec"),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 0, "Different domains should never be grouped");
     }
 
     #[test]
@@ -1741,6 +1861,120 @@ mod tests {
         );
     }
 
+    /// Real-world fixture: the amazon.com.au pattern from the bug report.
+    #[test]
+    fn test_fixture_amazon_catchall_with_exclusions() {
+        let filters = vec![
+            make_filter_with_query(
+                "f1", None,
+                Some("from:(*@amazon.com.au) -from:(order-update@amazon.com.au) -from:(auto-confirm@amazon.com.au) -from:(shipment-tracking@amazon.com.au)"),
+                None, "lbl_rec",
+            ),
+            make_filter("f2", Some("auto-confirm@amazon.com.au"), None, "lbl_rec"),
+            make_filter("f3", Some("order-update@amazon.com.au"), None, "lbl_rec"),
+            make_filter("f4", Some("shipment-tracking@amazon.com.au"), None, "lbl_oth"),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 0,
+            "Amazon catch-all with exclusions: no genuine overlaps. Got: {:?}",
+            groups.iter().map(|g| (&g.group_id, g.filters.len())).collect::<Vec<_>>()
+        );
+    }
+
+    /// Fixture: two filters on same sender, different subjects — mutually exclusive via -subject:
+    #[test]
+    fn test_fixture_woolworths_subject_exclusion() {
+        let filters = vec![
+            make_filter_with_query(
+                "f1", Some("noreply@online.woolworths.com.au"),
+                Some("from:(noreply@online.woolworths.com.au) subject:(Woolworths Online Notification)"),
+                None, "lbl_rec",
+            ),
+            make_filter_with_query(
+                "f2", Some("noreply@online.woolworths.com.au"),
+                Some("from:(noreply@online.woolworths.com.au) -subject:(Woolworths Online Notification)"),
+                None, "lbl_oth",
+            ),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 0,
+            "Woolworths subject/!subject pair should be disjoint, not grouped");
+    }
+
+    /// Fixture: overlapping domain + specific sender with SAME label (consolidation candidate)
+    #[test]
+    fn test_fixture_genuine_consolidation_candidate() {
+        let filters = vec![
+            make_filter("f1", Some("cba.com.au"), None, "lbl_fin"),
+            make_filter("f2", Some("noreply@cba.com.au"), None, "lbl_fin"),
+            make_filter("f3", Some("alerts@cba.com.au"), None, "lbl_fin"),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 1, "Genuine overlaps should still be grouped");
+        assert_eq!(groups[0].filters.len(), 3);
+    }
+
+    /// Fixture: two identical from:, different labels — genuine PickWinner
+    #[test]
+    fn test_fixture_same_from_different_labels() {
+        let filters = vec![
+            make_filter("f1", Some("noreply@example.com"), None, "lbl_fin"),
+            make_filter("f2", Some("noreply@example.com"), None, "lbl_rec"),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].filters.len(), 2);
+    }
+
+    /// Fixture: partial -from: exclusion (excludes SOME but not all specific senders)
+    #[test]
+    fn test_fixture_partial_exclusion_still_overlaps() {
+        let filters = vec![
+            make_filter_with_query(
+                "f1", None,
+                Some("from:(*@amazon.com.au) -from:(orders@amazon.com.au)"),
+                None, "lbl_rec",
+            ),
+            make_filter("f2", Some("orders@amazon.com.au"), None, "lbl_fin"),
+            make_filter("f3", Some("shipping@amazon.com.au"), None, "lbl_oth"),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        // f1 is disjoint with f2 (excluded), but OVERLAPS with f3 (not excluded)
+        // f2 is disjoint with f1 and f3 (different specific senders)
+        // So: f1 and f3 form a group. f2 is isolated.
+        assert_eq!(groups.len(), 1, "f1 and f3 should be grouped (f1 catches shipping@)");
+        assert_eq!(groups[0].filters.len(), 2);
+        let ids: Vec<&str> = groups[0].filters.iter().map(|f| f.id.as_str()).collect();
+        assert!(ids.contains(&"f1") && ids.contains(&"f3"),
+            "Group should contain f1 and f3, got: {:?}", ids);
+    }
+
+    /// Fixture: chain of overlaps A<->B<->C where A and C are disjoint
+    #[test]
+    fn test_fixture_transitive_chain() {
+        let filters = vec![
+            make_filter("fA", Some("big-corp.com"), None, "lbl_fin"),
+            make_filter("fB", Some("noreply@big-corp.com"), None, "lbl_rec"),
+            make_filter("fC", Some("alerts@big-corp.com"), None, "lbl_oth"),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 1, "Transitive chain should produce one group");
+        assert_eq!(groups[0].filters.len(), 3);
+    }
+
+    /// Fixture: completely independent domains — should produce separate groups
+    #[test]
+    fn test_fixture_independent_domains() {
+        let filters = vec![
+            make_filter("f1", Some("github.com"), None, "lbl_rec"),
+            make_filter("f2", Some("noreply@github.com"), None, "lbl_fin"),
+            make_filter("f3", Some("gitlab.com"), None, "lbl_rec"),
+            make_filter("f4", Some("alerts@gitlab.com"), None, "lbl_oth"),
+        ];
+        let groups = OverlapDetector::group_filters(&filters, &label_map());
+        assert_eq!(groups.len(), 2, "Two separate domains = two groups");
+    }
+
     mod property_tests {
         use super::*;
         use proptest::prelude::*;
@@ -1872,6 +2106,87 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+        }
+
+        /// Strategy for generating a diverse set of filters across multiple domains,
+        /// including catch-all + exclusion patterns, subject exclusions, etc.
+        fn diverse_filter_set_strategy() -> impl Strategy<Value = Vec<ExistingFilterInfo>> {
+            proptest::collection::vec(
+                (
+                    prop_oneof![
+                        Just("amazon.com.au".to_string()),
+                        Just("cba.com.au".to_string()),
+                        Just("github.com".to_string()),
+                    ],
+                    prop_oneof![
+                        Just("domain"),
+                        Just("specific"),
+                        Just("catchall_ex"),
+                        Just("subject_pos"),
+                        Just("subject_neg"),
+                    ],
+                    label_strategy(),
+                ),
+                3..=8,
+            )
+            .prop_map(|configs| {
+                configs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (domain, filter_type, label))| {
+                        match filter_type.as_ref() {
+                            "domain" => make_filter_with_query(
+                                &format!("f{}", i),
+                                Some(domain),
+                                Some(&format!("from:(*@{})", domain)),
+                                None,
+                                label,
+                            ),
+                            "specific" => {
+                                let sender = format!("noreply@{}", domain);
+                                make_filter_with_query(
+                                    &format!("f{}", i),
+                                    Some(&sender),
+                                    Some(&format!("from:({})", sender)),
+                                    None,
+                                    label,
+                                )
+                            }
+                            "catchall_ex" => make_filter_with_query(
+                                &format!("f{}", i),
+                                None,
+                                Some(&format!(
+                                    "from:(*@{}) -from:(noreply@{})",
+                                    domain, domain
+                                )),
+                                None,
+                                label,
+                            ),
+                            "subject_pos" => {
+                                let sender = format!("noreply@{}", domain);
+                                make_filter_with_query(
+                                    &format!("f{}", i),
+                                    Some(&sender),
+                                    Some(&format!("from:({}) subject:(receipt)", sender)),
+                                    None,
+                                    label,
+                                )
+                            }
+                            "subject_neg" => {
+                                let sender = format!("noreply@{}", domain);
+                                make_filter_with_query(
+                                    &format!("f{}", i),
+                                    Some(&sender),
+                                    Some(&format!("from:({}) -subject:(receipt)", sender)),
+                                    None,
+                                    label,
+                                )
+                            }
+                            _ => unreachable!(),
+                        }
+                    })
+                    .collect()
+            })
         }
 
         proptest! {
@@ -2180,6 +2495,151 @@ mod tests {
                         swap.query,
                     );
                 }
+            }
+
+            // P10: No group contains a pair of disjoint filters as its ONLY members
+            #[test]
+            fn prop_no_two_filter_group_is_disjoint(filters in diverse_filter_set_strategy()) {
+                let label_map = test_label_map();
+                let groups = OverlapDetector::group_filters(&filters, &label_map);
+                let analyzer = FilterOverlapAnalyzer::new();
+
+                for group in &groups {
+                    if group.filters.len() == 2 {
+                        let expr_a = OverlapDetector::filter_to_expr(&group.filters[0]);
+                        let expr_b = OverlapDetector::filter_to_expr(&group.filters[1]);
+                        let relation = analyzer.analyze_expr_relation(&expr_a, &expr_b);
+                        prop_assert!(
+                            !matches!(relation, PatternRelation::Disjoint),
+                            "Two-filter group '{}' contains disjoint filters: {:?} vs {:?} = {:?}",
+                            group.group_id,
+                            group.filters[0].id, group.filters[1].id, relation,
+                        );
+                    }
+                }
+            }
+
+            // P11: Every filter in a group is non-disjoint with at least one other member
+            #[test]
+            fn prop_every_member_overlaps_something(filters in diverse_filter_set_strategy()) {
+                let label_map = test_label_map();
+                let groups = OverlapDetector::group_filters(&filters, &label_map);
+                let analyzer = FilterOverlapAnalyzer::new();
+
+                for group in &groups {
+                    let exprs: Vec<FilterExpr> = group.filters.iter()
+                        .map(OverlapDetector::filter_to_expr)
+                        .collect();
+
+                    for (i, _) in group.filters.iter().enumerate() {
+                        let has_overlap = (0..group.filters.len())
+                            .filter(|&j| j != i)
+                            .any(|j| {
+                                !matches!(
+                                    analyzer.analyze_expr_relation(&exprs[i], &exprs[j]),
+                                    PatternRelation::Disjoint
+                                )
+                            });
+                        prop_assert!(
+                            has_overlap,
+                            "Filter '{}' in group '{}' is disjoint with all other members",
+                            group.filters[i].id, group.group_id,
+                        );
+                    }
+                }
+            }
+
+            // P12: Groups form valid connected components
+            #[test]
+            fn prop_groups_are_connected_components(filters in diverse_filter_set_strategy()) {
+                let label_map = test_label_map();
+                let groups = OverlapDetector::group_filters(&filters, &label_map);
+                let analyzer = FilterOverlapAnalyzer::new();
+
+                for group in &groups {
+                    let n = group.filters.len();
+                    let exprs: Vec<FilterExpr> = group.filters.iter()
+                        .map(OverlapDetector::filter_to_expr)
+                        .collect();
+
+                    let mut adj = vec![vec![]; n];
+                    for i in 0..n {
+                        for j in (i+1)..n {
+                            if !matches!(analyzer.analyze_expr_relation(&exprs[i], &exprs[j]), PatternRelation::Disjoint) {
+                                adj[i].push(j);
+                                adj[j].push(i);
+                            }
+                        }
+                    }
+
+                    let mut visited = vec![false; n];
+                    let mut queue = std::collections::VecDeque::new();
+                    visited[0] = true;
+                    queue.push_back(0);
+                    while let Some(node) = queue.pop_front() {
+                        for &neighbor in &adj[node] {
+                            if !visited[neighbor] {
+                                visited[neighbor] = true;
+                                queue.push_back(neighbor);
+                            }
+                        }
+                    }
+
+                    prop_assert!(
+                        visited.iter().all(|&v| v),
+                        "Group '{}' is not a connected component",
+                        group.group_id,
+                    );
+                }
+            }
+
+            // P13: No two groups share a filter
+            #[test]
+            fn prop_no_filter_in_multiple_groups(filters in diverse_filter_set_strategy()) {
+                let label_map = test_label_map();
+                let groups = OverlapDetector::group_filters(&filters, &label_map);
+
+                let mut seen_ids = std::collections::HashSet::new();
+                for group in &groups {
+                    for f in &group.filters {
+                        prop_assert!(
+                            seen_ids.insert(f.id.clone()),
+                            "Filter '{}' appears in multiple groups",
+                            f.id,
+                        );
+                    }
+                }
+            }
+
+            // P14: Grouping is deterministic
+            #[test]
+            fn prop_grouping_deterministic(filters in diverse_filter_set_strategy()) {
+                let label_map = test_label_map();
+                let groups1 = OverlapDetector::group_filters(&filters, &label_map);
+                let groups2 = OverlapDetector::group_filters(&filters, &label_map);
+
+                prop_assert_eq!(groups1.len(), groups2.len(), "Different number of groups on same input");
+
+                // Sort groups by their sorted filter IDs to compare order-independently
+                let mut sorted1: Vec<Vec<String>> = groups1.iter()
+                    .map(|g| {
+                        let mut ids: Vec<String> = g.filters.iter().map(|f| f.id.clone()).collect();
+                        ids.sort();
+                        ids
+                    })
+                    .collect();
+                sorted1.sort();
+
+                let mut sorted2: Vec<Vec<String>> = groups2.iter()
+                    .map(|g| {
+                        let mut ids: Vec<String> = g.filters.iter().map(|f| f.id.clone()).collect();
+                        ids.sort();
+                        ids
+                    })
+                    .collect();
+                sorted2.sort();
+
+                prop_assert_eq!(sorted1, sorted2, "Groups differ on same input");
             }
         }
     }
