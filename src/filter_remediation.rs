@@ -832,7 +832,7 @@ impl OverlapDetector {
                     .collect();
 
                 OverlapGroup {
-                    group_id: domain.clone(),
+                    group_id: domain.clone(), // may be duplicated; disambiguated below
                     from_pattern: domain,
                     filters: group_filters,
                     label_names,
@@ -842,6 +842,17 @@ impl OverlapDetector {
             .collect();
 
         groups.sort_by(|a, b| a.group_id.cmp(&b.group_id));
+
+        // Disambiguate duplicate group_ids (multiple disjoint components on same domain)
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for group in &mut groups {
+            let count = seen.entry(group.group_id.clone()).or_insert(0);
+            if *count > 0 {
+                group.group_id = format!("{}_{}", group.group_id, count);
+            }
+            *count += 1;
+        }
+
         groups
     }
 }
