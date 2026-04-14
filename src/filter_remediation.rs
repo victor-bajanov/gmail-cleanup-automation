@@ -753,8 +753,13 @@ impl OverlapDetector {
             return vec![];
         }
 
-        // Parse all filters into FilterExpr
+        // Parse all filters into FilterExpr, track which have a from_clause
         let exprs: Vec<FilterExpr> = filters.iter().map(Self::filter_to_expr).collect();
+
+        // Only consider filters with a from_clause for overlap analysis.
+        // Filters without from_clause (e.g. to:, has:attachment) would be treated as
+        // "matches all senders" by analyze_expr_relation, falsely connecting everything.
+        let analyzable: Vec<bool> = exprs.iter().map(|e| e.from_clause.is_some()).collect();
 
         // Union-Find
         let mut parent: Vec<usize> = (0..n).collect();
@@ -783,10 +788,16 @@ impl OverlapDetector {
             }
         }
 
-        // Pairwise overlap analysis
+        // Pairwise overlap analysis (skip filters without from_clause)
         let analyzer = FilterOverlapAnalyzer::new();
         for i in 0..n {
+            if !analyzable[i] {
+                continue;
+            }
             for j in (i + 1)..n {
+                if !analyzable[j] {
+                    continue;
+                }
                 let relation = analyzer.analyze_expr_relation(&exprs[i], &exprs[j]);
                 if !matches!(relation, PatternRelation::Disjoint) {
                     union(&mut parent, &mut rank, i, j);
